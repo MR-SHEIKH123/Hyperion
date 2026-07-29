@@ -1,0 +1,413 @@
+/**
+ * Provider persistence.
+ *
+ * Owns the row <-> ProviderRecord mapping and the single-active-provider
+ * transaction. Two rules are enforced here and nowhere else:
+ *
+ *   1. `toPublic()` is the ONLY way a provider reaches the frontend. It has no
+ *      key field at all, so a future careless `res.json(provider)` cannot leak
+ *      ciphertext either — the type system rejects it.
+ *   2. Enabling a provider disables the previous one inside one transaction.
+ *      The database also has a partial unique index on `enabled = 1`, so even a
+ *      bug elsewhere cannot produce two active providers; it errors instead.
+ */
+import { randomUUID } from 'node:crypto';
+import { getDb } from '../db/adapter.ts';
+import { encrypt, keyHint } from '../security/keystore.ts';
+import { AppError } from '../util/errors.ts';
+import type {
+  HealthStatus,
+  ModelInfo,
+  ProviderPublic,
+  ProviderRecord,
+  ProviderType,
+} from '../types/core.ts';
+
+interface ProviderRow {
+  id: string;
+  name: string;
+  type: string;
+  base_url: string;
+  api_key_enc: string | null;
+  api_key_hint: string | null;
+  enabled: number;
+  priority: number;
+  health_status: string;
+  last_error: string | null;
+  last_error_at: number | null;
+  last_success_at: number | null;
+  models_json: string | null;
+  models_fetched_at: number | null;
+  models_error: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+function mapRow(row: ProviderRow): ProviderRecord {
+  return {
+    id: row.id,
+    name: row.name,
+    type: row.type as ProviderType,
+    baseUrl: row.base_url,
+    apiKeyEnc: row.api_key_enc,
+    apiKeyHint: row.api_key_hint,
+    enabled: row.enabled === 1,
+    priority: row.priority,
+    healthStatus: row.health_status as HealthStatus,
+    lastError: row.last_error,
+    lastErrorAt: row.last_error_at,
+    lastSuccessAt: row.last_success_at,
+    models: parseModels(row.models_json),
+    modelsFetchedAt: row.models_fetched_at,
+    modelsError: row.models_error,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+/** A corrupt cache must not make the provider unreadable — treat it as absent. */
+function parseModels(json: string | null): ModelInfo[] | null {
+  if (!json) return null;
+  try {
+    const parsed = JSON.parse(json) as unknown;
+    return Array.isArray(parsed) ? (parsed as ModelInfo[]) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Wire format. Note what is missing: no `apiKeyEnc`, no `apiKey`, nothing
+ * decryptable. `apiKeyHint` is the last 4 characters only, for identification.
+ */
+export function toPublic(provider: ProviderRecord): ProviderPublic {
+  return {
+    id: provider.id,
+    name: provider.name,
+    type: provider.type,
+    baseUrl: provider.baseUrl,
+    hasKey: provider.apiKeyEnc !== null,
+    apiKeyHint: provider.apiKeyHint,
+    enabled: provider.enabled,
+    priority: provider.priority,
+    healthStatus: provider.healthStatus,
+    lastError: provider.lastError,
+    lastErrorAt: provider.lastErrorAt,
+    lastSuccessAt: provider.lastSuccessAt,
+    modelCount: provider.models === null ? null : provider.models.length,
+    modelsFetchedAt: provider.modelsFetchedAt,
+    modelsError: provider.modelsError,
+    createdAt: provider.createdAt,
+    updatedAt: provider.updatedAt,
+  };
+}
+
+const COLUMNS = `id, name, type, base_url, api_key_enc, api_key_hint, enabled, priority,
+  health_status, last_error, last_error_at, last_success_at, models_json,
+  models_fetched_at, models_error, created_at, updated_at`;
+
+// --- reads -----------------------------------------------------------------
+
+export function listProviders(): ProviderRecord[] {
+  return getDb()
+    .prepare<ProviderRow>(`SELECT ${COLUMNS} FROM providers ORDER BY priority ASC, name ASC`)
+    .all()
+    .map(mapRow);
+}
+
+export function findProvider(id: string): ProviderRecord | null {
+  const row = getDb()
+    .prepare<ProviderRow>(`SELECT ${COLUMNS} FROM providers WHERE id = ?`)
+    .get(id);
+  return row ? mapRow(row) : null;
+}
+
+/** Throws instead of returning null, for the many call sites that require one. */
+export function requireProvider(id: string): ProviderRecord {
+  const provider = findProvider(id);
+  if (!provider) {
+    throw new AppError('not_found', `No provider with id "${id}"`);
+  }
+  return provider;
+}
+
+export function findProviderByName(name: string): ProviderRecord | null {
+  const row = getDb()
+    .prepare<ProviderRow>(`SELECT ${COLUMNS} FROM providers WHERE name = ?`)
+    .get(name);
+  return row ? mapRow(row) : null;
+}
+
+/** The single active provider, or null if the user has none enabled. */
+export function getActiveProvider(): ProviderRecord | null {
+  const row = getDb()
+    .prepare<ProviderRow>(`SELECT ${COLUMNS} FROM providers WHERE enabled = 1 LIMIT 1`)
+    .get();
+  return row ? mapRow(row) : null;
+}
+
+export function requireActiveProvider(): ProviderRecord {
+  const provider = getActiveProvider();
+  if (!provider) {
+    throw new AppError(
+      'no_active_provider',
+      'No provider is enabled. Add a provider and enable it before sending requests.',
+    );
+  }
+  return provider;
+}
+
+/**
+ * Failover candidates: everything except `excludeId`, in priority order, with
+ * providers already known to be unhealthy last rather than excluded — a provider
+ * marked unhealthy an hour ago may well be fine now, and it beats having no
+ * option at all.
+ */
+export function listFailoverCandidates(excludeId?: string): ProviderRecord[] {
+  const rows = getDb()
+    .prepare<ProviderRow>(
+      `SELECT ${COLUMNS} FROM providers
+       WHERE (? IS NULL OR id <> ?)
+       ORDER BY (health_status = 'unhealthy') ASC, priority ASC, name ASC`,
+    )
+    .all(excludeId ?? null, excludeId ?? null);
+  return rows.map(mapRow);
+}
+
+// --- writes ----------------------------------------------------------------
+
+export interface CreateProviderInput {
+  name: string;
+  type: ProviderType;
+  baseUrl: string;
+  /** Plaintext, encrypted here and never stored or logged as-is. */
+  apiKey?: string | null;
+  priority?: number;
+  enabled?: boolean;
+}
+
+export function createProvider(input: CreateProviderInput): ProviderRecord {
+  const db = getDb();
+  const now = Date.now();
+  const id = randomUUID();
+
+  const name = input.name.trim();
+  if (name === '') throw new AppError('bad_request', 'Provider name is required');
+  const baseUrl = normalizeBaseUrl(input.baseUrl);
+
+  if (findProviderByName(name)) {
+    throw new AppError('conflict', `A provider named "${name}" already exists`);
+  }
+
+  const key = input.apiKey?.trim() ?? '';
+  const hasKey = key !== '';
+
+  return db.transaction(() => {
+    // Enabling on create must go through the same mutual-exclusion path.
+    if (input.enabled) clearActive();
+
+    db.prepare(
+      `INSERT INTO providers
+         (id, name, type, base_url, api_key_enc, api_key_hint, enabled, priority,
+          health_status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'unknown', ?, ?)`,
+    ).run(
+      id,
+      name,
+      input.type,
+      baseUrl,
+      hasKey ? encrypt(key) : null,
+      hasKey ? keyHint(key) : null,
+      input.enabled ?? false,
+      input.priority ?? 100,
+      now,
+      now,
+    );
+
+    return requireProvider(id);
+  })();
+}
+
+export interface UpdateProviderInput {
+  name?: string;
+  baseUrl?: string;
+  priority?: number;
+  /**
+   * Tri-state on purpose:
+   *   undefined — leave the stored key untouched (the usual case, since the
+   *               frontend never receives it and so cannot echo it back)
+   *   ''/null   — remove the key
+   *   string    — replace it
+   */
+  apiKey?: string | null;
+}
+
+export function updateProvider(id: string, input: UpdateProviderInput): ProviderRecord {
+  const db = getDb();
+  const existing = requireProvider(id);
+
+  const sets: string[] = [];
+  const values: (string | number | null)[] = [];
+
+  if (input.name !== undefined) {
+    const name = input.name.trim();
+    if (name === '') throw new AppError('bad_request', 'Provider name cannot be empty');
+    const clash = findProviderByName(name);
+    if (clash && clash.id !== id) {
+      throw new AppError('conflict', `A provider named "${name}" already exists`);
+    }
+    sets.push('name = ?');
+    values.push(name);
+  }
+
+  if (input.baseUrl !== undefined) {
+    sets.push('base_url = ?');
+    values.push(normalizeBaseUrl(input.baseUrl));
+  }
+
+  if (input.priority !== undefined) {
+    sets.push('priority = ?');
+    values.push(input.priority);
+  }
+
+  if (input.apiKey !== undefined) {
+    const key = input.apiKey?.trim() ?? '';
+    if (key === '') {
+      sets.push('api_key_enc = NULL', 'api_key_hint = NULL');
+    } else {
+      sets.push('api_key_enc = ?', 'api_key_hint = ?');
+      values.push(encrypt(key), keyHint(key));
+    }
+  }
+
+  if (sets.length === 0) return existing;
+
+  // A changed base URL or key invalidates both the model cache and the recorded
+  // health verdict — the old evidence describes a different endpoint.
+  const endpointChanged = input.baseUrl !== undefined || input.apiKey !== undefined;
+  if (endpointChanged) {
+    sets.push('models_json = NULL', 'models_fetched_at = NULL', 'models_error = NULL');
+    sets.push("health_status = 'unknown'", 'last_error = NULL', 'last_error_at = NULL');
+  }
+
+  sets.push('updated_at = ?');
+  values.push(Date.now());
+  values.push(id);
+
+  db.prepare(`UPDATE providers SET ${sets.join(', ')} WHERE id = ?`).run(...values);
+  return requireProvider(id);
+}
+
+export function deleteProvider(id: string): void {
+  const result = getDb().prepare('DELETE FROM providers WHERE id = ?').run(id);
+  if (result.changes === 0) {
+    throw new AppError('not_found', `No provider with id "${id}"`);
+  }
+}
+
+function clearActive(): void {
+  getDb()
+    .prepare('UPDATE providers SET enabled = 0, updated_at = ? WHERE enabled = 1')
+    .run(Date.now());
+}
+
+/**
+ * Enable one provider, putting the previously active one on standby.
+ *
+ * Order matters: the disable must land before the enable or the partial unique
+ * index on `enabled = 1` rejects the write. Both happen in one transaction, so
+ * there is no instant where zero or two providers are active.
+ */
+export function enableProvider(id: string): ProviderRecord {
+  const db = getDb();
+  return db.transaction(() => {
+    const provider = requireProvider(id);
+    if (provider.enabled) return provider;
+
+    clearActive();
+    db.prepare('UPDATE providers SET enabled = 1, updated_at = ? WHERE id = ?').run(Date.now(), id);
+    return requireProvider(id);
+  })();
+}
+
+/** Disable without electing a replacement; leaves the app with no active provider. */
+export function disableProvider(id: string): ProviderRecord {
+  getDb()
+    .prepare('UPDATE providers SET enabled = 0, updated_at = ? WHERE id = ?')
+    .run(Date.now(), id);
+  return requireProvider(id);
+}
+
+// --- health & model cache persistence -------------------------------------
+
+export function recordHealth(
+  id: string,
+  status: HealthStatus,
+  error?: { message: string } | null,
+): void {
+  const now = Date.now();
+  if (status === 'healthy') {
+    getDb()
+      .prepare(
+        `UPDATE providers
+         SET health_status = 'healthy', last_success_at = ?, last_error = NULL,
+             last_error_at = NULL, updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(now, now, id);
+    return;
+  }
+
+  getDb()
+    .prepare(
+      `UPDATE providers
+       SET health_status = ?, last_error = ?, last_error_at = ?, updated_at = ?
+       WHERE id = ?`,
+    )
+    .run(status, error?.message ?? null, now, now, id);
+}
+
+export function saveModelCache(id: string, models: ModelInfo[]): void {
+  const now = Date.now();
+  getDb()
+    .prepare(
+      `UPDATE providers
+       SET models_json = ?, models_fetched_at = ?, models_error = NULL, updated_at = ?
+       WHERE id = ?`,
+    )
+    .run(JSON.stringify(models), now, now, id);
+}
+
+export function saveModelCacheError(id: string, message: string): void {
+  const now = Date.now();
+  getDb()
+    .prepare(
+      `UPDATE providers SET models_error = ?, models_fetched_at = ?, updated_at = ? WHERE id = ?`,
+    )
+    .run(message, now, now, id);
+}
+
+// --- helpers ---------------------------------------------------------------
+
+/**
+ * Normalize and sanity-check a base URL.
+ *
+ * Trailing slashes are stripped so the adapters' path joining is predictable,
+ * and a non-HTTP scheme is rejected early rather than surfacing later as an
+ * unhelpful fetch failure.
+ */
+export function normalizeBaseUrl(raw: string): string {
+  const trimmed = raw.trim();
+  if (trimmed === '') throw new AppError('bad_request', 'Base URL is required');
+
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new AppError('bad_request', `"${raw}" is not a valid URL`);
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new AppError('bad_request', 'Base URL must use http or https');
+  }
+  return trimmed.replace(/\/+$/, '');
+}

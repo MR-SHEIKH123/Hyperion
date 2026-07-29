@@ -1,0 +1,497 @@
+/**
+ * The chat engine: provider routing wired into the pause/resume machine.
+ *
+ * This module is where the app's central behavioural promise is actually kept,
+ * so the rules it enforces are worth stating plainly:
+ *
+ * 1. A provider failure PAUSES. It never crashes, never truncates history, and
+ *    never deletes the partial reply. The partial text is persisted with
+ *    `status = 'paused'` and echoed in the `paused` event.
+ * 2. It does NOT auto-retry into the same broken state. The router may attempt
+ *    the same provider a second time only to establish the 2-failure health
+ *    threshold, and only while nothing has been emitted yet; once the provider
+ *    is judged unhealthy the same provider is never tried again on this run.
+ * 3. When the router fails over to a DIFFERENT provider, the run auto-resumes
+ *    and emits `resumed`. Continuing elsewhere is not retrying into the same
+ *    broken state. This happens inside a single routed stream, so the request
+ *    is never sent twice to the same provider. If the replacement also fails,
+ *    the run pauses and stops. (Toggle: `auto_resume_after_failover`.)
+ * 4. A manual model/provider switch pauses, reconfigures, and auto-resumes on
+ *    success. If the switch itself fails, it stays paused rather than silently
+ *    falling back to the old provider.
+ */
+
+import * as router from '../providers/router.ts';
+import * as runState from './runState.ts';
+import { SseStream } from './sse.ts';
+import {
+  appendMessage,
+  ensureChat,
+  listMessages,
+  saveStreamProgress,
+  toProviderMessages,
+  touchChat,
+  updateMessage,
+} from '../db/chats.ts';
+import { computeCost, recordUsage } from '../db/usage.ts';
+import { autoResumeAfterFailover } from '../db/settings.ts';
+import { AppError, toAppError } from '../util/errors.ts';
+import type {
+  ChatMessage,
+  MessageRecord,
+  PauseReason,
+  ProviderRecord,
+  ToolName,
+  TokenUsage,
+} from '../types/core.ts';
+import { createLogger } from '../util/logger.ts';
+
+const log = createLogger('chat');
+
+/** Flush partial text to SQLite at most this often while streaming. */
+const PROGRESS_FLUSH_MS = 750;
+
+export interface SendMessageInput {
+  chatId: string;
+  tool: ToolName;
+  modelId: string;
+  /** New user turn. Omitted when resuming or regenerating. */
+  prompt?: string;
+  /** Prepended as a system message; not persisted as history. */
+  systemPrompt?: string;
+  /** Force a specific provider — the manual-switch path. */
+  providerId?: string;
+  temperature?: number;
+  maxTokens?: number;
+  attachments?: { id: string; filename: string }[];
+  /** Continue this paused run instead of starting a new one. */
+  resumeRunId?: string;
+}
+
+export interface SendResult {
+  runId: string;
+  messageId: string;
+  state: 'complete' | 'paused';
+  content: string;
+}
+
+interface Attempt {
+  provider: ProviderRecord;
+  usage: TokenUsage | null;
+  finishReason: string | undefined;
+  emitted: boolean;
+}
+
+function mapPauseReason(code: string): PauseReason {
+  switch (code) {
+    case 'no_provider_for_model':
+      return 'capability_mismatch';
+    case 'no_healthy_provider':
+    case 'no_active_provider':
+      return 'no_healthy_provider';
+    case 'aborted':
+      return 'user_request';
+    default:
+      return 'provider_failure';
+  }
+}
+
+/**
+ * Runs one exchange to completion or to a pause, streaming over `sse`.
+ *
+ * Callers are expected to already hold the app-wide job lock.
+ */
+export async function sendMessage(input: SendMessageInput, sse: SseStream): Promise<SendResult> {
+  const chat = ensureChat({ id: input.chatId, tool: input.tool, modelId: input.modelId });
+
+  // A resume reuses the existing run and its half-written assistant message,
+  // so the user sees the reply continue rather than a duplicate bubble appear.
+  const resuming = input.resumeRunId ? runState.requireRun(input.resumeRunId) : null;
+  if (resuming && resuming.chatId !== chat.id) {
+    throw new AppError('bad_request', `Run "${resuming.runId}" does not belong to chat "${chat.id}".`);
+  }
+
+  if (input.prompt !== undefined && input.prompt !== '') {
+    appendMessage({
+      chatId: chat.id,
+      role: 'user',
+      content: input.prompt,
+      tool: input.tool,
+      status: 'complete',
+    });
+    touchChat(chat.id, { modelId: input.modelId, opened: true });
+  }
+
+  const history = listMessages(chat.id);
+  const priorAssistant = resuming?.messageId
+    ? history.find((message) => message.id === resuming.messageId) ?? null
+    : null;
+
+  const requestMessages = buildRequest(input, history, priorAssistant);
+
+  const assistant: MessageRecord =
+    priorAssistant ??
+    appendMessage({
+      chatId: chat.id,
+      role: 'assistant',
+      content: '',
+      tool: input.tool,
+      modelId: input.modelId,
+      status: 'streaming',
+    });
+
+  const run = resuming
+    ? runState.resumeRun(resuming.runId, { modelId: input.modelId, providerId: input.providerId ?? null })
+    : runState.createRun({
+        chatId: chat.id,
+        tool: input.tool,
+        modelId: input.modelId,
+        providerId: input.providerId ?? null,
+        messageId: assistant.id,
+      });
+
+  // Text already produced before the pause. Kept so a resumed reply reads as
+  // one message instead of restarting from nothing.
+  let content = priorAssistant?.content ?? '';
+
+  const startedAt = Date.now();
+  const contentAtStart = content;
+
+  // A single routed attempt. The router already fails over internally within
+  // this one call (emitting `switched`), so there is no outer retry pass — an
+  // outer retry would re-send the whole request to a provider that may have
+  // already produced output.
+  let outcome: Attempt;
+  try {
+    outcome = await runAttempt({
+      input,
+      requestMessages,
+      run,
+      assistantId: assistant.id,
+      chatId: chat.id,
+      sse,
+      onText: (text) => {
+        content += text;
+      },
+      getContent: () => content,
+    });
+  } catch (error) {
+    const app = toAppError(error);
+
+    // Every failure lands here — an upstream error, a client hang-up, or a
+    // failover with nowhere left to go. Persist whatever was produced and leave
+    // the run paused so it can be resumed; history is never rewritten.
+    const reason = mapPauseReason(app.code);
+
+    updateMessage(assistant.id, {
+      content,
+      status: 'paused',
+      errorCode: app.code,
+      errorMessage: app.message,
+    });
+    runState.pauseRun({ runId: run.runId, reason, code: app.code, message: app.message });
+
+    recordUsage({
+      chatId: chat.id,
+      messageId: assistant.id,
+      tool: input.tool,
+      modelId: input.modelId,
+      providerId: run.providerId,
+      providerName: run.providerName,
+      tokensIn: 0,
+      tokensOut: 0,
+      status: content.length > contentAtStart.length ? 'partial' : 'error',
+      durationMs: Date.now() - startedAt,
+    });
+
+    sse.send({
+      event: 'paused',
+      data: {
+        runId: run.runId,
+        reason,
+        code: app.code,
+        message: app.message,
+        retryable: app.retryable,
+        partialContent: content,
+      },
+    });
+
+    log.warn(`run ${run.runId} paused: ${app.code} — ${app.message}`);
+    return { runId: run.runId, messageId: assistant.id, state: 'paused', content };
+  }
+
+  // Success.
+  const tokensIn = outcome.usage?.tokensIn ?? 0;
+  const tokensOut = outcome.usage?.tokensOut ?? 0;
+
+  updateMessage(assistant.id, {
+    content,
+    status: 'complete',
+    errorCode: null,
+    errorMessage: null,
+    tokensIn: outcome.usage ? tokensIn : null,
+    tokensOut: outcome.usage ? tokensOut : null,
+    providerId: outcome.provider.id,
+    providerName: outcome.provider.name,
+    modelId: input.modelId,
+  });
+  runState.attachExecution(run.runId, { providerId: outcome.provider.id, modelId: input.modelId });
+  runState.completeRun(run.runId);
+  touchChat(chat.id, { modelId: input.modelId, providerId: outcome.provider.id });
+
+  recordUsage({
+    chatId: chat.id,
+    messageId: assistant.id,
+    tool: input.tool,
+    modelId: input.modelId,
+    providerId: outcome.provider.id,
+    providerName: outcome.provider.name,
+    tokensIn,
+    tokensOut,
+    status: 'ok',
+    durationMs: Date.now() - startedAt,
+  });
+
+  if (outcome.usage) {
+    sse.send({
+      event: 'usage',
+      data: {
+        tokensIn,
+        tokensOut,
+        costUsd: computeCost(input.modelId, outcome.provider.id, tokensIn, tokensOut),
+      },
+    });
+  }
+  sse.send({
+    event: 'done',
+    data: {
+      runId: run.runId,
+      messageId: assistant.id,
+      ...(outcome.finishReason ? { finishReason: outcome.finishReason } : {}),
+    },
+  });
+  return { runId: run.runId, messageId: assistant.id, state: 'complete', content };
+}
+
+interface AttemptArgs {
+  input: SendMessageInput;
+  requestMessages: ChatMessage[];
+  run: { runId: string };
+  assistantId: string;
+  chatId: string;
+  sse: SseStream;
+  onText(text: string): void;
+  getContent(): string;
+}
+
+/**
+ * One pass through the router.
+ *
+ * A `switched` event from the router means a *different* provider is taking
+ * over. When that happens before any output, this is exactly the situation
+ * rule 3 covers: the pause is transient and immediately followed by `resumed`,
+ * so the UI can show the switch without the user having to act.
+ */
+async function runAttempt(args: AttemptArgs): Promise<Attempt> {
+  const { input, sse, run } = args;
+
+  let provider: ProviderRecord | null = null;
+  let usage: TokenUsage | null = null;
+  let finishReason: string | undefined;
+  let emitted = false;
+  let lastFlush = 0;
+  let announced = false;
+  // Set when a `switched` event pauses the run, and cleared by the `provider`
+  // event for the replacement. Only a genuine pause may be `resumed`: the
+  // router also re-attempts the *same* provider once to establish the
+  // 2-failure threshold, and reporting that as a resume would tell the
+  // frontend the pause was lifted when there was never a pause to lift.
+  let pendingResume = false;
+
+  const events = router.stream(
+    {
+      modelId: input.modelId,
+      messages: args.requestMessages,
+      ...(input.temperature !== undefined ? { temperature: input.temperature } : {}),
+      ...(input.maxTokens !== undefined ? { maxTokens: input.maxTokens } : {}),
+      signal: sse.signal,
+    },
+    {
+      ...(input.providerId ? { providerId: input.providerId } : {}),
+    },
+  );
+
+  for await (const event of events) {
+    switch (event.type) {
+      case 'provider': {
+        provider = event.provider;
+        runState.attachExecution(run.runId, { providerId: provider.id, modelId: input.modelId });
+        updateMessage(args.assistantId, {
+          providerId: provider.id,
+          providerName: provider.name,
+          modelId: input.modelId,
+        });
+        if (!announced) {
+          announced = true;
+          sse.send({
+            event: 'open',
+            data: {
+              runId: run.runId,
+              chatId: args.chatId,
+              messageId: args.assistantId,
+              providerId: provider.id,
+              providerName: provider.name,
+              modelId: input.modelId,
+            },
+          });
+        } else if (pendingResume) {
+          // The far side of a failover: this is a different provider, and the
+          // transient pause emitted alongside `switched` is now lifted.
+          pendingResume = false;
+          sse.send({
+            event: 'resumed',
+            data: {
+              runId: run.runId,
+              providerId: provider.id,
+              providerName: provider.name,
+              modelId: input.modelId,
+              attempt: runState.requireRun(run.runId).attempt,
+            },
+          });
+        }
+        break;
+      }
+
+      case 'switched': {
+        // Surface the interruption honestly — the old provider did fail — but
+        // as a transient pause, since the `resumed` event follows immediately.
+        runState.pauseRun({
+          runId: run.runId,
+          reason: event.reason === 'capability_mismatch' ? 'capability_mismatch' : 'provider_failure',
+          code: event.reason,
+          message: event.message,
+        });
+        sse.send({
+          event: 'paused',
+          data: {
+            runId: run.runId,
+            reason: event.reason === 'capability_mismatch' ? 'capability_mismatch' : 'provider_failure',
+            code: event.reason,
+            message: event.message,
+            retryable: true,
+            partialContent: args.getContent(),
+          },
+        });
+        if (!autoResumeAfterFailover()) {
+          throw new AppError('provider_error', event.message, { retryable: true });
+        }
+        runState.resumeRun(run.runId, { providerId: event.to.id, modelId: input.modelId });
+        pendingResume = true;
+        break;
+      }
+
+      case 'token': {
+        emitted = true;
+        args.onText(event.text);
+        sse.send({ event: 'token', data: { text: event.text } });
+        // Flushing on a timer rather than per token keeps SQLite out of the
+        // hot path while still bounding how much text a hard kill can lose.
+        const now = Date.now();
+        if (now - lastFlush >= PROGRESS_FLUSH_MS) {
+          lastFlush = now;
+          saveStreamProgress(args.assistantId, args.getContent());
+        }
+        break;
+      }
+
+      case 'usage': {
+        usage = event.usage;
+        break;
+      }
+
+      case 'done': {
+        finishReason = event.finishReason;
+        break;
+      }
+    }
+  }
+
+  if (!provider) {
+    throw new AppError('internal_error', 'The router finished without naming a provider.');
+  }
+  return { provider, usage, finishReason, emitted };
+}
+
+/**
+ * Assembles the provider request.
+ *
+ * When resuming, the half-finished assistant turn is dropped from the request
+ * and replaced with an explicit continuation instruction. Sending a trailing
+ * assistant message makes some gateways restart the turn and others reject the
+ * request outright; an instruction works everywhere.
+ */
+function buildRequest(
+  input: SendMessageInput,
+  history: MessageRecord[],
+  priorAssistant: MessageRecord | null,
+): ChatMessage[] {
+  const usable = priorAssistant ? history.filter((message) => message.id !== priorAssistant.id) : history;
+  const messages: ChatMessage[] = [];
+
+  if (input.systemPrompt) {
+    messages.push({ role: 'system', content: input.systemPrompt });
+  }
+  messages.push(...toProviderMessages(usable));
+
+  if (priorAssistant && priorAssistant.content.trim().length > 0) {
+    messages.push({
+      role: 'user',
+      content:
+        'Your previous reply was cut off by a provider failure. Here is what was received:\n\n' +
+        `${priorAssistant.content}\n\n` +
+        'Continue from exactly where it stops. Do not repeat what is above and do not restate it.',
+    });
+  }
+
+  if (input.attachments && input.attachments.length > 0) {
+    messages.push({
+      role: 'user',
+      content: `Attached files: ${input.attachments.map((file) => file.filename).join(', ')}`,
+    });
+  }
+
+  return messages;
+}
+
+/**
+ * Manual model/provider switch on a paused run: reconfigure, then resume.
+ *
+ * `sendMessage` with `resumeRunId` performs the resume, and the pause is only
+ * lifted once the new provider actually starts producing output — a failed
+ * switch therefore leaves the run paused, with no silent fallback.
+ */
+export async function switchAndResume(
+  input: { runId: string; modelId?: string; providerId?: string; tool?: ToolName },
+  sse: SseStream,
+): Promise<SendResult> {
+  const run = runState.requireRun(input.runId);
+  if (run.state !== 'paused') {
+    throw new AppError('run_not_paused', `Run "${input.runId}" is ${run.state}, not paused.`, {
+      details: { state: run.state },
+    });
+  }
+  const modelId = input.modelId ?? run.modelId;
+  if (!modelId) {
+    throw new AppError('bad_request', 'A model id is required to resume this run.');
+  }
+  return await sendMessage(
+    {
+      chatId: run.chatId,
+      tool: input.tool ?? run.tool,
+      modelId,
+      ...(input.providerId ? { providerId: input.providerId } : {}),
+      resumeRunId: run.runId,
+    },
+    sse,
+  );
+}

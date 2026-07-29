@@ -1,0 +1,29 @@
+node_modules/
+logs/
+*.log
+
+# Local configuration — may contain the bind address / paths for this machine
+.env
+
+# Never commit runtime data. The data root lives outside the repo by default
+# (~/AIStudio), but guard against it being pointed here.
+data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+
+# Encryption key material. If this is ever committed, every stored provider
+# key must be considered compromised and rotated.
+*.key
+secret.key
+
+attachments/
+projects/
+skills/
+backups/
+tmp/
+mcp_config.json
+
+.DS_Store
+Thumbs.db
