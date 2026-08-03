@@ -45,24 +45,24 @@ function bool(name: string, fallback: boolean): boolean {
  * 100.x.y.z interface address instead — that is private to their own mesh.
  */
 function resolveBind(): { host: string; isLoopback: boolean } {
-  const host = str('AISTUDIO_BIND', '127.0.0.1');
+  const host = str('HYPERION_BIND', '127.0.0.1');
   const isLoopback = host === '127.0.0.1' || host === 'localhost' || host === '::1';
   const isWildcard = host === '0.0.0.0' || host === '::' || host === '*';
 
-  if (isWildcard && !bool('AISTUDIO_ALLOW_ANY_BIND', false)) {
+  if (isWildcard && !bool('HYPERION_ALLOW_ANY_BIND', false)) {
     throw new Error(
       [
         `Refusing to bind to "${host}".`,
         '',
-        'AIStudio has no authentication by design, so binding to all interfaces',
+        'Hyperion has no authentication by design, so binding to all interfaces',
         'would let anyone on your network read every stored provider API key.',
         '',
-        'For remote access, install Tailscale and set AISTUDIO_BIND to this',
+        'For remote access, install Tailscale and set HYPERION_BIND to this',
         "machine's Tailscale address (e.g. 100.x.y.z) — that is reachable only",
         'from your own private mesh.',
         '',
         'If you genuinely intend to listen on all interfaces, set',
-        'AISTUDIO_ALLOW_ANY_BIND=1.',
+        'HYPERION_ALLOW_ANY_BIND=1.',
       ].join('\n'),
     );
   }
@@ -72,12 +72,12 @@ function resolveBind(): { host: string; isLoopback: boolean } {
 
 const bind = resolveBind();
 
-const home = path.resolve(str('AISTUDIO_HOME', path.join(os.homedir(), 'AIStudio')));
+const home = path.resolve(str('HYPERION_HOME', path.join(os.homedir(), 'Hyperion')));
 
 /** Every filesystem location the app is allowed to touch. */
 const paths = {
   home,
-  db: path.join(home, 'aistudio.db'),
+  db: path.join(home, 'hyperion.db'),
   secretKey: path.join(home, 'secret.key'),
   mcpConfig: path.join(home, 'mcp_config.json'),
   /** Scoped roots — see security/fsScope.ts. Nothing outside these is writable. */
@@ -108,10 +108,10 @@ const paths = {
 export const env = {
   nodeEnv: str('NODE_ENV', 'development'),
   isTest: str('NODE_ENV', 'development') === 'test',
-  logLevel: str('AISTUDIO_LOG_LEVEL', 'info'),
+  logLevel: str('HYPERION_LOG_LEVEL', 'info'),
 
   host: bind.host,
-  port: int('AISTUDIO_PORT', 4317),
+  port: int('HYPERION_PORT', 4317),
   bindIsLoopback: bind.isLoopback,
 
   paths,
@@ -123,17 +123,17 @@ export const env = {
    * inside the window is marked unhealthy and taken out of rotation.
    * Distinct from one-shot local-provider detection (3 attempts).
    */
-  healthFailureThreshold: int('AISTUDIO_HEALTH_FAILURE_THRESHOLD', 2),
-  healthWindowMs: int('AISTUDIO_HEALTH_WINDOW_MS', 20_000),
+  healthFailureThreshold: int('HYPERION_HEALTH_FAILURE_THRESHOLD', 2),
+  healthWindowMs: int('HYPERION_HEALTH_WINDOW_MS', 20_000),
 
   /** One-shot local runner detection retries (flaky responses only). */
-  localDetectAttempts: int('AISTUDIO_LOCAL_DETECT_ATTEMPTS', 3),
-  localDetectTimeoutMs: int('AISTUDIO_LOCAL_DETECT_TIMEOUT_MS', 2_500),
+  localDetectAttempts: int('HYPERION_LOCAL_DETECT_ATTEMPTS', 3),
+  localDetectTimeoutMs: int('HYPERION_LOCAL_DETECT_TIMEOUT_MS', 2_500),
 
-  modelCacheTtlMs: int('AISTUDIO_MODEL_CACHE_TTL_MS', 300_000),
-  requestTimeoutMs: int('AISTUDIO_REQUEST_TIMEOUT_MS', 120_000),
+  modelCacheTtlMs: int('HYPERION_MODEL_CACHE_TTL_MS', 300_000),
+  requestTimeoutMs: int('HYPERION_REQUEST_TIMEOUT_MS', 120_000),
 
-  assetTtlDays: int('AISTUDIO_ASSET_TTL_DAYS', 90),
+  assetTtlDays: int('HYPERION_ASSET_TTL_DAYS', 90),
   /**
    * Idle chats are swept after four months. Deliberately generous: a chat you
    * have not opened since last quarter is still often the one you want back,
@@ -148,11 +148,11 @@ export const env = {
    * cannot be recovered. The threshold is tuned toward the survivable
    * mistake. docs/SPEC.md records the same decision.
    */
-  chatTtlDays: int('AISTUDIO_CHAT_TTL_DAYS', 120),
+  chatTtlDays: int('HYPERION_CHAT_TTL_DAYS', 120),
 
-  cleanupDisabled: bool('AISTUDIO_CLEANUP_DISABLED', false),
+  cleanupDisabled: bool('HYPERION_CLEANUP_DISABLED', false),
 
-  maxUploadBytes: int('AISTUDIO_MAX_UPLOAD_BYTES', 100 * 1024 * 1024),
+  maxUploadBytes: int('HYPERION_MAX_UPLOAD_BYTES', 100 * 1024 * 1024),
 
   /**
    * Longest edge, in pixels, a stored image may keep. Anything larger is
@@ -165,7 +165,7 @@ export const env = {
    *
    * A value <= 0 disables image processing entirely.
    */
-  imageMaxEdge: int('AISTUDIO_IMAGE_MAX_EDGE', 1568),
+  imageMaxEdge: int('HYPERION_IMAGE_MAX_EDGE', 1568),
 
   // --- skill dependency provisioning ---------------------------------------
   // Installing what a skill declares is what makes it runnable rather than
@@ -173,15 +173,15 @@ export const env = {
   // touches the network and the filesystem, and both can hang.
 
   /** Set to true to skip provisioning entirely (offline, or CI). */
-  skillDepsDisabled: bool('AISTUDIO_SKILL_DEPS_DISABLED', false),
+  skillDepsDisabled: bool('HYPERION_SKILL_DEPS_DISABLED', false),
   /** Cap on one install command. Long enough for a real wheel build, short
    *  enough that a wedged installer fails the skill instead of the request. */
-  skillDepsTimeoutMs: int('AISTUDIO_SKILL_DEPS_TIMEOUT_MS', 10 * 60 * 1000),
+  skillDepsTimeoutMs: int('HYPERION_SKILL_DEPS_TIMEOUT_MS', 10 * 60 * 1000),
   /** Interpreter used to build a skill's venv. Overridable because "python" is
    *  not always on PATH and is not always Python 3. */
-  skillDepsPython: str('AISTUDIO_SKILL_DEPS_PYTHON', ''),
+  skillDepsPython: str('HYPERION_SKILL_DEPS_PYTHON', ''),
   /** npm executable, same reasoning. */
-  skillDepsNpm: str('AISTUDIO_SKILL_DEPS_NPM', ''),
+  skillDepsNpm: str('HYPERION_SKILL_DEPS_NPM', ''),
 
   // --- Code task parallelism -----------------------------------------------
 
@@ -197,12 +197,12 @@ export const env = {
    * This lane is separate from the app-wide single-job lock, which still
    * governs Chat, Cowork and Design.
    */
-  codeLaneLimit: int('AISTUDIO_CODE_LANE_LIMIT', 2),
+  codeLaneLimit: int('HYPERION_CODE_LANE_LIMIT', 2),
   /**
    * Set true to keep worktrees on disk after a task ends. Off by default; the
    * escape hatch exists for debugging a task that produced a wrong diff.
    */
-  codeKeepWorktrees: bool('AISTUDIO_CODE_KEEP_WORKTREES', false),
+  codeKeepWorktrees: bool('HYPERION_CODE_KEEP_WORKTREES', false),
 
 
 
@@ -213,12 +213,12 @@ export const env = {
    * These are deliberately separate from the chat provider: memory extraction
    * is a background chore and should not burn the good model's quota.
    */
-  memoryProvider: str('AISTUDIO_MEMORY_PROVIDER', 'ollama'),
-  memoryLlmModel: str('AISTUDIO_MEMORY_LLM_MODEL', 'llama3.1:8b'),
-  memoryEmbedModel: str('AISTUDIO_MEMORY_EMBED_MODEL', 'nomic-embed-text'),
-  memoryEmbedDims: int('AISTUDIO_MEMORY_EMBED_DIMS', 768),
+  memoryProvider: str('HYPERION_MEMORY_PROVIDER', 'ollama'),
+  memoryLlmModel: str('HYPERION_MEMORY_LLM_MODEL', 'llama3.1:8b'),
+  memoryEmbedModel: str('HYPERION_MEMORY_EMBED_MODEL', 'nomic-embed-text'),
+  memoryEmbedDims: int('HYPERION_MEMORY_EMBED_DIMS', 768),
   /** How many retrieved facts may be injected into a turn. A set, not a dump. */
-  memoryRetrieveLimit: int('AISTUDIO_MEMORY_RETRIEVE_LIMIT', 5),
+  memoryRetrieveLimit: int('HYPERION_MEMORY_RETRIEVE_LIMIT', 5),
 } as const;
 
 /** Create the data directories. Called once during bootstrap. */

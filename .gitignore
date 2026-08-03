@@ -6,7 +6,7 @@ node_modules/
 .env
 
 # Never commit runtime data. The data root lives outside the repo by default
-# (~/AIStudio), but guard against it being pointed here.
+# (~/Hyperion), but guard against it being pointed here.
 #
 # The runtime-data patterns below are anchored with a leading slash on purpose.
 # An unanchored pattern like `skills/` matches at every depth, which silently

@@ -2,9 +2,9 @@
  * Test harness.
  *
  * Two things must happen before any `src/` module is imported:
- *   1. AISTUDIO_HOME must point at a throwaway directory, because config/env.ts
+ *   1. HYPERION_HOME must point at a throwaway directory, because config/env.ts
  *      resolves every path once at import time. A test that imports first and
- *      configures second would read and write the user's real ~/AIStudio.
+ *      configures second would read and write the user's real ~/Hyperion.
  *   2. The bind guard must be satisfied.
  *
  * So this module sets the environment as a side effect of being imported, and
@@ -17,20 +17,20 @@ import path from 'node:path';
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aistudio-test-'));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hyperion-test-'));
 
 process.env.NODE_ENV = 'test';
-process.env.AISTUDIO_HOME = root;
-process.env.AISTUDIO_LOG_LEVEL = 'error';
-process.env.AISTUDIO_BIND = '127.0.0.1';
-process.env.AISTUDIO_PORT = '0';
+process.env.HYPERION_HOME = root;
+process.env.HYPERION_LOG_LEVEL = 'error';
+process.env.HYPERION_BIND = '127.0.0.1';
+process.env.HYPERION_PORT = '0';
 // Keep the health window long enough that timing jitter on a loaded CI box
 // cannot silently invalidate a "2 failures in one window" assertion.
-process.env.AISTUDIO_HEALTH_WINDOW_MS = '20000';
-process.env.AISTUDIO_HEALTH_FAILURE_THRESHOLD = '2';
-process.env.AISTUDIO_LOCAL_DETECT_TIMEOUT_MS = '400';
-process.env.AISTUDIO_REQUEST_TIMEOUT_MS = '5000';
-process.env.AISTUDIO_CLEANUP_DISABLED = '1';
+process.env.HYPERION_HEALTH_WINDOW_MS = '20000';
+process.env.HYPERION_HEALTH_FAILURE_THRESHOLD = '2';
+process.env.HYPERION_LOCAL_DETECT_TIMEOUT_MS = '400';
+process.env.HYPERION_REQUEST_TIMEOUT_MS = '5000';
+process.env.HYPERION_CLEANUP_DISABLED = '1';
 
 export const testHome = root;
 

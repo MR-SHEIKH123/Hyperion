@@ -7,7 +7,7 @@
  *     thoroughly. Every manifest convention, and every form we deliberately
  *     refuse, gets a case.
  *   - **Provisioning** would otherwise reach the network and build a venv, which
- *     is not something a test suite should do. `AISTUDIO_SKILL_DEPS_DISABLED` is
+ *     is not something a test suite should do. `HYPERION_SKILL_DEPS_DISABLED` is
  *     set in the harness, so what is asserted here is the *state machine* around
  *     the install — the statuses, the runnable rule, the staleness check, and the
  *     shape the API exposes — rather than pip's behaviour.
@@ -25,7 +25,7 @@ import { cleanupHome, freshDb, testHome } from './helpers.ts';
 
 // Provisioning must never shell out during tests. Set before any src import, so
 // config/env.ts reads it when it resolves everything at import time.
-process.env.AISTUDIO_SKILL_DEPS_DISABLED = '1';
+process.env.HYPERION_SKILL_DEPS_DISABLED = '1';
 
 type DepsModule = typeof import('../src/services/skills/deps.ts');
 type RegistryModule = typeof import('../src/services/skills/registry.ts');
@@ -279,7 +279,7 @@ describe('dependency status', () => {
     assert.equal(view.status, 'failed');
     assert.equal(view.runnable, false);
     assert.ok(
-      view.error && view.error.includes('AISTUDIO_SKILL_DEPS_DISABLED'),
+      view.error && view.error.includes('HYPERION_SKILL_DEPS_DISABLED'),
       'the error must name the actual cause so the user can act on it',
     );
   });

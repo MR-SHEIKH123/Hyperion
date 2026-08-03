@@ -1,7 +1,7 @@
 /**
  * First-run MCP server seeding.
  *
- * AIStudio ships with a few MCP servers that are useful out of the box — a
+ * Hyperion ships with a few MCP servers that are useful out of the box — a
  * filesystem server scoped to the projects root, `wigolo`, the local-first web
  * research server Cowork uses, and `graphify`, which turns a repository into a
  * traversable knowledge graph. None of them existed in the database before this

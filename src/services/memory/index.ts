@@ -28,7 +28,7 @@
  *     dependencies) at Ollama's `/v1` shim with a dummy key. Same trick for the
  *     embedder. Nothing leaves the machine.
  *
- * Storage lives under `~/AIStudio/memory/` so it is covered by the same backup
+ * Storage lives under `~/Hyperion/memory/` so it is covered by the same backup
  * and cleanup story as the rest of the app.
  */
 import path from 'node:path';
@@ -150,7 +150,7 @@ function memoryConfig(): Record<string, unknown> {
     vectorStore: {
       provider: 'memory',
       config: {
-        collectionName: 'aistudio',
+        collectionName: 'hyperion',
         dimension: env.memoryEmbedDims,
         dbPath: path.join(env.paths.memory, 'vectors.db'),
       },
@@ -230,7 +230,7 @@ function toEntry(item: MemoryItem): MemoryEntry {
  * Retrieve the facts worth knowing for this turn and format them as a system
  * block, or `null` when there is nothing useful to add.
  *
- * Deliberately a *set*, not a dump: capped at `AISTUDIO_MEMORY_RETRIEVE_LIMIT`
+ * Deliberately a *set*, not a dump: capped at `HYPERION_MEMORY_RETRIEVE_LIMIT`
  * so memory can never crowd out the actual conversation in a small local
  * model's context window.
  */

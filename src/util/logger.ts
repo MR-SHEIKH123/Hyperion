@@ -62,4 +62,4 @@ export function createLogger(scope: string): Logger {
   };
 }
 
-export const logger = createLogger('aistudio');
+export const logger = createLogger('hyperion');

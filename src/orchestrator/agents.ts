@@ -26,10 +26,10 @@
  *
  * `cwd` is always already validated before you receive it, and the boundary it
  * was validated against depends on the task. A parallel Code task works in its
- * own git worktree under `~/AIStudio/worktrees/<task-id>/`, and is contained to
+ * own git worktree under `~/Hyperion/worktrees/<task-id>/`, and is contained to
  * *that* directory rather than to the projects root — otherwise two concurrent
  * tasks could reach into each other's checkout. Everything else is contained to
- * `~/AIStudio/projects/`. Pass `options.taskId` when you have one so the tighter
+ * `~/Hyperion/projects/`. Pass `options.taskId` when you have one so the tighter
  * boundary applies; without it, containment falls back to the projects root plus
  * any registered worktree. If you ever accept a path from somewhere other than
  * this backend, validate it yourself as well.

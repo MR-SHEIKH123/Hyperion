@@ -36,7 +36,7 @@ export function createApp(): Express {
   app.get('/api/health', (_req, res) => {
     res.json({
       ok: true,
-      name: 'aistudio',
+      name: 'hyperion',
       uptimeSec: Math.round(process.uptime()),
       loopback: env.bindIsLoopback,
     });

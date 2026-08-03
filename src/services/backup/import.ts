@@ -60,6 +60,13 @@ import {
 
 const log = createLogger('restore');
 
+/**
+ * What the DB snapshot was called before the Hyperion rename. Archives written
+ * by older builds carry this name; refusing them would make every pre-rename
+ * backup unrestorable, which is precisely the situation backups exist for.
+ */
+const LEGACY_DB_ENTRY = 'aistudio.db';
+
 export interface ArchiveInspection {
   valid: boolean;
   /** Present when the archive carried a readable manifest. */
@@ -94,10 +101,15 @@ function countPrefix(zip: AdmZip, prefix: string): number {
   return zip.getEntries().filter((e) => !e.isDirectory && e.entryName.startsWith(prefix)).length;
 }
 
+/** The DB snapshot, under either the current or the pre-rename entry name. */
+function databaseEntry(zip: AdmZip) {
+  return zip.getEntry(DB_ENTRY) ?? zip.getEntry(LEGACY_DB_ENTRY) ?? null;
+}
+
 /**
  * Validate an archive without modifying anything. The DB snapshot is written to
  * a temp file and opened read-only-ish so we can report real counts — a zip can
- * contain a file called aistudio.db that isn't a database at all.
+ * contain a file called hyperion.db that isn't a database at all.
  */
 export function inspectArchive(source: string | Buffer): ArchiveInspection {
   const zip = readZip(source);
@@ -108,14 +120,14 @@ export function inspectArchive(source: string | Buffer): ArchiveInspection {
   const manifestText = entryText(zip, MANIFEST_ENTRY);
   if (!manifestText) {
     warnings.push(
-      'No manifest.json in the archive. It may not have been produced by AIStudio; the database will still be checked.',
+      'No manifest.json in the archive. It may not have been produced by Hyperion; the database will still be checked.',
     );
   } else {
     try {
       manifest = JSON.parse(manifestText) as BackupManifest;
       if (typeof manifest.format === 'number' && manifest.format > BACKUP_FORMAT_VERSION) {
         problems.push(
-          `The archive uses backup format ${manifest.format}, but this version of AIStudio only understands ${BACKUP_FORMAT_VERSION}. Update the app before restoring.`,
+          `The archive uses backup format ${manifest.format}, but this version of Hyperion only understands ${BACKUP_FORMAT_VERSION}. Update the app before restoring.`,
         );
       }
     } catch {
@@ -123,7 +135,7 @@ export function inspectArchive(source: string | Buffer): ArchiveInspection {
     }
   }
 
-  const dbEntry = zip.getEntry(DB_ENTRY);
+  const dbEntry = databaseEntry(zip);
   const hasDatabase = Boolean(dbEntry);
   if (!hasDatabase) {
     problems.push(`The archive has no ${DB_ENTRY}, so there is nothing to restore.`);
@@ -146,7 +158,7 @@ export function inspectArchive(source: string | Buffer): ArchiveInspection {
 
         if (!tables.includes('chats') || !tables.includes('providers')) {
           problems.push(
-            'The archived file is a database, but not an AIStudio one (expected tables are missing).',
+            'The archived file is a database, but not a Hyperion one (expected tables are missing).',
           );
         }
         for (const table of tables) {
@@ -294,7 +306,7 @@ export function restoreBackup(
   }
 
   // --- swap ---------------------------------------------------------------
-  const dbEntry = zip.getEntry(DB_ENTRY);
+  const dbEntry = databaseEntry(zip);
   if (!dbEntry) throw new AppError('bad_request', `The archive has no ${DB_ENTRY}.`);
 
   // Close first: on Windows an open handle makes the rename fail outright,

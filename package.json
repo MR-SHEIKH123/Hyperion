@@ -1,9 +1,9 @@
 {
-  "name": "aistudio-backend",
+  "name": "hyperion-backend",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "AIStudio backend core — provider registry, failover, orchestration, storage and security spine",
+  "description": "Hyperion backend core — provider registry, failover, orchestration, storage and security spine",
   "engines": {
     "node": ">=22.6.0"
   },

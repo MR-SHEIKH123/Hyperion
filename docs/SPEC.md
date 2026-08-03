@@ -10,7 +10,7 @@
 
 ## Project Overview (read this even though it's not all your scope)
 
-We're building **AIStudio** — a personal, web-based AI workbench, similar in spirit to Cline but running in a browser instead of VS Code. It's for one user (the owner), runs entirely on their own desktop, has no usage caps, and can talk to any LLM provider through a swappable gateway system rather than being locked to one vendor.
+We're building **Hyperion** — a personal, web-based AI workbench, similar in spirit to Cline but running in a browser instead of VS Code. It's for one user (the owner), runs entirely on their own desktop, has no usage caps, and can talk to any LLM provider through a swappable gateway system rather than being locked to one vendor.
 
 The app has a sidebar with these tools: **Chat, Code, Cowork, Design, Playground, Plugins, Skills, Settings**. Each tool has its own independent model selection (Chat could run GPT while Code runs Claude, simultaneously configured though only one runs a request at a time). The whole app is dark-mode-only, styled in a clean, card-based "serious engineering tool" aesthetic inspired by arize.com — but the actual visual build is not your job (see Prompt 2).
 
@@ -54,7 +54,7 @@ Build a provider registry, not a single hardcoded gateway integration:
 Design a schema covering at minimum:
 - `chats`, `messages` (with tool + model + provider used per message, for the cost dashboard)
 - `providers` (registry: type, config, enabled/active flag, health status)
-- `attachments` (metadata + **file-path reference**, not the file blob itself — actual files live on disk under something like `~/AIStudio/attachments/`, not inside SQLite)
+- `attachments` (metadata + **file-path reference**, not the file blob itself — actual files live on disk under something like `~/Hyperion/attachments/`, not inside SQLite)
 - `mcp_servers` (mirrors `mcp_config.json` — name, type [local/remote], command-or-url, optional token, last test-connection result)
 - `skills` (name, description, source path, optional token/key, parsed from the skill's own `SKILL.md`)
 - `settings` (theme — fixed to dark, no toggle needed — cost tracking config, etc.)
@@ -66,7 +66,7 @@ Design a schema covering at minimum:
 - **Encrypt API keys at rest.** Use Node's `crypto` module; the encryption key itself should live outside the database (e.g. a separate file with restricted OS permissions), not alongside the encrypted data.
 - **Bind the server to `127.0.0.1` only** — never `0.0.0.0`. This is the single most important setting; without it, anyone on the same network could reach the app and its stored keys.
 - **Never send provider API keys to the frontend**, even transiently. The browser talks only to your backend; your backend attaches real keys server-side before calling any provider.
-- **Scope filesystem access for MCP/Code** to a specific root directory (e.g. `~/AIStudio/projects/`), not the whole filesystem — this bounds the blast radius of anything the Code tool or filesystem MCP server does.
+- **Scope filesystem access for MCP/Code** to a specific root directory (e.g. `~/Hyperion/projects/`), not the whole filesystem — this bounds the blast radius of anything the Code tool or filesystem MCP server does.
 
 ### 5. MCP config-writer backend logic
 
@@ -93,7 +93,7 @@ Design a schema covering at minimum:
 
 > **Implementation note — chat retention is 120 days, not 30.**
 > The bullet above is the original requirement and is left as written. The
-> shipped default is `AISTUDIO_CHAT_TTL_DAYS=120`, an accepted deviation
+> shipped default is `HYPERION_CHAT_TTL_DAYS=120`, an accepted deviation
 > decided by the owner, not an oversight — **do not "fix" it back to 30.**
 >
 > The reasoning is the asymmetry of the mistake. This sweep runs unattended
@@ -186,7 +186,7 @@ and response shapes live in `docs/API.md`.
 ### 1. Memory plugin (mem0, self-hosted)
 
 The Memory toggle is now backed by [`mem0ai/oss`](https://www.npmjs.com/package/mem0ai),
-running fully local. Vector store and history DB live under `~/AIStudio/memory/`
+running fully local. Vector store and history DB live under `~/Hyperion/memory/`
 (`vectors.db`, `history.db`).
 
 - **Toggle**: settings key `plugins.memory.enabled`, boolean, **default `false`**.
@@ -196,7 +196,7 @@ running fully local. Vector store and history DB live under `~/AIStudio/memory/`
 - **Per-turn integration, not a separate flow.** `src/orchestrator/chat.ts` calls
   `recallForTurn(prompt, tool)` before building the request and injects the result
   as one extra `system` message after the main system prompt — a short bounded
-  list of facts (`AISTUDIO_MEMORY_RETRIEVE_LIMIT`, default 5), never a dump. After
+  list of facts (`HYPERION_MEMORY_RETRIEVE_LIMIT`, default 5), never a dump. After
   a successful completion it calls `rememberTurn(...)` fire-and-forget.
 - **When the toggle is off, nothing happens at all** — no retrieval, no
   background writes. Same when the backend failed to load.
@@ -205,9 +205,9 @@ running fully local. Vector store and history DB live under `~/AIStudio/memory/`
   no-op and is reported through `GET /api/memory/status` (`available`, `error`).
 - **Local models only.** mem0's own `ollama` provider needs an uninstalled peer
   package, so the service talks to Ollama through mem0's OpenAI-compatible
-  provider (`baseURL: ${AISTUDIO_OLLAMA_URL}/v1`, dummy API key). Knobs:
-  `AISTUDIO_MEMORY_LLM_MODEL` (`llama3.1:8b`), `AISTUDIO_MEMORY_EMBED_MODEL`
-  (`nomic-embed-text`), `AISTUDIO_MEMORY_EMBED_DIMS` (`768`).
+  provider (`baseURL: ${HYPERION_OLLAMA_URL}/v1`, dummy API key). Knobs:
+  `HYPERION_MEMORY_LLM_MODEL` (`llama3.1:8b`), `HYPERION_MEMORY_EMBED_MODEL`
+  (`nomic-embed-text`), `HYPERION_MEMORY_EMBED_DIMS` (`768`).
 - **API for Settings** (Sol): `GET /api/memory` (`?query=` for semantic search,
   `?limit=`, default 50 / max 200), `GET /api/memory/status`,
   `POST /api/memory/enable|disable`, `DELETE /api/memory/:id`, `DELETE /api/memory`.

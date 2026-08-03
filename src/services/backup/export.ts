@@ -4,7 +4,7 @@
  * Packages everything needed to reconstruct this install into one zip:
  *
  *   manifest.json      — what's inside, and which schema/app version wrote it
- *   aistudio.db        — a consistent snapshot of the SQLite database
+ *   hyperion.db        — a consistent snapshot of the SQLite database
  *   mcp_config.json    — the MCP server config (Cline format)
  *   skills/**          — the skill files themselves, since the DB only stores
  *                        their paths and losing the files leaves dead rows
@@ -47,7 +47,7 @@ const log = createLogger('backup');
 /** Bumped only when the archive layout changes in a way a reader must know about. */
 export const BACKUP_FORMAT_VERSION = 1;
 
-export const DB_ENTRY = 'aistudio.db';
+export const DB_ENTRY = 'hyperion.db';
 export const MANIFEST_ENTRY = 'manifest.json';
 export const MCP_ENTRY = 'mcp_config.json';
 export const SKILLS_PREFIX = 'skills/';
@@ -186,7 +186,7 @@ export function exportBackup(options: ExportOptions = {}): ExportResult {
   const includeKeys = options.includeKeys ?? false;
   const includeAttachments = options.includeAttachments ?? false;
 
-  const filename = `aistudio-backup-${timestamp(now)}.zip`;
+  const filename = `hyperion-backup-${timestamp(now)}.zip`;
   const outFile = options.outFile ?? resolveInScope('backups', filename);
   fs.mkdirSync(path.dirname(outFile), { recursive: true });
 
@@ -215,7 +215,7 @@ export function exportBackup(options: ExportOptions = {}): ExportResult {
 
     const manifest: BackupManifest = {
       format: BACKUP_FORMAT_VERSION,
-      app: 'AIStudio',
+      app: 'Hyperion',
       createdAt: now,
       createdAtIso: new Date(now).toISOString(),
       schemaMigrations: appliedMigrations(),

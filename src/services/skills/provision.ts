@@ -4,8 +4,8 @@
  * Detection (`deps.ts`) says what a skill declares. This installs it, once, into
  * an environment that belongs to that skill alone:
  *
- *   ~/AIStudio/skills/<skill-id>/.venv/         Python
- *   ~/AIStudio/skills/<skill-id>/node_modules/  Node
+ *   ~/Hyperion/skills/<skill-id>/.venv/         Python
+ *   ~/Hyperion/skills/<skill-id>/node_modules/  Node
  *
  * **Isolation is the whole point.** Installing into the app's own environment
  * would mean one skill pinning `requests==2.20` could break another skill, or the
@@ -111,7 +111,7 @@ async function run(skill: SkillRecord, options: ProvisionOptions): Promise<Skill
       installed: [],
       failed: [],
       error:
-        'Automatic dependency installation is disabled (AISTUDIO_SKILL_DEPS_DISABLED). ' +
+        'Automatic dependency installation is disabled (HYPERION_SKILL_DEPS_DISABLED). ' +
         'Install this skill\'s dependencies yourself, or unset that variable and re-provision.',
       pythonPath: null,
       nodeModulesPath: null,
@@ -235,7 +235,7 @@ async function provisionPython(
       })),
       error:
         'This skill needs Python, but no Python 3 interpreter was found. Install Python 3 ' +
-        'or set AISTUDIO_SKILL_DEPS_PYTHON to its full path, then re-provision the skill.',
+        'or set HYPERION_SKILL_DEPS_PYTHON to its full path, then re-provision the skill.',
       interpreter: null,
     };
   }
@@ -390,7 +390,7 @@ async function provisionNode(
       })),
       error:
         'This skill needs npm, which was not found. Install Node.js or set ' +
-        'AISTUDIO_SKILL_DEPS_NPM to the full path of npm, then re-provision the skill.',
+        'HYPERION_SKILL_DEPS_NPM to the full path of npm, then re-provision the skill.',
       nodeModules: null,
     };
   }

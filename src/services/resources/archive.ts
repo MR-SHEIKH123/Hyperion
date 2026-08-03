@@ -52,7 +52,7 @@ export async function fetchArchive(rawUrl: string): Promise<FetchedArchive> {
     response = await fetch(target.href, {
       redirect: 'follow',
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-      headers: { 'User-Agent': 'AIStudio-resource-detect' },
+      headers: { 'User-Agent': 'Hyperion-resource-detect' },
     });
   } catch (error) {
     throw new AppError('bad_request', `Could not reach ${target.href}.`, { cause: error });

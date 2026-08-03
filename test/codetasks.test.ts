@@ -64,7 +64,7 @@ function git(args: string[], cwd: string): string {
     'git',
     [
       '-c',
-      'user.name=AIStudio Test',
+      'user.name=Hyperion Test',
       '-c',
       'user.email=test@example.invalid',
       '-c',
@@ -431,7 +431,7 @@ describe('per-task worktrees', gitOnly, () => {
     assert.equal(worktree.mode, 'worktree');
     assert.equal(worktree.reason, null);
     assert.equal(worktree.dir, path.join(real(worktreesRoot), 'task-alpha'));
-    assert.equal(worktree.branch, 'aistudio-task-task-alpha');
+    assert.equal(worktree.branch, 'hyperion-task-task-alpha');
     assert.equal(worktree.baseCommit, git(['rev-parse', 'HEAD'], repo));
     assert.equal(worktree.repo, real(repo));
 
@@ -508,7 +508,7 @@ describe('per-task worktrees', gitOnly, () => {
       null,
       'a branch still pointing at the base commit records nothing worth keeping',
     );
-    assert.doesNotMatch(git(['branch', '--list'], repo), /aistudio-task-task-clean/);
+    assert.doesNotMatch(git(['branch', '--list'], repo), /hyperion-task-task-clean/);
 
     // Deregistered, so a finished task loses its filesystem permissions.
     assert.equal(worktrees.getWorktree('task-clean'), undefined);
@@ -543,11 +543,11 @@ describe('per-task worktrees', gitOnly, () => {
     // The scratch directory goes; the commits do not. They are reachable by
     // branch name in the user's own repository, reviewable with plain git log.
     assert.equal(release.removed, true);
-    assert.equal(release.branch, 'aistudio-task-task-committed');
+    assert.equal(release.branch, 'hyperion-task-task-committed');
     assert.equal(fs.existsSync(worktree.dir), false);
-    assert.match(git(['branch', '--list'], repo), /aistudio-task-task-committed/);
+    assert.match(git(['branch', '--list'], repo), /hyperion-task-task-committed/);
     assert.match(
-      git(['log', '-1', '--format=%s', 'aistudio-task-task-committed'], repo),
+      git(['log', '-1', '--format=%s', 'hyperion-task-task-committed'], repo),
       /work from the task/,
     );
   });

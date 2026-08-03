@@ -90,7 +90,7 @@ function busyError(): AppError {
     : 'Another request is already running.';
   return new AppError(
     'busy',
-    `${detail} AIStudio runs one generation at a time; wait for it to finish or stop it first.`,
+    `${detail} Hyperion runs one generation at a time; wait for it to finish or stop it first.`,
     { retryable: true, details: job ? { tool: job.tool, jobId: job.id, startedAt: job.startedAt } : undefined },
   );
 }

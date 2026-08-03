@@ -5,7 +5,7 @@
  * the question that decides whether a skill actually works: do its scripts have
  * what they need to run? This module answers it by reading the manifests a skill
  * author would already have written, using existing conventions rather than
- * inventing an AIStudio-specific one:
+ * inventing an Hyperion-specific one:
  *
  *   - `requirements.txt`            (Python)
  *   - `pyproject.toml`              (Python — `[project] dependencies` and

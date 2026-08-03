@@ -2,7 +2,7 @@
  * Asset registry + gallery listing.
  *
  * The `attachments` table holds metadata only; the bytes live on disk under
- * ~/AIStudio/attachments/. Two consequences drive the design here:
+ * ~/Hyperion/attachments/. Two consequences drive the design here:
  *
  *   1. Every path stored is RELATIVE to the attachments root. Absolute paths
  *      would break the moment the DB is restored on another machine (or under

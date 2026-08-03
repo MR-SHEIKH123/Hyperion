@@ -1,11 +1,11 @@
-# AIStudio Backend — API Reference
+# Hyperion Backend — API Reference
 
 Generated from the implementation, not from the spec. Every endpoint, field name
 and status code below was read off the routers in `src/http/` and the service
 types they serialize. Where the implementation diverges from the "Suggested
 endpoint surface" in `docs/SPEC.md`, that is called out in the last section.
 
-- Base URL: `http://127.0.0.1:8787` by default (`AISTUDIO_BIND`, `AISTUDIO_PORT`).
+- Base URL: `http://127.0.0.1:8787` by default (`HYPERION_BIND`, `HYPERION_PORT`).
 - **There is no authentication, no CORS, no rate limiting and no request logging.**
   This is deliberate per the spec: single trusted user, loopback bind, remote
   access via Tailscale. Do not expose this port publicly.
@@ -102,7 +102,7 @@ code. Once the stream is open, failures arrive as an `error` event on a 200.
 ### `GET /api/health`
 
 ```json
-{ "ok": true, "name": "aistudio", "uptimeSec": 412, "loopback": true }
+{ "ok": true, "name": "hyperion", "uptimeSec": 412, "loopback": true }
 ```
 
 `loopback` is false when the server was bound to a non-loopback address (e.g. a
@@ -166,11 +166,11 @@ including local detection — can auto-enable a provider the user didn't turn on
 active provider (standby, not deleted).
 
 **Model lists** accept `?refresh=true` to bypass the cache
-(`AISTUDIO_MODEL_CACHE_TTL_MS`). `/active/models` 503s with `no_healthy_provider`
+(`HYPERION_MODEL_CACHE_TTL_MS`). `/active/models` 503s with `no_healthy_provider`
 when nothing is enabled.
 
 **POST /api/providers/detect-local** body `{ baseUrl? }`, defaults to
-`AISTUDIO_OLLAMA_URL`. Retries up to 3 attempts before reporting not-detected;
+`HYPERION_OLLAMA_URL`. Retries up to 3 attempts before reporting not-detected;
 it never starts a background rescan.
 
 ---
@@ -476,7 +476,7 @@ CleanupLogEntry { id, ranAt, chatsDeleted, assetsDeleted, bytesFreed, dryRun, de
 the bytes, so the frontend never builds paths itself.
 
 `bytes` and `sha256` describe **what was stored**, which is not always what was
-uploaded. Images larger than `AISTUDIO_IMAGE_MAX_EDGE` (default 1568px on the
+uploaded. Images larger than `HYPERION_IMAGE_MAX_EDGE` (default 1568px on the
 longest edge) are downscaled once before they are written, so their stored size
 and digest differ from the original file's. Images already within the cap, and
 every non-image, are stored byte-for-byte. Do not use `sha256` to match an asset
@@ -672,7 +672,7 @@ not an HTTP hop**. `resolvePath` enforces the scoped filesystem root and throws
 one of those and a chat turn cannot run at once.
 
 **Code does not.** It runs in a separate counting lane —
-`AISTUDIO_CODE_LANE_LIMIT`, default 2 — so two Code tasks may be in flight
+`HYPERION_CODE_LANE_LIMIT`, default 2 — so two Code tasks may be in flight
 together, and neither blocks nor is blocked by a chat turn. The reasoning is that
 a Code task is minutes of agentic editing rather than seconds of streaming, so
 making an unrelated refactor wait out the current one is the actual defect.
@@ -682,8 +682,8 @@ global lock does: `reject` (default) returns **409 `busy`** as JSON before the
 stream opens, with `details: { running, limit, queued }`; `queue` parks the
 request FIFO and opens the stream when a slot frees.
 
-Each Code task gets its own git worktree at `~/AIStudio/worktrees/<taskId>/`, on
-a branch named `aistudio-task-<taskId>`. Two consequences worth knowing:
+Each Code task gets its own git worktree at `~/Hyperion/worktrees/<taskId>/`, on
+a branch named `hyperion-task-<taskId>`. Two consequences worth knowing:
 
 - **`resolvePath` and `executeCommand` are narrowed to that one directory**, not
   to `projects/` at large. A Code task cannot read or write another task's
@@ -693,8 +693,8 @@ a branch named `aistudio-task-<taskId>`. Two consequences worth knowing:
   removed, but only when removing it provably loses nothing. Uncommitted changes
   leave the directory in place, and a branch that is ahead of where the task
   started is kept, so the work is reachable in the user's own repository with
-  plain `git log aistudio-task-<taskId>`. Set
-  `AISTUDIO_CODE_KEEP_WORKTREES=1` to keep every worktree for debugging.
+  plain `git log hyperion-task-<taskId>`. Set
+  `HYPERION_CODE_KEEP_WORKTREES=1` to keep every worktree for debugging.
 
 ### 12.2 `GET /api/code/tasks`  *(new in 1.9)*
 
@@ -711,7 +711,7 @@ The live view of the lane. Finished tasks disappear — this is not a journal.
       "taskId": "refactor-auth",
       "label": "chat-42:refactor-auth",
       "startedAt": 1767225600000,
-      "worktree": "/home/u/AIStudio/worktrees/refactor-auth"
+      "worktree": "/home/u/Hyperion/worktrees/refactor-auth"
     }
   ]
 }

@@ -215,7 +215,7 @@ async function testLocal(server: McpServerRecord): Promise<McpTestResult> {
  * Roots a stdio server may legitimately be pointed at.
  *
  * `projects` is the user's code. `mcp` is the server's *own* installation
- * directory (`~/AIStudio/mcp/<name>/`) — its virtual environment and any data
+ * directory (`~/Hyperion/mcp/<name>/`) — its virtual environment and any data
  * files it generates. A server being handed a path to its own artefacts is not
  * a containment breach, and treating it as one meant our own seeded defaults
  * failed their own config check.

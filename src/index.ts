@@ -1,5 +1,5 @@
 /**
- * AIStudio entrypoint.
+ * Hyperion entrypoint.
  *
  * Boot order matters: directories must exist before the database file is
  * opened, migrations must run before any repository is touched, and orphaned
@@ -54,7 +54,7 @@ function startServer(): Server {
     log.info(`listening on http://${env.host}:${env.port}`);
     if (!env.bindIsLoopback) {
       log.warn(
-        `bound to non-loopback host ${env.host} — AIStudio has NO authentication. ` +
+        `bound to non-loopback host ${env.host} — Hyperion has NO authentication. ` +
           'Use a private network (e.g. Tailscale) instead of exposing this port.',
       );
     }

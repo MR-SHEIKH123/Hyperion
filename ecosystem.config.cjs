@@ -1,5 +1,5 @@
 /**
- * PM2 process definition for the AIStudio backend.
+ * PM2 process definition for the Hyperion backend.
  *
  * The server is meant to run continuously in the background (XAMPP-style),
  * not be started by hand each session.
@@ -18,7 +18,7 @@
 module.exports = {
   apps: [
     {
-      name: 'aistudio',
+      name: 'hyperion',
       script: 'src/index.ts',
       interpreter: 'node',
       cwd: __dirname,
@@ -47,8 +47,8 @@ module.exports = {
         NODE_ENV: 'production',
       },
 
-      out_file: 'logs/aistudio-out.log',
-      error_file: 'logs/aistudio-error.log',
+      out_file: 'logs/hyperion-out.log',
+      error_file: 'logs/hyperion-error.log',
       merge_logs: true,
       log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
     },

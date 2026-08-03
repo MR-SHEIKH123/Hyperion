@@ -178,7 +178,7 @@ export async function stageUrl(rawUrl: string): Promise<IntakePreview> {
       response = await fetch(target, {
         redirect: 'follow',
         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-        headers: { 'User-Agent': 'AIStudio-skill-intake' },
+        headers: { 'User-Agent': 'Hyperion-skill-intake' },
       });
     } catch (error) {
       throw new AppError('bad_request', `Could not fetch ${target.href}.`, { cause: error });

@@ -7,7 +7,7 @@
  * (both HTTP 501) as plain JSON, before any SSE headers are written.
  *
  * Code is the one tool that does not take the app-wide job lock. It runs in a
- * counting lane instead (`AISTUDIO_CODE_LANE_LIMIT`, default 2), with each task
+ * counting lane instead (`HYPERION_CODE_LANE_LIMIT`, default 2), with each task
  * in its own git worktree, so a long refactor does not stand between the user
  * and an unrelated one. Cowork, Design and Chat still serialise exactly as
  * before. `GET /api/code/tasks` reports what that lane is doing.

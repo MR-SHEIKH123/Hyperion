@@ -4,7 +4,7 @@
  * The bug this file exists to prevent: the static check validated every
  * absolute-looking argument against the `projects` root only, while the seeded
  * `graphify` entry legitimately points at its own installation under
- * `~/AIStudio/mcp/`. Our own default therefore failed our own check, with a
+ * `~/Hyperion/mcp/`. Our own default therefore failed our own check, with a
  * message accusing it of escaping the sandbox.
  *
  * `testServer()` is used rather than the private `staticProblems()` because that
@@ -18,7 +18,7 @@ import path from 'node:path';
 
 import { cleanupHome, freshDb } from './helpers.ts';
 // Type-only, so it is erased at compile time and does not load `src/` before
-// the harness above has set AISTUDIO_HOME.
+// the harness above has set HYPERION_HOME.
 import type { McpServerRecord } from '../src/services/mcp/registry.ts';
 
 describe('seeded MCP defaults', () => {

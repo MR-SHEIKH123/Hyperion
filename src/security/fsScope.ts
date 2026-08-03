@@ -3,7 +3,7 @@
  *
  * The Code tool, MCP filesystem servers and skill intake all touch disk. Every
  * such path goes through here first, so their blast radius is bounded to a few
- * known roots under ~/AIStudio instead of the entire filesystem.
+ * known roots under ~/Hyperion instead of the entire filesystem.
  *
  * Two subtleties this handles that a naive `startsWith` check does not:
  *
@@ -206,7 +206,7 @@ export function ensureDirInScope(scope: ScopeName, candidate: string): string {
  * Convert an absolute path back to a scope-relative one for storage.
  *
  * The database stores relative paths so it stays portable across machines,
- * restores and a changed AISTUDIO_HOME.
+ * restores and a changed HYPERION_HOME.
  */
 export function toRelative(scope: ScopeName, absolute: string): string {
   const resolvedRoot = realpathAllowingMissing(ROOTS[scope]);

@@ -305,7 +305,7 @@ let intervalTimer: NodeJS.Timeout | null = null;
 
 /**
  * Start the background job. Safe to call twice (the second call is ignored),
- * and a no-op when AISTUDIO_CLEANUP_DISABLED is set — which is the switch to
+ * and a no-op when HYPERION_CLEANUP_DISABLED is set — which is the switch to
  * reach for while debugging, rather than commenting this out.
  */
 export function startCleanupScheduler(): void {

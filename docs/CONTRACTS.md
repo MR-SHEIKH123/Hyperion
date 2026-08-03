@@ -40,13 +40,13 @@ the common case and are never blocked by this.
 Per skill, never shared:
 
 ```
-~/AIStudio/skills/<skill>/.venv/          Python
-~/AIStudio/skills/<skill>/node_modules/   Node
+~/Hyperion/skills/<skill>/.venv/          Python
+~/Hyperion/skills/<skill>/node_modules/   Node
 ```
 
 Nothing is installed into the app's own environment or into the app's root
 `node_modules`. One skill pinning an old version of a library cannot affect
-another skill, or AIStudio itself.
+another skill, or Hyperion itself.
 
 ### The status field
 
@@ -142,7 +142,7 @@ arrive together.
 | | Holds | Applies to |
 |---|---|---|
 | App-wide job lock | one job, total | chat, cowork, design, backup, intake |
-| Code lane | `AISTUDIO_CODE_LANE_LIMIT` tasks (default 2) | `POST /api/code/run-task` only |
+| Code lane | `HYPERION_CODE_LANE_LIMIT` tasks (default 2) | `POST /api/code/run-task` only |
 
 They do not interact. A running Code task does not block a chat turn, and a chat
 turn does not block a Code task. Two Code tasks at the default limit run at once;
@@ -174,8 +174,8 @@ the same checkout, not a second one.
 ### Where the task actually runs
 
 ```
-~/AIStudio/worktrees/<taskId>/        the checkout
-aistudio-task-<taskId>                the branch
+~/Hyperion/worktrees/<taskId>/        the checkout
+hyperion-task-<taskId>                the branch
 ```
 
 A git worktree, not a clone: it shares the repository's object store, so it is
@@ -200,14 +200,14 @@ stream, on the existing `agent` channel:
 ```
 event: agent
 data: {"channel":"started","tool":"code","chatId":"…","taskId":"refactor-auth",
-       "mode":"worktree","dir":"C:\\Users\\you\\AIStudio\\worktrees\\refactor-auth"}
+       "mode":"worktree","dir":"C:\\Users\\you\\Hyperion\\worktrees\\refactor-auth"}
 ```
 
 `mode` is the field to branch on:
 
 | `mode` | Meaning |
 |---|---|
-| `worktree` | Isolated. `dir` is the worktree. Commits land on `aistudio-task-<taskId>`. |
+| `worktree` | Isolated. `dir` is the worktree. Commits land on `hyperion-task-<taskId>`. |
 | `direct` | **Not isolated.** `dir` is the project directory itself. `reason` says why. |
 
 `direct` is a deliberate degradation, not an error — git is missing, or the
@@ -223,14 +223,14 @@ anyone would miss. It is **kept** when:
 
 - the working tree is dirty (uncommitted changes),
 - the branch has commits that are not on the base commit,
-- `AISTUDIO_CODE_KEEP_WORKTREES=1`,
+- `HYPERION_CODE_KEEP_WORKTREES=1`,
 - or git declines to remove it.
 
 The branch is deleted only when its tip is still the base commit — i.e. the task
 committed nothing. So: **commits survive, scratch does not.** In `direct` mode
 nothing is ever removed; the project directory is not ours to delete.
 
-To make a task's work permanent, merge `aistudio-task-<taskId>` — the branch is
+To make a task's work permanent, merge `hyperion-task-<taskId>` — the branch is
 the deliverable. Nothing in this app merges for you.
 
 ### What not to do
@@ -337,13 +337,13 @@ The skill half is not fetched through Skills intake. Graphify writes it itself,
 from the same venv the next section sets up. On Windows:
 
 ```
-%USERPROFILE%\AIStudio\mcp\graphify\.venv\Scripts\graphify install --platform agents
+%USERPROFILE%\Hyperion\mcp\graphify\.venv\Scripts\graphify install --platform agents
 ```
 
 macOS / Linux:
 
 ```
-~/AIStudio/mcp/graphify/.venv/bin/graphify install --platform agents
+~/Hyperion/mcp/graphify/.venv/bin/graphify install --platform agents
 ```
 
 That writes `~/.agents/skills/graphify/SKILL.md`, the platform-neutral location,
@@ -352,12 +352,12 @@ graphify knows by name, and `--platform agents` avoids registering the skill int
 some other tool's configuration. Add `--project` to scope it to a single
 repository instead of the user profile.
 
-**Note where that lands.** `~/.agents/skills/` is *not* AIStudio's skills root
-(`~/AIStudio/skills/`, i.e. `env.paths.skills`), so a skill installed this way is
+**Note where that lands.** `~/.agents/skills/` is *not* Hyperion's skills root
+(`~/Hyperion/skills/`, i.e. `env.paths.skills`), so a skill installed this way is
 invisible to this app's Skills panel, does not get a row in the `skills` table,
 and is not covered by the dependency provisioning described above. That is the
 correct outcome if you want the skill for an agent CLI that reads `~/.agents`. To
-make **AIStudio itself** aware of it, add it separately through normal Skills
+make **Hyperion itself** aware of it, add it separately through normal Skills
 intake using the repository URL above; the two copies are independent.
 
 
@@ -409,7 +409,7 @@ correct, enabled entry does not start a server today — that is Kimi's
 #### One-time setup
 
 Graphify is a Python package, so it gets its own isolated venv under
-`~/AIStudio/mcp/graphify/.venv/` — the same isolation rule the per-skill venvs
+`~/Hyperion/mcp/graphify/.venv/` — the same isolation rule the per-skill venvs
 follow, for the same reason: an MCP server's dependencies must never land in the
 app's environment or the system Python. Graphify's own README recommends exactly
 this.
@@ -417,18 +417,18 @@ this.
 Windows:
 
 ```
-python -m venv %USERPROFILE%\AIStudio\mcp\graphify\.venv
-%USERPROFILE%\AIStudio\mcp\graphify\.venv\Scripts\pip install "graphifyy[mcp]"
-cd %USERPROFILE%\AIStudio\mcp\graphify
+python -m venv %USERPROFILE%\Hyperion\mcp\graphify\.venv
+%USERPROFILE%\Hyperion\mcp\graphify\.venv\Scripts\pip install "graphifyy[mcp]"
+cd %USERPROFILE%\Hyperion\mcp\graphify
 .venv\Scripts\graphify extract C:\path\to\your\repo --code-only
 ```
 
 macOS / Linux:
 
 ```
-python3 -m venv ~/AIStudio/mcp/graphify/.venv
-~/AIStudio/mcp/graphify/.venv/bin/pip install "graphifyy[mcp]"
-cd ~/AIStudio/mcp/graphify
+python3 -m venv ~/Hyperion/mcp/graphify/.venv
+~/Hyperion/mcp/graphify/.venv/bin/pip install "graphifyy[mcp]"
+cd ~/Hyperion/mcp/graphify
 .venv/bin/graphify extract /path/to/your/repo --code-only
 ```
 
@@ -518,7 +518,7 @@ appears to be. That is all it does.
 ### Detection never registers
 
 The route is a `POST` because it fetches, not because it writes. It touches no
-table, nothing under `~/AIStudio/`, and no MCP config file. Nothing is installed
+table, nothing under `~/Hyperion/`, and no MCP config file. Nothing is installed
 until the user calls one of:
 
 

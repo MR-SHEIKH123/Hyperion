@@ -5,7 +5,7 @@
  * AES-256-GCM, which is authenticated: tampering with stored ciphertext is
  * detected on decrypt rather than silently yielding garbage.
  *
- * The master key lives in a file **outside the database** (~/AIStudio/secret.key)
+ * The master key lives in a file **outside the database** (~/Hyperion/secret.key)
  * with owner-only permissions. Keeping it beside the ciphertext in SQLite would
  * make the encryption decorative — anyone who copied the DB would have both
  * halves. Losing the key file means stored credentials are unrecoverable and

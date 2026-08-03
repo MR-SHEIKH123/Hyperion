@@ -7,7 +7,7 @@
  * each other's half-written files, and the loser of the race gets a diff it never
  * asked for. This module gives each task its own checkout instead:
  *
- *   ~/AIStudio/worktrees/<task-id>/     a real git worktree of the project
+ *   ~/Hyperion/worktrees/<task-id>/     a real git worktree of the project
  *
  * A git worktree is the right primitive because it is not a copy. It shares the
  * repository's object store, so provisioning costs one checkout rather than one
@@ -179,7 +179,7 @@ async function create(taskId: string, project: string): Promise<Worktree> {
     return direct('no free worktree directory was available');
   }
 
-  const branch = `aistudio-task-${taskId}`;
+  const branch = `hyperion-task-${taskId}`;
   // `-b` first, so the task's commits stay reachable by name after the scratch
   // directory is gone. Detaching is the fallback, not the goal.
   let added = await git(['worktree', 'add', '-b', branch, dir, baseCommit], {
@@ -266,8 +266,8 @@ export async function releaseWorktree(taskId: string): Promise<WorktreeRelease> 
   }
 
   if (env.codeKeepWorktrees) {
-    log.info(`task ${id}: keeping ${worktree.dir} (AISTUDIO_CODE_KEEP_WORKTREES)`);
-    return { ...base, keptReason: 'AISTUDIO_CODE_KEEP_WORKTREES is set' };
+    log.info(`task ${id}: keeping ${worktree.dir} (HYPERION_CODE_KEEP_WORKTREES)`);
+    return { ...base, keptReason: 'HYPERION_CODE_KEEP_WORKTREES is set' };
   }
 
   const keep = await workAtRisk(worktree);
