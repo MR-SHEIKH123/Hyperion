@@ -193,7 +193,7 @@ export function createProvider(input: CreateProviderInput): ProviderRecord {
 
   const name = input.name.trim();
   if (name === '') throw new AppError('bad_request', 'Provider name is required');
-  const baseUrl = normalizeBaseUrl(input.baseUrl);
+  const baseUrl = normalizeBaseUrl(input.baseUrl, input.type);
 
   if (findProviderByName(name)) {
     throw new AppError('conflict', `A provider named "${name}" already exists`);
@@ -262,7 +262,9 @@ export function updateProvider(id: string, input: UpdateProviderInput): Provider
 
   if (input.baseUrl !== undefined) {
     sets.push('base_url = ?');
-    values.push(normalizeBaseUrl(input.baseUrl));
+    // A provider's type is immutable after creation, so the stored one is the
+    // right lens to normalize an edited URL through.
+    values.push(normalizeBaseUrl(input.baseUrl, existing.type));
   }
 
   if (input.priority !== undefined) {
@@ -390,13 +392,32 @@ export function saveModelCacheError(id: string, message: string): void {
 // --- helpers ---------------------------------------------------------------
 
 /**
+ * Provider types that speak the OpenAI-compatible wire protocol, where the base
+ * URL conventionally already ends in `/v1` because the client appends
+ * `/chat/completions` to it.
+ *
+ * An explicit allowlist rather than an exclusion check: an Anthropic-native
+ * endpoint takes a plain host and appends `/v1/messages` itself, and Ollama's
+ * local API lives under `/api/...` with no `/v1` anywhere. Both would break if
+ * `/v1` were bolted on. Anything not named here is stored exactly as the user
+ * typed it, so adding a provider type is inert until someone lists it.
+ */
+const OPENAI_COMPATIBLE_TYPES: readonly ProviderType[] = ['remote'];
+
+/**
  * Normalize and sanity-check a base URL.
  *
  * Trailing slashes are stripped so the adapters' path joining is predictable,
  * and a non-HTTP scheme is rejected early rather than surfacing later as an
  * unhelpful fetch failure.
+ *
+ * For OpenAI-compatible providers a missing `/v1` is filled in. This is the
+ * single choke point every stored base URL passes through, at write time, so
+ * what is in the database is already normalized and the settings view shows the
+ * URL that will actually be called. `type` is optional so that callers who only
+ * want the validation (and no rewriting) can omit it.
  */
-export function normalizeBaseUrl(raw: string): string {
+export function normalizeBaseUrl(raw: string, type?: ProviderType): string {
   const trimmed = raw.trim();
   if (trimmed === '') throw new AppError('bad_request', 'Base URL is required');
 
@@ -409,5 +430,18 @@ export function normalizeBaseUrl(raw: string): string {
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     throw new AppError('bad_request', 'Base URL must use http or https');
   }
-  return trimmed.replace(/\/+$/, '');
+
+  const stripped = trimmed.replace(/\/+$/, '');
+  if (type === undefined || !OPENAI_COMPATIBLE_TYPES.includes(type)) return stripped;
+
+  // Only a bare host gets `/v1` appended. Pasting "https://ollama.com" is the
+  // mistake this fixes, and such a URL is unusable without it. A URL that
+  // already carries a path is left alone: the user may legitimately be on
+  // "https://host/openai" or "https://openrouter.ai/api/v1", and guessing at
+  // those would break working configurations in order to fix a typo.
+  if (parsed.pathname !== '' && parsed.pathname !== '/') return stripped;
+
+  // Built from the origin rather than concatenated onto the input, so a
+  // trailing slash can never produce "https://host//v1".
+  return `${parsed.origin}/v1`;
 }

@@ -159,8 +159,15 @@ function addTree(zip: AdmZip, root: string, prefix: string): number {
       const relPath = rel ? `${rel}/${entry.name}` : entry.name;
       if (entry.isSymbolicLink()) continue; // never follow links out of the root
       if (entry.isDirectory()) {
+        // Installed dependency trees are deliberately not backed up. They are
+        // large, they are machine-specific (a venv hard-codes absolute paths, so
+        // it would not even work on the restoring machine), and they are exactly
+        // reproducible from the manifests that *are* in the archive. The registry
+        // notices they are missing after a restore and re-provisions.
+        if (entry.name === '.venv' || entry.name === 'node_modules') continue;
         walk(abs, relPath);
       } else if (entry.isFile()) {
+
         // Skip our own staging area: half-uploaded skills are not worth
         // restoring and may be large.
         if (relPath.startsWith('.staging/')) continue;

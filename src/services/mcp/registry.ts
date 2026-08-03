@@ -304,7 +304,13 @@ export function updateServer(id: string, input: Partial<McpServerInput>): McpSer
   };
   validate(merged);
 
-  if (merged.name !== existing.name && findServerByName(merged.name)) {
+  // Identity, not name text, decides a collision. `findServerByName` matches
+  // COLLATE NOCASE, so a case-only rename ("github" → "GitHub") finds *this*
+  // row: the old `merged.name !== existing.name` guard passed (JS compares
+  // case-sensitively), the lookup then hit the server's own record, and fixing
+  // your own capitalisation was reported as a duplicate.
+  const clash = findServerByName(merged.name);
+  if (clash && clash.id !== existing.id) {
     throw new AppError('conflict', `An MCP server named "${merged.name}" already exists.`);
   }
 

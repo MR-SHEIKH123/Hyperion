@@ -19,7 +19,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { env } from '../config/env.ts';
 
-export type ScopeName = 'projects' | 'attachments' | 'skills' | 'backups' | 'tmp';
+export type ScopeName =
+  | 'projects'
+  | 'attachments'
+  | 'skills'
+  | 'backups'
+  | 'tmp'
+  | 'mcp'
+  | 'worktrees';
 
 const ROOTS: Record<ScopeName, string> = {
   projects: env.paths.projects,
@@ -27,23 +34,39 @@ const ROOTS: Record<ScopeName, string> = {
   skills: env.paths.skills,
   backups: env.paths.backups,
   tmp: env.paths.tmp,
+  // Where an MCP server's own installation lives (its venv, its generated data
+  // files). Distinct from `projects`: a server may legitimately be handed a path
+  // to its own artefacts without that implying access to the user's code.
+  mcp: env.paths.mcp,
+  // Per-task git worktrees for parallel Code runs. A parallel Code task works
+  // here instead of in `projects`, so two tasks editing the same repository
+  // cannot see each other's half-written files. Note that scope membership is
+  // not enough on its own for those tasks — see `resolveInSubtree`.
+  worktrees: env.paths.worktrees,
 };
+
 
 export class ScopeViolationError extends Error {
   readonly code = 'scope_violation';
   readonly scope: ScopeName;
   readonly attempted: string;
 
-  constructor(scope: ScopeName, attempted: string) {
+  /**
+   * `boundary` overrides the root named in the message. Subtree checks are
+   * stricter than the scope root, so reporting the root would otherwise
+   * describe a wider permission than the caller actually had.
+   */
+  constructor(scope: ScopeName, attempted: string, boundary?: string) {
     super(
       `Path escapes the "${scope}" scope: ${attempted}. ` +
-        `Access is restricted to ${ROOTS[scope]}.`,
+        `Access is restricted to ${boundary ?? ROOTS[scope]}.`,
     );
     this.name = 'ScopeViolationError';
     this.scope = scope;
     this.attempted = attempted;
   }
 }
+
 
 export function getRoot(scope: ScopeName): string {
   return ROOTS[scope];
@@ -124,6 +147,50 @@ export function isInScope(scope: ScopeName, candidate: string): boolean {
     return false;
   }
 }
+
+/**
+ * Validate that `candidate` lies inside one *subtree* of a scope.
+ *
+ * Scope membership alone is too coarse once work runs in parallel. Every Code
+ * task's worktree sits under the same `worktrees` root, so a plain
+ * `resolveInScope` check would happily accept `../<other-task>/src/app.ts` —
+ * both paths are in scope. This narrower check is what makes two concurrent
+ * tasks independent rather than merely both-contained.
+ *
+ * `subtree` is itself validated against the scope first, so a caller cannot
+ * widen its own permission by naming an arbitrary directory as its boundary.
+ */
+export function resolveInSubtree(scope: ScopeName, subtree: string, candidate: string): string {
+  const boundary = resolveInScope(scope, subtree);
+
+  if (candidate.includes('\0')) {
+    throw new ScopeViolationError(scope, candidate, boundary);
+  }
+
+  const absolute = path.isAbsolute(candidate)
+    ? path.resolve(candidate)
+    : path.resolve(boundary, candidate);
+
+  const resolvedBoundary = realpathAllowingMissing(boundary);
+  const resolvedTarget = realpathAllowingMissing(absolute);
+
+  if (!isInside(resolvedBoundary, resolvedTarget)) {
+    throw new ScopeViolationError(scope, candidate, boundary);
+  }
+
+  return resolvedTarget;
+}
+
+/** Non-throwing variant of `resolveInSubtree`. */
+export function isInSubtree(scope: ScopeName, subtree: string, candidate: string): boolean {
+  try {
+    resolveInSubtree(scope, subtree, candidate);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 
 /**
  * Validate and create a directory inside a scope.

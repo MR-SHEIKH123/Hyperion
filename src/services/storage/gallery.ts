@@ -37,6 +37,7 @@ import {
 } from '../../security/fsScope.ts';
 import { AppError } from '../../util/errors.ts';
 import { createLogger } from '../../util/logger.ts';
+import { processImage } from './images.ts';
 
 const log = createLogger('storage');
 
@@ -252,8 +253,14 @@ function monthBucket(at: number): string {
  * Register an asset. When `buffer` is given the bytes are written inside the
  * scoped root first; the row is only inserted once the write succeeded, so a
  * failed write never leaves a phantom gallery entry.
+ *
+ * Images are downscaled before they are written — see `images.ts`. That resize
+ * is the only asynchronous step, and it lives here rather than at each call
+ * site so there is no way to store an oversized image by forgetting to call it.
+ * `bytes` and `sha256` therefore describe **what was stored**, not what
+ * arrived, so the gallery's numbers always match the files on disk.
  */
-export function saveAsset(input: SaveAssetInput): AssetRecord {
+export async function saveAsset(input: SaveAssetInput): Promise<AssetRecord> {
   const now = Date.now();
   const id = assetId();
   const filename = safeFilename(input.filename, 'file');
@@ -266,10 +273,24 @@ export function saveAsset(input: SaveAssetInput): AssetRecord {
     const dir = resolveInScope('attachments', monthBucket(now));
     ensureDirInScope('attachments', dir);
     const abs = path.join(dir, `${id}-${filename}`);
-    fs.writeFileSync(abs, input.buffer, { mode: 0o600 });
+
+    // Generated assets go through this too: an image a tool produced oversized
+    // is no more useful on disk than one a user uploaded oversized.
+    const image = await processImage(input.buffer, input.mimeType);
+    if (image.processed) {
+      log.info('downscaled image before storing', {
+        id,
+        from: input.buffer.byteLength,
+        to: image.buffer.byteLength,
+        sourceWidth: image.width,
+        sourceHeight: image.height,
+      });
+    }
+
+    fs.writeFileSync(abs, image.buffer, { mode: 0o600 });
     relPath = toRelative('attachments', abs);
-    bytes = input.buffer.byteLength;
-    sha256 = createHash('sha256').update(input.buffer).digest('hex');
+    bytes = image.buffer.byteLength;
+    sha256 = createHash('sha256').update(image.buffer).digest('hex');
   } else if (input.relPath) {
     // Re-resolve through the scope: a caller-supplied relative path is still
     // untrusted input.

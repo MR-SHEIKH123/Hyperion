@@ -1,16 +1,21 @@
 /**
  * Provider protocol adapters.
  *
- * Two protocols cover the intended providers:
+ * Three protocols cover the intended providers:
  *   - `openai`: any OpenAI-compatible gateway (AgentRouter et al) — /v1/models
  *     and /v1/chat/completions with SSE streaming.
  *   - `ollama`: the local runner — /api/tags and /api/chat with JSONL streaming.
+ *   - `opencodex`: the local opencodex proxy — /v1/models plus /v1/responses.
+ *     Its model list is OpenAI-shaped, but its inbound completion endpoint is
+ *     the OpenAI *Responses* API, NOT chat-completions, so it cannot reuse
+ *     `openAiAdapter.stream`. See `openCodexAdapter` for the shape difference.
  *
  * Adapters are pure protocol translation: they do not decide failover, health or
  * routing. Failures are thrown as AppError with an accurate code so the router
  * above can distinguish "unreachable" (health-relevant) from "bad key" (not).
  */
 import { AppError } from '../util/errors.ts';
+import { redactSecrets } from '../util/redact.ts';
 import { tryDecrypt } from '../security/keystore.ts';
 import { env } from '../config/env.ts';
 import type {
@@ -58,29 +63,45 @@ async function httpFetch(
   }
 }
 
-/** Map an HTTP status into a typed error, since not all failures are equal. */
+/**
+ * Map an HTTP status into a typed error, since not all failures are equal.
+ *
+ * The upstream response body goes into `privateDetails`, never `details`.
+ * SPEC line 68: "Never send provider API keys to the frontend, even
+ * transiently." OpenAI-compatible gateways echo the submitted key back in 401
+ * bodies ("Incorrect API key provided: sk-proj-..."), and `AppError.toJSON()`
+ * serialises `details` verbatim to the client. `redactSecrets` is a second
+ * layer for the server-side log, not a substitute for the split.
+ */
 async function failFromResponse(response: Response, context: string): Promise<never> {
   const body = await response.text().catch(() => '');
-  const detail = body.slice(0, 500);
+  const detail = redactSecrets(body.slice(0, 500));
+
+  // Status alone is safe to expose and is what the frontend actually branches on.
+  const details = { status: response.status };
+  const privateDetails = { body: detail };
 
   // 401/403 are configuration problems: retrying cannot help, and they must NOT
   // count toward the health threshold or a wrong key would evict a live provider.
   if (response.status === 401 || response.status === 403) {
     throw new AppError('provider_auth_failed', `${context}: provider rejected the API key`, {
-      details: { status: response.status, body: detail },
+      details,
+      privateDetails,
       retryable: false,
     });
   }
   // 4xx is our bad request; also not the provider being unhealthy.
   if (response.status < 500 && response.status !== 429) {
     throw new AppError('provider_error', `${context}: provider returned ${response.status}`, {
-      details: { status: response.status, body: detail },
+      details,
+      privateDetails,
       retryable: false,
     });
   }
   // 5xx and 429 are genuine provider-side trouble.
   throw new AppError('provider_error', `${context}: provider returned ${response.status}`, {
-    details: { status: response.status, body: detail },
+    details,
+    privateDetails,
     retryable: true,
   });
 }
@@ -394,10 +415,171 @@ interface OllamaStreamFrame {
   error?: string;
 }
 
+// --- opencodex (OpenAI Responses API) --------------------------------------
+
+/**
+ * The local opencodex proxy (`ocx start`, default http://127.0.0.1:10100/v1).
+ *
+ * Its `/models` response is OpenAI-shaped, so model listing is delegated to
+ * `openAiAdapter.listModels` verbatim. Completions are NOT: opencodex accepts
+ * `POST /responses` (the OpenAI *Responses* API) and Anthropic `/messages`, but
+ * it does NOT accept `/chat/completions` inbound — the chat-completions
+ * compatibility advertised by opencodex is on its OUTBOUND side, towards the
+ * upstream vendors it routes to. So `stream` is a separate implementation.
+ *
+ * Differences from chat-completions that this adapter absorbs:
+ *   - `messages` becomes `input` items whose content is a typed part array
+ *     (`input_text` inbound, `output_text` for prior assistant turns).
+ *   - system messages are hoisted into the top-level `instructions` string.
+ *   - `max_tokens` becomes `max_output_tokens`.
+ *   - deltas arrive as `response.output_text.delta` frames carrying `delta`,
+ *     rather than `choices[0].delta.content`.
+ *   - usage arrives once, on `response.completed`, as `input_tokens` /
+ *     `output_tokens` rather than `prompt_tokens` / `completion_tokens`.
+ *
+ * Routing, quota awareness and vendor cooldowns are opencodex's own business.
+ * To this app it is one ordinary provider that happens to be smart internally —
+ * the same health rule (2 consecutive failures inside the window) applies.
+ */
+export const openCodexAdapter: ProviderAdapter = {
+  kind: 'opencodex',
+
+  listModels: openAiAdapter.listModels,
+
+  async *stream(provider, request) {
+    // Responses API takes the system prompt out-of-band. Multiple system
+    // messages are joined so nothing is silently dropped.
+    const instructions = request.messages
+      .filter((m) => m.role === 'system')
+      .map((m) => m.content)
+      .join('\n\n');
+
+    const input = request.messages
+      .filter((m) => m.role !== 'system')
+      .map((m) => ({
+        role: m.role === 'assistant' ? 'assistant' : 'user',
+        content: [
+          {
+            type: m.role === 'assistant' ? 'output_text' : 'input_text',
+            text: m.content,
+          },
+        ],
+      }));
+
+    const response = await httpFetch(
+      url(provider.baseUrl, '/responses'),
+      {
+        method: 'POST',
+        headers: {
+          ...authHeaders(provider),
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
+        },
+        body: JSON.stringify({
+          model: request.modelId,
+          input,
+          stream: true,
+          ...(instructions !== '' ? { instructions } : {}),
+          ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
+          ...(request.maxTokens !== undefined ? { max_output_tokens: request.maxTokens } : {}),
+        }),
+      },
+      env.requestTimeoutMs,
+      request.signal,
+    );
+
+    if (!response.ok) await failFromResponse(response, 'Streaming completion');
+
+    let finishReason: string | undefined;
+    let sawUsage = false;
+    let approxOut = 0;
+
+    for await (const data of sseFrames(response, request.signal)) {
+      if (data === '' || data === '[DONE]') continue;
+
+      let frame: ResponsesStreamFrame;
+      try {
+        frame = JSON.parse(data) as ResponsesStreamFrame;
+      } catch {
+        continue; // ignore keep-alives and non-JSON noise
+      }
+
+      // Errors can arrive inside a 200 stream, either as a bare `error` frame
+      // or wrapped in `response.failed`.
+      const failure = frame.type === 'error' ? frame.error : frame.response?.error;
+      if (failure) {
+        throw new AppError('provider_error', failure.message ?? 'Provider stream error', {
+          details: { providerError: failure },
+          retryable: true,
+        });
+      }
+
+      if (frame.type === 'response.output_text.delta') {
+        const text = frame.delta;
+        if (typeof text === 'string' && text !== '') {
+          approxOut += 1;
+          yield { type: 'token', text };
+        }
+        continue;
+      }
+
+      const usage = frame.response?.usage;
+      if (usage) {
+        sawUsage = true;
+        yield {
+          type: 'usage',
+          usage: {
+            tokensIn: usage.input_tokens ?? 0,
+            tokensOut: usage.output_tokens ?? 0,
+          },
+        };
+      }
+      if (frame.response?.incomplete_details?.reason) {
+        finishReason = frame.response.incomplete_details.reason;
+      } else if (frame.type === 'response.completed') {
+        finishReason ??= 'stop';
+      }
+    }
+
+    if (!sawUsage) {
+      yield {
+        type: 'usage',
+        usage: { tokensIn: estimateTokens(request.messages), tokensOut: approxOut },
+      };
+    }
+
+    yield { type: 'done', ...(finishReason ? { finishReason } : {}) };
+  },
+};
+
+/** Only the fields this adapter reads; Responses frames carry many more. */
+interface ResponsesStreamFrame {
+  type?: string;
+  delta?: string;
+  error?: { message?: string; type?: string; code?: string };
+  response?: {
+    usage?: { input_tokens?: number; output_tokens?: number };
+    incomplete_details?: { reason?: string };
+    error?: { message?: string; type?: string; code?: string };
+  };
+}
+
 // --- selection & local detection ------------------------------------------
 
+/**
+ * Exhaustive on purpose: the previous ternary let any unrecognized type fall
+ * through to the OpenAI adapter, which would have handed opencodex a
+ * `/chat/completions` request it does not accept.
+ */
 export function adapterFor(provider: ProviderRecord): ProviderAdapter {
-  return provider.type === 'local' ? ollamaAdapter : openAiAdapter;
+  switch (provider.type) {
+    case 'local':
+      return ollamaAdapter;
+    case 'opencodex':
+      return openCodexAdapter;
+    case 'remote':
+      return openAiAdapter;
+  }
 }
 
 export interface DetectResult {

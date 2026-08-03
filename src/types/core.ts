@@ -22,7 +22,21 @@ export function isToolName(value: unknown): value is ToolName {
 
 // --- providers -------------------------------------------------------------
 
-export type ProviderType = 'remote' | 'local';
+/**
+ * How a provider is reached and which wire protocol it speaks.
+ *   remote    — OpenAI-compatible gateway: base URL + API key, /chat/completions
+ *   local     — auto-detected local runner (Ollama): /api/tags + /api/chat
+ *   opencodex — local opencodex proxy: /v1/models + /v1/responses (the OpenAI
+ *               *Responses* API, which is NOT chat-completions shaped)
+ */
+export type ProviderType = 'remote' | 'local' | 'opencodex';
+
+export const PROVIDER_TYPES: readonly ProviderType[] = ['remote', 'local', 'opencodex'];
+
+export function isProviderType(value: unknown): value is ProviderType {
+  return typeof value === 'string' && (PROVIDER_TYPES as readonly string[]).includes(value);
+}
+
 export type HealthStatus = 'unknown' | 'healthy' | 'degraded' | 'unhealthy';
 
 /** A provider as stored. `apiKeyEnc` never leaves the backend. */

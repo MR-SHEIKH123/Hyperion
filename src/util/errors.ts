@@ -68,6 +68,17 @@ export class AppError extends Error {
   readonly status: number;
   readonly details: Record<string, unknown> | undefined;
   /**
+   * Diagnostic context that must never cross the wire.
+   *
+   * `details` is serialized to the browser, so anything placed there is public.
+   * Some context is worth keeping but not worth exposing — chiefly a provider's
+   * raw error body, which frequently echoes the API key it was sent. SPEC line
+   * 68 requires that a provider key never reach the frontend, even transiently,
+   * so that material goes here instead: logged server-side, omitted by
+   * `toJSON()`.
+   */
+  readonly privateDetails: Record<string, unknown> | undefined;
+  /**
    * Whether trying the exact same request again could plausibly succeed.
    * Drives the pause/resume machine: a capability mismatch is never retryable
    * against the same provider, while a timeout is.
@@ -77,17 +88,29 @@ export class AppError extends Error {
   constructor(
     code: ErrorCode,
     message: string,
-    options: { details?: Record<string, unknown>; retryable?: boolean; cause?: unknown } = {},
+    options: {
+      details?: Record<string, unknown>;
+      privateDetails?: Record<string, unknown>;
+      retryable?: boolean;
+      cause?: unknown;
+    } = {},
   ) {
     super(message, options.cause !== undefined ? { cause: options.cause } : undefined);
     this.name = 'AppError';
     this.code = code;
     this.status = STATUS[code] ?? 500;
     this.details = options.details;
+    this.privateDetails = options.privateDetails;
     this.retryable = options.retryable ?? DEFAULT_RETRYABLE.has(code);
   }
 
-  /** Shape sent to the frontend. Never includes internals or credentials. */
+  /**
+   * Shape sent to the frontend.
+   *
+   * Only `details` is included. `privateDetails` is withheld by design — it is
+   * where credentials-adjacent diagnostic context lives, so adding it here
+   * would defeat the reason it exists.
+   */
   toJSON(): { error: { code: ErrorCode; message: string; retryable: boolean; details?: Record<string, unknown> } } {
     return {
       error: {

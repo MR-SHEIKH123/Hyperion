@@ -19,8 +19,10 @@
  *     executable plausible, do the args point inside the scoped root) and say so
  *     plainly, so the UI never shows a green tick we didn't earn.
  */
+import fs from 'node:fs';
 import { env } from '../../config/env.ts';
 import { isInScope } from '../../security/fsScope.ts';
+import type { ScopeName } from '../../security/fsScope.ts';
 import { getMcpProcessManager } from '../../orchestrator/agents.ts';
 import { createLogger } from '../../util/logger.ts';
 import type { McpServerRecord } from './registry.ts';
@@ -209,6 +211,17 @@ async function testLocal(server: McpServerRecord): Promise<McpTestResult> {
   };
 }
 
+/**
+ * Roots a stdio server may legitimately be pointed at.
+ *
+ * `projects` is the user's code. `mcp` is the server's *own* installation
+ * directory (`~/AIStudio/mcp/<name>/`) — its virtual environment and any data
+ * files it generates. A server being handed a path to its own artefacts is not
+ * a containment breach, and treating it as one meant our own seeded defaults
+ * failed their own config check.
+ */
+const ALLOWED_ARG_SCOPES: ScopeName[] = ['projects', 'mcp'];
+
 /** Cheap static sanity checks for a stdio server. */
 function staticProblems(server: McpServerRecord): string[] {
   const problems: string[] = [];
@@ -216,18 +229,46 @@ function staticProblems(server: McpServerRecord): string[] {
   if (command === '') problems.push('No command is configured.');
   if (/[\r\n]/.test(command)) problems.push('The command contains a line break.');
 
+  // An absolute command names a concrete file, so its absence is knowable now
+  // rather than at spawn time. A bare command (`npx`, `python`) is resolved
+  // from PATH by the OS and is not ours to second-guess here.
+  if (command !== '' && looksAbsolute(command) && !fs.existsSync(command)) {
+    problems.push(
+      `The executable "${command}" does not exist yet. A server that runs from its own ` +
+        'virtual environment needs its one-time setup done first — see the MCP section of ' +
+        'docs/CONTRACTS.md.',
+    );
+  }
+
   // A filesystem-style server takes a directory argument. Any argument that
-  // looks like an absolute path must stay inside the scoped project root — this
-  // is the same containment the Code tool is held to.
+  // looks like an absolute path must stay inside a root we control — this is
+  // the same containment the Code tool is held to.
   for (const arg of server.args) {
-    const looksAbsolute = /^([A-Za-z]:[\\/]|\/)/.test(arg);
-    if (!looksAbsolute) continue;
-    if (!isInScope('projects', arg)) {
+    if (!looksAbsolute(arg)) continue;
+
+    if (!ALLOWED_ARG_SCOPES.some((scope) => isInScope(scope, arg))) {
       problems.push(
-        `The path "${arg}" is outside the allowed root (${env.paths.projects}); ` +
-          'filesystem access is scoped deliberately.',
+        `The path "${arg}" is outside the allowed roots (${env.paths.projects} and ` +
+          `${env.paths.mcp}); filesystem access is scoped deliberately.`,
+      );
+      continue;
+    }
+
+    // In scope but not there yet. A data file a server reads at startup (a
+    // pre-built graph, an index) has to be generated before the server can
+    // run, and saying so now beats a spawn failure later. Extension-less
+    // arguments are left alone: those are directories, which a server may
+    // legitimately create for itself on first run.
+    if (/\.[A-Za-z0-9]+$/.test(arg) && !fs.existsSync(arg)) {
+      problems.push(
+        `The file "${arg}" does not exist yet; it has to be generated before this server ` +
+          'can start — see the MCP section of docs/CONTRACTS.md.',
       );
     }
   }
   return problems;
+}
+
+function looksAbsolute(value: string): boolean {
+  return /^([A-Za-z]:[\\/]|\/)/.test(value);
 }

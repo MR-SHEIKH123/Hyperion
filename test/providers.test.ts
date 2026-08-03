@@ -313,7 +313,7 @@ test('usage is reported for the cost dashboard', async () => {
   assert.deepEqual(usage, { tokensIn: 11, tokensOut: 22 });
 });
 
-// --- local detection ------------------------------------------------------
+// --- local detection -----------------------------------------------------
 
 test('an absent local runner reports not-detected immediately, without retrying', async () => {
   const port = await unusedPort();

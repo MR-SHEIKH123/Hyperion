@@ -64,6 +64,13 @@ export interface MockBehaviour {
   tokens?: string[];
   /** Status to return instead of streaming (e.g. 500, 401). */
   failStatus?: number;
+  /** Status to return from GET /models instead of a model list. */
+  modelsFailStatus?: number;
+  /**
+   * Raw body sent with `failStatus`/`modelsFailStatus`. Real gateways echo the
+   * rejected credential here, which is exactly what must not reach the client.
+   */
+  failBody?: string;
   /** Fail only the first N stream requests, then behave normally. */
   failFirst?: number;
   /** Emit these tokens, then abort the connection mid-stream. */
@@ -99,6 +106,11 @@ export async function startMockProvider(initial: MockBehaviour = {}): Promise<Mo
 
     if (url.endsWith('/models')) {
       modelCalls++;
+      if (behaviour.modelsFailStatus !== undefined) {
+        res.writeHead(behaviour.modelsFailStatus, { 'Content-Type': 'application/json' });
+        res.end(behaviour.failBody ?? JSON.stringify({ error: { message: 'mock failure' } }));
+        return;
+      }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(
         JSON.stringify({
@@ -124,7 +136,7 @@ export async function startMockProvider(initial: MockBehaviour = {}): Promise<Mo
 
         if (shouldFail) {
           res.writeHead(behaviour.failStatus ?? 500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: { message: 'mock failure' } }));
+          res.end(behaviour.failBody ?? JSON.stringify({ error: { message: 'mock failure' } }));
           return;
         }
 

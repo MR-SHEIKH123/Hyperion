@@ -1,5 +1,5 @@
 node_modules/
-logs/
+/logs/
 *.log
 
 # Local configuration — may contain the bind address / paths for this machine
@@ -7,7 +7,13 @@ logs/
 
 # Never commit runtime data. The data root lives outside the repo by default
 # (~/AIStudio), but guard against it being pointed here.
-data/
+#
+# The runtime-data patterns below are anchored with a leading slash on purpose.
+# An unanchored pattern like `skills/` matches at every depth, which silently
+# swallowed the whole `src/services/skills/` source tree — git never saw it.
+# Anchoring keeps the guard on the data root, where it was aimed, without
+# shadowing source directories that happen to share a name.
+/data/
 *.db
 *.db-shm
 *.db-wal
@@ -18,12 +24,12 @@ data/
 *.key
 secret.key
 
-attachments/
-projects/
-skills/
-backups/
-tmp/
-mcp_config.json
+/attachments/
+/projects/
+/skills/
+/backups/
+/tmp/
+/mcp_config.json
 
 .DS_Store
 Thumbs.db

@@ -95,14 +95,25 @@ function mapMessage(row: MessageRow): MessageRecord {
 
 // --- chats -----------------------------------------------------------------
 
-export function listChats(options: { tool?: ToolName; includeArchived?: boolean; limit?: number } = {}): ChatRecord[] {
+/**
+ * Lists chats for the sidebar.
+ *
+ * Archived chats are hidden by default — that is the entire point of archiving.
+ * `includeArchived` widens the list to everything, and `archivedOnly` narrows it
+ * to just the archive, which is what a dedicated "Archived" view wants.
+ * `archivedOnly` wins if both are passed, since it is the more specific request.
+ */
+export function listChats(
+  options: { tool?: ToolName; includeArchived?: boolean; archivedOnly?: boolean; limit?: number } = {},
+): ChatRecord[] {
   const clauses: string[] = [];
   const values: (string | number)[] = [];
   if (options.tool) {
     clauses.push('tool = ?');
     values.push(options.tool);
   }
-  if (!options.includeArchived) clauses.push('archived = 0');
+  if (options.archivedOnly) clauses.push('archived = 1');
+  else if (!options.includeArchived) clauses.push('archived = 0');
   const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
   values.push(options.limit ?? 200);
   return getDb()
@@ -175,13 +186,26 @@ export function touchChat(
     .run(now, input.opened ? 1 : 0, now, input.modelId ?? null, input.providerId ?? null, input.title ?? null, id);
 }
 
-/** Records that a chat was opened. Resets the 1-month cleanup timer. */
+/** Records that a chat was opened. Resets the idle cleanup timer. */
 export function markChatOpened(id: string): void {
   getDb().prepare(`UPDATE chats SET last_opened_at = ? WHERE id = ?`).run(Date.now(), id);
 }
 
 export function setChatPinned(id: string, pinned: boolean): ChatRecord {
   getDb().prepare(`UPDATE chats SET pinned = ?, updated_at = ? WHERE id = ?`).run(pinned, Date.now(), id);
+  return requireChat(id);
+}
+
+/**
+ * Archives or unarchives a chat.
+ *
+ * Archiving hides a chat from the default list *and* exempts it from the idle
+ * cleanup sweep, exactly as pinning does. It means "keep this, just get it out
+ * of my way" — the opposite of a step toward deletion — so a chat you archive
+ * today is still there in a year.
+ */
+export function setChatArchived(id: string, archived: boolean): ChatRecord {
+  getDb().prepare(`UPDATE chats SET archived = ?, updated_at = ? WHERE id = ?`).run(archived, Date.now(), id);
   return requireChat(id);
 }
 

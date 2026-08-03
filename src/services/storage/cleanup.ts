@@ -3,12 +3,16 @@
  *
  * Two timers, from the spec:
  *   - assets untouched for 3 months are deleted (`last_accessed_at`)
- *   - chats not opened for 1 month are deleted (`last_opened_at`)
+ *   - chats not opened for 4 months are deleted (`last_opened_at`)
  *
  * And one absolute rule that overrides both: **a pinned item never expires.**
  * Pinning is the user saying "keep this" — it is not a hint or a sort order, so
  * pinned rows are excluded in SQL rather than filtered afterwards, where a
  * future refactor could quietly drop the check.
+ *
+ * Archived chats get the same protection. Archiving means "keep this, just out
+ * of my way" — an intentional filing decision, not a step toward deletion — so
+ * it would be a betrayal for the sweep to treat it as neglect.
  *
  * Design notes worth keeping:
  *
@@ -147,7 +151,7 @@ export function runCleanup(options: CleanupOptions = {}): CleanupResult {
   const expiredChats = db
     .prepare<{ id: string; title: string | null; last_opened_at: number }>(
       `SELECT id, title, last_opened_at FROM chats
-        WHERE pinned = 0 AND last_opened_at < ?
+        WHERE pinned = 0 AND archived = 0 AND last_opened_at < ?
         ORDER BY last_opened_at ASC`,
     )
     .all(chatCutoff);

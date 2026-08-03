@@ -35,6 +35,7 @@ import {
 } from '../db/chats.ts';
 import { computeCost, recordUsage } from '../db/usage.ts';
 import { autoResumeAfterFailover } from '../db/settings.ts';
+import { recallForTurn, rememberTurn } from '../services/memory/index.ts';
 import { AppError, toAppError } from '../util/errors.ts';
 import type {
   ChatMessage,
@@ -111,6 +112,17 @@ export async function sendMessage(input: SendMessageInput, sse: SseStream): Prom
     throw new AppError('bad_request', `Run "${resuming.runId}" does not belong to chat "${chat.id}".`);
   }
 
+  // An explicit "try again" is a request to re-evaluate from scratch. Without
+  // this, a provider that failed twice is still carrying that streak, so the
+  // very next failure trips the threshold immediately and the retry is judged
+  // on evidence the user was deliberately setting aside. Clearing the provider
+  // about to be used — the one the user picked, or the one that failed —
+  // restores the full 2-failure budget for this attempt.
+  if (resuming) {
+    const target = input.providerId ?? resuming.providerId;
+    if (target) router.clearFailureState(target);
+  }
+
   if (input.prompt !== undefined && input.prompt !== '') {
     appendMessage({
       chatId: chat.id,
@@ -127,7 +139,12 @@ export async function sendMessage(input: SendMessageInput, sse: SseStream): Prom
     ? history.find((message) => message.id === resuming.messageId) ?? null
     : null;
 
-  const requestMessages = buildRequest(input, history, priorAssistant);
+  // Memory recall. Returns null when the plugin toggle is off, when the backend
+  // is unavailable, or when nothing relevant was found, so the request shape is
+  // unchanged in the common case.
+  const memoryBlock = input.prompt ? await recallForTurn(input.prompt, input.tool) : null;
+
+  const requestMessages = buildRequest(input, history, priorAssistant, memoryBlock);
 
   const assistant: MessageRecord =
     priorAssistant ??
@@ -252,6 +269,13 @@ export async function sendMessage(input: SendMessageInput, sse: SseStream): Prom
     durationMs: Date.now() - startedAt,
   });
 
+  // Extraction runs only on a completed turn — never on the pause path, where
+  // the reply is a fragment. Fire-and-forget: a memory write must not delay or
+  // fail the response, and it no-ops when the toggle is off.
+  if (input.prompt) {
+    rememberTurn(input.prompt, content, { tool: input.tool, chatId: chat.id });
+  }
+
   if (outcome.usage) {
     sse.send({
       event: 'usage',
@@ -344,8 +368,17 @@ async function runAttempt(args: AttemptArgs): Promise<Attempt> {
               modelId: input.modelId,
             },
           });
-        } else if (pendingResume) {
-          // The far side of a failover: this is a different provider, and the
+        }
+        // Checked independently of `open`, NOT as its `else` branch. A
+        // capability mismatch is decided during provider *selection*, so the
+        // router yields `switched` before its first `provider` event — the
+        // pause therefore arrives while `announced` is still false. Treating
+        // resume as the alternative to `open` meant that pause was never
+        // lifted and the frontend's paused banner stuck forever. Health
+        // failover, which switches mid-run after `open`, was the only case
+        // that worked.
+        if (pendingResume) {
+          // The far side of a switch: this is a different provider, and the
           // transient pause emitted alongside `switched` is now lifted.
           pendingResume = false;
           sse.send({
@@ -434,12 +467,16 @@ function buildRequest(
   input: SendMessageInput,
   history: MessageRecord[],
   priorAssistant: MessageRecord | null,
+  memoryBlock: string | null,
 ): ChatMessage[] {
   const usable = priorAssistant ? history.filter((message) => message.id !== priorAssistant.id) : history;
   const messages: ChatMessage[] = [];
 
   if (input.systemPrompt) {
     messages.push({ role: 'system', content: input.systemPrompt });
+  }
+  if (memoryBlock) {
+    messages.push({ role: 'system', content: memoryBlock });
   }
   messages.push(...toProviderMessages(usable));
 

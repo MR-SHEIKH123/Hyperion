@@ -393,6 +393,56 @@ test('a model no configured provider offers fails fast without any upstream call
   assert.equal(sink.first('paused')?.data.retryable, false);
 });
 
+test('a capability switch lifts its own pause instead of leaving the banner stuck', async () => {
+  // Alpha is active but only knows 'mock-model'; Beta is the standby that has
+  // the requested one. Priming both caches matters: the capability check is
+  // cache-only, and an empty cache means "might work", which would send the
+  // request to Alpha instead of switching.
+  useAlpha();
+  useBeta();
+  alpha.behave({ models: [MODEL] });
+  beta.behave({ models: [MODEL, 'special-model'], tokens: ['Beta'] });
+  const { ensureModelsCached } = await import('../src/providers/registry.ts');
+  const { listProviders } = await import('../src/providers/repository.ts');
+  for (const provider of listProviders()) await ensureModelsCached(provider);
+
+  const before = alpha.streamCalls.length;
+  const { sse, sink } = newStream();
+
+  const result = await sendMessage(
+    { chatId: 'chat-capswitch', tool: 'chat', modelId: 'special-model', prompt: 'hi' },
+    sse,
+  );
+
+  assert.equal(result.state, 'complete');
+  assert.equal(result.content, 'Beta');
+  assert.equal(alpha.streamCalls.length, before, 'the mismatch is still decided from cache');
+
+  // The regression: a capability mismatch is settled during *selection*, so the
+  // switch is announced before the first `provider` event. When `resumed` was
+  // emitted only as the alternative to `open`, this pause was never lifted and
+  // the frontend's paused banner stayed up through a successful reply. Health
+  // failover, which switches after `open`, was the only path that worked.
+  const names = sink.names();
+  const pausedAt = names.indexOf('paused');
+  const openAt = names.indexOf('open');
+  const resumedAt = names.indexOf('resumed');
+  assert.ok(pausedAt >= 0, 'the switch is disclosed as a pause');
+  assert.equal(sink.first('paused')?.data.reason, 'capability_mismatch');
+  assert.ok(openAt > pausedAt, 'the replacement provider still announces itself');
+  assert.ok(resumedAt >= 0, 'and the pause must be lifted');
+  assert.ok(resumedAt > openAt, 'resumed follows open rather than replacing it');
+  assert.ok(names.indexOf('token') > resumedAt, 'output only starts once resumed is out');
+
+  assert.equal(sink.first('resumed')?.data.providerName, 'Beta');
+
+  const run = latestRunForChat('chat-capswitch');
+  assert.equal(run?.state, 'complete');
+  assert.equal(run?.providerName, 'Beta');
+  assert.equal(listPausedRuns('chat-capswitch').length, 0, 'nothing is left parked');
+});
+
+
 // --- crash recovery --------------------------------------------------------
 
 test('a run left streaming by a restart is reconciled to paused, not lost', async () => {

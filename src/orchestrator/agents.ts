@@ -24,9 +24,15 @@
  *     },
  *   });
  *
- * `cwd` is always already validated to be inside `~/AIStudio/projects/` before
- * you receive it — call `resolveInScope('projects', cwd)` yourself as well if you
- * ever accept a path from somewhere other than this backend.
+ * `cwd` is always already validated before you receive it, and the boundary it
+ * was validated against depends on the task. A parallel Code task works in its
+ * own git worktree under `~/AIStudio/worktrees/<task-id>/`, and is contained to
+ * *that* directory rather than to the projects root — otherwise two concurrent
+ * tasks could reach into each other's checkout. Everything else is contained to
+ * `~/AIStudio/projects/`. Pass `options.taskId` when you have one so the tighter
+ * boundary applies; without it, containment falls back to the projects root plus
+ * any registered worktree. If you ever accept a path from somewhere other than
+ * this backend, validate it yourself as well.
  *
  * FOR SOL — design agent
  *
@@ -135,18 +141,20 @@ export function requireTerminal(): TerminalModule {
  * The single entry point for running a shell command.
  *
  * Both the HTTP route and Kimi's code agent go through here so the scope check
- * cannot be bypassed by one caller forgetting it. Note the import is lazy: this
- * module is imported by `services/mcp/test.ts`, and `fsScope` pulls in `env`,
- * which would otherwise widen the import graph of every consumer.
+ * cannot be bypassed by one caller forgetting it. `options.taskId` tightens the
+ * boundary to that task's own worktree — the thing that keeps parallel Code
+ * tasks out of each other's directories. Note the import is lazy: this module
+ * is imported by `services/mcp/test.ts`, and `fsScope` pulls in `env`, which
+ * would otherwise widen the import graph of every consumer.
  */
 export async function executeCommand(
   cwd: string,
   command: string,
-  options?: { timeoutMs?: number; signal?: AbortSignal },
+  options?: { timeoutMs?: number; signal?: AbortSignal; taskId?: string },
 ): Promise<CommandResult> {
   const module = requireTerminal();
-  const { resolveInScope } = await import('../security/fsScope.ts');
-  const safeCwd = resolveInScope('projects', cwd);
+  const { containAgentCwd } = await import('../services/code/worktree.ts');
+  const safeCwd = containAgentCwd(cwd, options?.taskId);
   return module.executeCommand(safeCwd, command, options);
 }
 
