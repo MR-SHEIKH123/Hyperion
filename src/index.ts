@@ -8,7 +8,7 @@
  */
 import 'dotenv/config';
 
-import { env, ensureDirectories } from './config/env.ts';
+import { env, ensureDirectories, migrateLegacyHome } from './config/env.ts';
 import { closeDb, openDatabase, setDb } from './db/adapter.ts';
 import { runMigrations } from './db/migrate.ts';
 import { reconcileOrphanedRuns } from './orchestrator/runState.ts';
@@ -23,6 +23,21 @@ import type { Server } from 'node:http';
 const log = createLogger('boot');
 
 function bootstrap(): void {
+  // Strictly before ensureDirectories(): it creates the data root, which would
+  // make "the current home does not exist yet" false and stop this from ever
+  // firing. A pre-rename install would then boot into an empty home while its
+  // real chats and settings sat untouched in ~/AIStudio.
+  const legacy = migrateLegacyHome();
+  if (legacy.migrated) {
+    log.info('migrated data directory from the pre-rename location', {
+      from: legacy.from,
+      to: legacy.to,
+      ...(legacy.renamed.length > 0 ? { renamed: legacy.renamed } : {}),
+    });
+  } else if (legacy.conflict) {
+    log.warn(`left the legacy data directory alone: ${legacy.reason}`);
+  }
+
   ensureDirectories();
 
   const db = openDatabase(env.paths.db);

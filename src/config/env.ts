@@ -246,3 +246,98 @@ export function ensureDirectories(): void {
     /* best effort — chmod is largely a no-op on Windows */
   }
 }
+
+// --- one-time legacy home migration ----------------------------------------
+
+/** The data directory used before the AIStudio -> Hyperion rename. */
+const LEGACY_HOME = path.join(os.homedir(), 'AIStudio');
+
+/**
+ * Pre-rename database filenames. The -shm/-wal siblings must travel with the
+ * main file: the WAL holds committed transactions not yet checkpointed into it,
+ * so moving the .db alone can silently discard the most recent writes.
+ */
+const LEGACY_DB_FILES = ['aistudio.db', 'aistudio.db-shm', 'aistudio.db-wal'] as const;
+
+export interface LegacyHomeMigration {
+  migrated: boolean;
+  /** Both directories exist, so the choice between them needs a human. */
+  conflict: boolean;
+  from: string;
+  to: string;
+  /** Why nothing moved, when `migrated` is false. */
+  reason?: string;
+  /** `old -> new` for each database file renamed inside the moved directory. */
+  renamed: string[];
+}
+
+/**
+ * Move a pre-rename `~/AIStudio` data directory to the current home, once.
+ *
+ * Without this, upgrading past the rename points the app at a home that does
+ * not exist yet, so it creates an empty one and boots with no chats, providers
+ * or settings. The old data is still on disk, which makes that a silent and
+ * very alarming loss rather than a real one.
+ *
+ * Refuses when both directories exist. At that point there is data in both and
+ * only the owner knows which matters; merging could bury a live database under
+ * a stale one, so the safe move is to do nothing and report it.
+ *
+ * MUST run before ensureDirectories(), which creates the target and would make
+ * the "current home does not exist yet" precondition false forever.
+ */
+export function migrateLegacyHome(
+  legacy: string = LEGACY_HOME,
+  target: string = paths.home,
+): LegacyHomeMigration {
+  const base: LegacyHomeMigration = {
+    migrated: false,
+    conflict: false,
+    from: legacy,
+    to: target,
+    renamed: [],
+  };
+
+  if (path.resolve(legacy) === path.resolve(target)) {
+    return { ...base, reason: 'legacy and current home are the same directory' };
+  }
+  if (!fs.existsSync(legacy)) {
+    return { ...base, reason: 'no legacy data directory' };
+  }
+  if (fs.existsSync(target)) {
+    return {
+      ...base,
+      conflict: true,
+      reason:
+        `both ${legacy} and ${target} exist, so they were left alone. ` +
+        `Move anything still needed out of ${legacy} by hand, then delete it.`,
+    };
+  }
+
+  // A custom HYPERION_HOME can sit anywhere, including under a parent that does
+  // not exist yet; rename would fail with ENOENT on that parent.
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+
+  try {
+    fs.renameSync(legacy, target);
+  } catch (error) {
+    // rename cannot cross filesystems (separate drive, mounted home), and that
+    // is a normal setup rather than a failure — fall back to copy-then-remove.
+    if ((error as { code?: string }).code !== 'EXDEV') throw error;
+    fs.cpSync(legacy, target, { recursive: true });
+    fs.rmSync(legacy, { recursive: true, force: true });
+  }
+
+  // The database file was renamed along with the app, so the directory we just
+  // moved still contains aistudio.db.
+  const renamed: string[] = [];
+  for (const legacyName of LEGACY_DB_FILES) {
+    const from = path.join(target, legacyName);
+    if (!fs.existsSync(from)) continue;
+    const name = legacyName.replace('aistudio.db', 'hyperion.db');
+    fs.renameSync(from, path.join(target, name));
+    renamed.push(`${legacyName} -> ${name}`);
+  }
+
+  return { ...base, migrated: true, renamed };
+}

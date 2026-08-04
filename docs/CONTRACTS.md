@@ -600,4 +600,114 @@ a URL that does not exist.
 `suggestedName` and `type` are pre-fill values for the add-server form. The user
 can change both, and `POST /api/mcp/servers` re-validates independently.
 
+---
+
+## Legacy data directory (added by Prompt 1.11)
+
+**Who depends on this:** anyone who ran the app when it was called AIStudio.
+Nothing in the running system reads the old location — this is a one-time
+startup step whose only job is to make the rename invisible.
+
+At boot, **before** the data directories are created, `migrateLegacyHome()`
+moves `~/AIStudio` to `~/Hyperion` and renames `aistudio.db` (plus its `-wal`
+and `-shm` siblings) to `hyperion.db`. It logs what it did and carries on.
+
+Three rules that matter if you touch this:
+
+- **It must run before `ensureDirectories()`.** That function creates
+  `~/Hyperion`, and the migration only fires when the target does *not* exist.
+  Reverse the order and the migration silently never runs again — the ordering
+  is load-bearing, not stylistic.
+- **Both directories existing is a refusal, not a merge.** If `~/AIStudio` and
+  `~/Hyperion` are both present the migration touches neither and logs a
+  warning. Two data directories mean two databases, and picking one — or
+  interleaving them — would destroy whichever the user actually cared about.
+  Resolving that is a human decision.
+- **It is idempotent and safe on a clean install.** No legacy directory is the
+  normal case and is a silent no-op; in particular it does not create the
+  target as a side effect of looking for it.
+
+Cross-device moves fall back to copy-then-delete, because `~/AIStudio` and
+`~/Hyperion` can legitimately sit on different volumes.
+
+---
+
+## Colibrì providers (added by Prompt 1.12)
+
+**Who depends on this:** the frontend's provider settings screen, which must
+show the performance caveat before enabling one; and anything that calls
+`enableProvider()` directly, which deliberately does *not* inherit the gate.
+
+Colibrì is the fourth `ProviderType`, alongside `remote`, `local` and
+`opencodex`. It runs a very large quantised model on ordinary hardware by
+streaming expert tensors from disk instead of keeping them in VRAM.
+
+### It needs no new adapter
+
+Colibrì serves a genuine OpenAI-compatible surface — `GET /v1/models` and
+`POST /v1/chat/completions` — so `adapterFor()` routes it to the same
+`openAiAdapter` as `remote`. This is the opposite of `opencodex`, which needed
+its own adapter because it speaks the Responses API inbound and rejects
+`/chat/completions`. Do not add a Colibrì adapter "for symmetry"; it would be
+duplicated code with its own drift.
+
+No API key is expected. `authHeaders()` already omits the header when no key is
+stored, so a local Colibrì works with nothing configured.
+
+### There is no `port` field
+
+Colibrì's port is a CLI flag (`coli serve --port 8000`), not a fixed constant.
+The stored `baseUrl` is the single source of truth, exactly as for every other
+provider type. `GET /api/providers/colibri/advisory` returns
+`defaultBaseUrl: 'http://localhost:8000/v1'` purely so a form can be pre-filled.
+
+Adding a separate `port` column would create two places that disagree the moment
+someone edits one of them.
+
+### The acknowledgement is enforced by the backend
+
+`POST /api/providers/:id/enable` refuses a `colibri` provider unless the request
+body carries `acknowledgeSlow: true`, returning **400 `bad_request`** with the
+full caveat text in `details.caveat`.
+
+This lives in the backend rather than being left to the UI because this repo has
+no frontend: a caveat that exists only as advisory metadata is one that any
+future client can forget to render. Returning the text in the refusal means the
+warning travels with the error and cannot be skipped by accident.
+
+The caveat is deliberately blunt about prefill latency and roughly one token per
+second. Softening it into "may be slower than cloud models" would mean the first
+long silence gets reported as a bug — and the user would be right to report it.
+
+### The gate is on the route, never on `enableProvider()`
+
+This is the part that is easy to "fix" into a bug.
+
+`enableProvider()` is called by automatic failover to promote a standby provider
+when the active one dies. Putting the acknowledgement check inside that function
+would make a Colibrì provider unusable as a fallback — stranding the user with
+no working provider at exactly the moment a slow-but-working one is most wanted.
+There is no human present during failover to acknowledge anything.
+
+So the gate sits in the HTTP layer, on the user-initiated enable route only.
+`requireSlowAcknowledgement()` is exported separately from the repository
+function for this reason. If you add another user-facing path that enables a
+provider, call it there too.
+
+It also gates *enabling*, not *creating*: `POST /api/providers` with
+`type: 'colibri'` needs no flag, because a configured-but-disabled provider
+cannot surprise anyone.
+
+### The probe is advisory and registers nothing
+
+`POST /api/providers/colibri/probe` answers "is something Colibrì-shaped
+listening at this URL?" and nothing more. A miss returns `detected: false` with
+a `reason` rather than throwing, matching the `/detect-local` contract so a
+client never has to special-case a failed probe.
+
+It makes a **single** attempt, unlike Ollama detection's three. The URL was
+typed by hand moments earlier, so a failure is far more likely a wrong port than
+a cold start, and retrying it three times only delays telling the user so.
+
+
 

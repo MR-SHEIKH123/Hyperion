@@ -28,10 +28,20 @@ export function isToolName(value: unknown): value is ToolName {
  *   local     — auto-detected local runner (Ollama): /api/tags + /api/chat
  *   opencodex — local opencodex proxy: /v1/models + /v1/responses (the OpenAI
  *               *Responses* API, which is NOT chat-completions shaped)
+ *   colibri   — local Colibrì server: /v1/models + /v1/chat/completions. Genuinely
+ *               chat-completions shaped, so it reuses the `openai` adapter; it is
+ *               a distinct type because its operational profile (registered by
+ *               hand, one generation at a time, minutes-to-hours per reply) is
+ *               nothing like a hosted gateway's.
  */
-export type ProviderType = 'remote' | 'local' | 'opencodex';
+export type ProviderType = 'remote' | 'local' | 'opencodex' | 'colibri';
 
-export const PROVIDER_TYPES: readonly ProviderType[] = ['remote', 'local', 'opencodex'];
+export const PROVIDER_TYPES: readonly ProviderType[] = [
+  'remote',
+  'local',
+  'opencodex',
+  'colibri',
+];
 
 export function isProviderType(value: unknown): value is ProviderType {
   return typeof value === 'string' && (PROVIDER_TYPES as readonly string[]).includes(value);

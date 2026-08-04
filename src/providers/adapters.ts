@@ -570,6 +570,9 @@ interface ResponsesStreamFrame {
  * Exhaustive on purpose: the previous ternary let any unrecognized type fall
  * through to the OpenAI adapter, which would have handed opencodex a
  * `/chat/completions` request it does not accept.
+ *
+ * Keep it exhaustive with no `default`. That is what makes adding a provider
+ * type a compile error here rather than a silent mis-route at runtime.
  */
 export function adapterFor(provider: ProviderRecord): ProviderAdapter {
   switch (provider.type) {
@@ -577,6 +580,11 @@ export function adapterFor(provider: ProviderRecord): ProviderAdapter {
       return ollamaAdapter;
     case 'opencodex':
       return openCodexAdapter;
+    // Colibrì serves real chat-completions (POST /v1/chat/completions) plus an
+    // OpenAI-shaped GET /v1/models, so the stock adapter is correct as-is. It
+    // needs no credential unless COLI_API_KEY is set, and `authHeaders()`
+    // already omits Authorization entirely when there is no stored key.
+    case 'colibri':
     case 'remote':
       return openAiAdapter;
   }

@@ -120,7 +120,7 @@ form** — only `hasKey` and a short `apiKeyHint`.
 ```ts
 {
   id: string; name: string;
-  type: 'remote' | 'local' | 'opencodex';
+  type: 'remote' | 'local' | 'opencodex' | 'colibri';
   baseUrl: string;
   hasKey: boolean; apiKeyHint: string | null;
   enabled: boolean; priority: number;
@@ -144,6 +144,8 @@ Three routes also spread a registry summary into the response:
 | GET | `/api/providers` | `{ providers: ProviderPublic[], ...summary }` |
 | POST | `/api/providers` | **201** `{ provider }` |
 | POST | `/api/providers/detect-local` | `LocalDetectionResult` (bare) |
+| GET | `/api/providers/colibri/advisory` | `ColibriAdvisory` (bare) |
+| POST | `/api/providers/colibri/probe` | `ColibriProbeResult & { defaultBaseUrl }` |
 | GET | `/api/providers/active/models` | `{ providerId, providerName, models }` |
 | GET | `/api/providers/active/current` | `{ provider: ProviderPublic \| null }` |
 | GET | `/api/providers/:id` | `{ provider }` |
@@ -155,15 +157,17 @@ Three routes also spread a registry summary into the response:
 | POST | `/api/providers/:id/test` | `{ ok, message, modelCount?, code? }` |
 
 **POST /api/providers** body: `name` (req), `type` (req, one of
-`remote` / `local` / `opencodex`), `baseUrl` (req), `apiKey?`, `priority?`,
-`enabled?`. `enabled` is body-only and defaults to false, so nothing —
-including local detection — can auto-enable a provider the user didn't turn on.
+`remote` / `local` / `opencodex` / `colibri`), `baseUrl` (req), `apiKey?`,
+`priority?`, `enabled?`. `enabled` is body-only and defaults to false, so
+nothing — including local detection — can auto-enable a provider the user
+didn't turn on.
 
 **PATCH /api/providers/:id** body: `name?`, `baseUrl?`, `priority?`,
 `apiKey?` (nullable — send `null` to remove a stored key). `type` is immutable.
 
 **Enable** applies the single-active rule: enabling one disables the previous
-active provider (standby, not deleted).
+active provider (standby, not deleted). For `colibri` providers the body must
+carry `acknowledgeSlow: true` — see §3.3.
 
 **Model lists** accept `?refresh=true` to bypass the cache
 (`HYPERION_MODEL_CACHE_TTL_MS`). `/active/models` 503s with `no_healthy_provider`
@@ -172,6 +176,62 @@ when nothing is enabled.
 **POST /api/providers/detect-local** body `{ baseUrl? }`, defaults to
 `HYPERION_OLLAMA_URL`. Retries up to 3 attempts before reporting not-detected;
 it never starts a background rescan.
+
+### 3.3 Colibrì
+
+Colibrì runs a very large quantised model on ordinary hardware by streaming
+expert tensors from disk instead of holding them in VRAM. It serves a genuine
+OpenAI-compatible surface (`GET /v1/models`, `POST /v1/chat/completions`), so it
+uses the same adapter as `remote` and needs no special request handling. What is
+different is its performance profile, and that is what these two routes exist
+for.
+
+**GET /api/providers/colibri/advisory** — no body. Returns:
+
+```ts
+{
+  type: 'colibri';
+  defaultBaseUrl: string;        // 'http://localhost:8000/v1'
+  caveat: string;                // multi-line prose, safe to render verbatim
+  acknowledgementRequired: true;
+  acknowledgementField: 'acknowledgeSlow';
+}
+```
+
+`defaultBaseUrl` is a suggestion for pre-filling a form, never an assumption:
+Colibrì's port is a CLI flag (`coli serve --port 8000`), so each provider row
+carries its own explicit `baseUrl`. There is no separate `port` field anywhere
+in the API.
+
+**POST /api/providers/colibri/probe** body `{ baseUrl? }`, defaulting to
+`defaultBaseUrl`. Returns
+`{ detected, baseUrl, models: ModelInfo[], reason?, defaultBaseUrl }`.
+
+A miss is a normal answer — `detected: false` with a `reason` — not an error, so
+a client never has to special-case a failed probe. An empty/whitespace
+`baseUrl` is the one exception and 400s. Unlike `detect-local` this makes a
+**single** attempt: the URL was typed by hand moments earlier, so a failure is
+far more likely a wrong port than a cold start, and retrying it three times only
+delays saying so. **The probe registers nothing** — create the provider with
+`POST /api/providers` afterwards.
+
+**The acknowledgement.** `POST /api/providers/:id/enable` refuses a `colibri`
+provider unless the body contains `acknowledgeSlow: true`, responding **400
+`bad_request`** with `details: { field: 'acknowledgeSlow', providerType:
+'colibri', caveat }`. The caveat text is repeated in that response
+deliberately: it means the warning travels with the refusal, so a client that
+never called `/colibri/advisory` still has everything it needs to show the user.
+The intended flow is show the caveat → user accepts → retry with the flag.
+
+Two deliberate limits on that gate:
+
+- It applies **only to this user-initiated route**, not to `enableProvider()`
+  itself. Automatic failover promotes a standby provider with no human present;
+  gating there would make a Colibrì provider unusable as a fallback at exactly
+  the moment a slow-but-working provider is most wanted.
+- It gates **enabling**, not creating. `POST /api/providers` with
+  `type: 'colibri'` needs no flag, because a provider that is merely configured
+  and switched off cannot surprise anyone.
 
 ---
 
@@ -785,7 +845,9 @@ deltas:
    and the stream stays open so the same connection can carry the resume.
 3. **Providers gained routes the spec didn't list**: full CRUD, `disable`,
    `detect-local`, `/:id/test`, `/active/current`, and per-provider model lists.
-   `type` now includes `opencodex`.
+   `type` now includes `opencodex` and `colibri`, and Colibrì adds
+   `/colibri/advisory` and `/colibri/probe` plus an acknowledgement flag on
+   enable (§3.3).
 4. **`/api/skills` intake is two-phase** (`upload`/`fetch` → preview →
    `confirm`) rather than a single POST, because the spec requires a parsed
    preview, a credential recommendation and a risk report *before* registration.

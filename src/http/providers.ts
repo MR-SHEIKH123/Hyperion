@@ -26,6 +26,7 @@ import {
   summarize,
   testProviderConnection,
 } from '../providers/registry.ts';
+import { colibriAdvisory, probeColibri, requireSlowAcknowledgement } from '../providers/colibri.ts';
 import { isProviderType, PROVIDER_TYPES } from '../types/core.ts';
 import { AppError } from '../util/errors.ts';
 import { wrap } from './errors.ts';
@@ -86,6 +87,34 @@ providersRouter.post(
   }),
 );
 
+/**
+ * The caveat a client must show before enabling a Colibrì provider, plus the
+ * suggested base URL for the create form. Read-only: registering and enabling
+ * remain explicit, separate acts.
+ */
+providersRouter.get(
+  '/colibri/advisory',
+  wrap((_req, res) => {
+    res.json(colibriAdvisory());
+  }),
+);
+
+/**
+ * Probe a candidate Colibrì endpoint. Unlike `/detect-local` this registers
+ * nothing: Colibrì is added by hand, and the probe exists to confirm the URL
+ * before saving it. A miss is 200 with `detected: false`, same as detect-local.
+ */
+providersRouter.post(
+  '/colibri/probe',
+  wrap(async (req, res) => {
+    const baseUrl = body(req).baseUrl;
+    const result = await probeColibri(
+      typeof baseUrl === 'string' && baseUrl.trim() !== '' ? baseUrl : undefined,
+    );
+    res.json({ ...result, defaultBaseUrl: colibriAdvisory().defaultBaseUrl });
+  }),
+);
+
 /** Models from whichever provider is active. No curated list anywhere. */
 providersRouter.get(
   '/active/models',
@@ -124,11 +153,23 @@ providersRouter.delete(
   }),
 );
 
-/** Enabling one provider disables the previously active one (standby). */
+/**
+ * Enabling one provider disables the previously active one (standby).
+ *
+ * A Colibrì provider additionally requires `acknowledgeSlow: true`, and is
+ * refused with a 400 carrying the caveat text until it arrives. The gate sits
+ * here rather than in `enableProvider()` on purpose — automatic failover calls
+ * that function to promote a standby, and gating it there would make Colibrì
+ * unusable as a fallback at exactly the moment it is wanted.
+ */
 providersRouter.post(
   '/:id/enable',
   wrap((req, res) => {
-    const provider = enableProvider(pathParam(req, 'id'));
+    const id = pathParam(req, 'id');
+    const acknowledged = asBool(body(req).acknowledgeSlow, 'acknowledgeSlow') === true;
+    requireSlowAcknowledgement(requireProvider(id), acknowledged);
+
+    const provider = enableProvider(id);
     res.json({ provider: toPublic(provider), ...summarize() });
   }),
 );
