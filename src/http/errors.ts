@@ -10,7 +10,8 @@
 
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 
-import { AppError, toAppError } from '../util/errors.ts';
+import { AppError, bodyParserType, toAppError } from '../util/errors.ts';
+
 import { createLogger } from '../util/logger.ts';
 
 const log = createLogger('http');
@@ -47,11 +48,17 @@ export function errorHandler(
 ): void {
   const app = toAppError(error);
 
-  // Multer's own limit error is a client problem, not a server fault.
-  const status =
-    error !== null && typeof error === 'object' && (error as { code?: unknown }).code === 'LIMIT_FILE_SIZE'
-      ? 413
-      : app.status;
+  // "Too large" is a client problem, but it deserves its own status rather than
+  // a flat 400: multer reports it as LIMIT_FILE_SIZE, body-parser as
+  // entity.too.large. Both are normalized to `bad_request` for the code the
+  // frontend branches on, so the status has to be restored here.
+  const tooLarge =
+    (error !== null &&
+      typeof error === 'object' &&
+      (error as { code?: unknown }).code === 'LIMIT_FILE_SIZE') ||
+    bodyParserType(error) === 'entity.too.large';
+  const status = tooLarge ? 413 : app.status;
+
 
   if (status >= 500) {
     // `privateDetails` is withheld from the response by design, so the server log

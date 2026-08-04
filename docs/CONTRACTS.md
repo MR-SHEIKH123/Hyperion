@@ -632,7 +632,35 @@ Cross-device moves fall back to copy-then-delete, because `~/AIStudio` and
 
 ---
 
+## Malformed requests are client errors (found by HTTP smoke testing)
+
+**Who depends on this:** the frontend's error handling, which branches on
+`error.code` and treats `internal_error` as "the backend is broken".
+
+Express and body-parser reject some requests *before* any route handler runs: a
+bad percent-escape in the path (`/api/providers/%ZZ`) throws `URIError`, and an
+unparseable JSON body throws `SyntaxError`. Both arrive at the error middleware
+already tagged with a 4xx `status`.
+
+`toAppError()` reads that tag. Anything tagged 4xx becomes `bad_request`;
+untagged errors still become `internal_error`. Three details are load-bearing:
+
+- **The parser's message stays server-side.** body-parser quotes the offending
+  input, so echoing it would put a pasted secret in a response body. The public
+  message is generic and the parser text goes in `privateDetails`.
+- **413 survives normalization.** "Too large" is normalized to the
+  `bad_request` *code* so the frontend has one validation branch, but the
+  *status* is restored in `errorHandler` — from multer's `LIMIT_FILE_SIZE` or
+  body-parser's `entity.too.large`.
+- **Handler-level validation is untouched.** A body that parses but is missing a
+  field still 400s from `asString()`, with `details.field` intact.
+
+These paths are unreachable from module-level tests, which is why they shipped
+returning 500. `test/httperrors.test.ts` boots the real app on an ephemeral port
+and drives it with `fetch` — the only way to make Express throw these itself.
+
 ## Colibrì providers (added by Prompt 1.12)
+
 
 **Who depends on this:** the frontend's provider settings screen, which must
 show the performance caveat before enabling one; and anything that calls

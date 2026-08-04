@@ -131,6 +131,23 @@ const DEFAULT_RETRYABLE = new Set<ErrorCode>([
   'busy',
 ]);
 
+/** Reads the 4xx/5xx status Express and body-parser attach to their own errors. */
+function taggedStatus(error: unknown): number | undefined {
+  if (error === null || typeof error !== 'object') return undefined;
+  const candidate = error as { status?: unknown; statusCode?: unknown };
+  for (const value of [candidate.status, candidate.statusCode]) {
+    if (typeof value === 'number' && Number.isInteger(value)) return value;
+  }
+  return undefined;
+}
+
+/** body-parser tags its failures with a `type`, e.g. `entity.parse.failed`. */
+export function bodyParserType(error: unknown): string | undefined {
+  if (error === null || typeof error !== 'object') return undefined;
+  const type = (error as { type?: unknown }).type;
+  return typeof type === 'string' ? type : undefined;
+}
+
 /** Normalize anything thrown into an AppError. */
 export function toAppError(error: unknown): AppError {
   if (error instanceof AppError) return error;
@@ -146,6 +163,36 @@ export function toAppError(error: unknown): AppError {
     (error as { code: unknown }).code === 'scope_violation'
   ) {
     return new AppError('scope_violation', message, { cause: error });
+  }
+
+  // Express and body-parser reject malformed requests before any handler runs:
+  // a bad percent-escape in the path throws URIError, and an unparseable JSON
+  // body throws SyntaxError. Both arrive here already tagged with a 4xx status.
+  // Without this they fell through to internal_error, telling the client "the
+  // server broke" when in fact the request did — and putting a parser's message
+  // (which quotes the offending body) into a 500 the frontend cannot act on.
+  const status = taggedStatus(error);
+  if (status !== undefined && status >= 400 && status < 500) {
+    const type = bodyParserType(error);
+    if (status === 413 || type === 'entity.too.large') {
+      return new AppError('bad_request', 'The request body is too large.', {
+        details: { limit: 'See HYPERION_MAX_UPLOAD_BYTES / the 25mb JSON limit.' },
+        cause: error,
+      });
+    }
+    if (error instanceof URIError) {
+      return new AppError('bad_request', 'The request path is not correctly URL-encoded.', {
+        cause: error,
+      });
+    }
+    if (error instanceof SyntaxError || type !== undefined) {
+      // The parser message quotes the offending input, so it stays server-side.
+      return new AppError('bad_request', 'The request body is not valid JSON.', {
+        privateDetails: { parserMessage: message },
+        cause: error,
+      });
+    }
+    return new AppError('bad_request', message, { cause: error });
   }
 
   return new AppError('internal_error', message, { cause: error });
