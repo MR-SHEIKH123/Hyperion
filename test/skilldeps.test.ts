@@ -459,3 +459,274 @@ describe('what consumers see', () => {
     }
   });
 });
+
+/**
+ * A skill that shells out to `ffmpeg` is as broken without it as one missing a
+ * pip package, but the remedy is different: nothing failed, a person has to say
+ * yes to installing something machine-wide. These cases cover the reading of that
+ * requirement, and the state that represents the wait.
+ */
+describe('required system binaries', () => {
+  it('reads requires_binaries from front matter, ignoring the version constraint', () => {
+    const rel = writeSkill('bin-declared', {
+      'SKILL.md': [
+        '---',
+        'name: Clip maker',
+        'requires_binaries: [FFmpeg >= 6, pandoc]',
+        '---',
+        '',
+        'Cuts video.',
+      ].join('\n'),
+    });
+    const found = deps.detectDependencies(path.join(testHome, 'skills', rel));
+
+    assert.deepEqual(
+      found.binaries.map((binary) => binary.name),
+      ['ffmpeg', 'pandoc'],
+      'names are lowercased and ">= 6" is not part of a command name',
+    );
+    assert.ok(
+      found.binaries.every((binary) => binary.declared),
+      'the author asked for these, so they are not guesses',
+    );
+    assert.equal(
+      found.noneDeclared,
+      false,
+      'a skill needing only a binary must not take the none-declared early exit, ' +
+        'or the provisioner records it as runnable',
+    );
+    assert.deepEqual(found.deps, [], 'no packages were declared, only binaries');
+  });
+
+  it('ignores a requires_binaries entry that is not a plain command name', () => {
+    const rel = writeSkill('bin-path', {
+      'SKILL.md': [
+        '---',
+        'name: Odd one',
+        'requires_binaries:',
+        '  - /usr/local/bin/ffmpeg',
+        '  - pandoc',
+        '---',
+      ].join('\n'),
+    });
+    const found = deps.detectDependencies(path.join(testHome, 'skills', rel));
+
+    assert.deepEqual(
+      found.binaries.map((binary) => binary.name),
+      ['pandoc'],
+      'an absolute path describes one machine, not a command to look for on PATH',
+    );
+    assert.ok(
+      found.warnings.some((warning) => warning.includes('/usr/local/bin/ffmpeg')),
+      'a silently dropped requirement would look like the skill needs nothing',
+    );
+  });
+
+  it('infers a binary from the scripts when the author declared none', () => {
+    const rel = writeSkill('bin-inferred', {
+      'SKILL.md': '# Thumbnailer\n\nMakes thumbnails.\n',
+      'run.py': 'import subprocess\nsubprocess.run(["ffmpeg", "-i", src, out])\n',
+    });
+    const found = deps.detectDependencies(path.join(testHome, 'skills', rel));
+
+    const ffmpeg = found.binaries.find((binary) => binary.name === 'ffmpeg');
+    assert.ok(ffmpeg, 'a skill that shells out to ffmpeg needs ffmpeg');
+    assert.equal(ffmpeg.declared, false, 'this was a guess, and callers must be able to tell');
+    assert.equal(ffmpeg.source, 'run.py', 'the guess names the file it came from');
+  });
+
+  it('does not guess when the author already declared what is needed', () => {
+    const rel = writeSkill('bin-no-guess', {
+      'SKILL.md': ['---', 'name: Converter', 'requires_binaries: pandoc', '---'].join('\n'),
+      'run.py': 'subprocess.run(["ffmpeg", "-i", src, out])\n',
+    });
+    const found = deps.detectDependencies(path.join(testHome, 'skills', rel));
+
+    assert.deepEqual(
+      found.binaries.map((binary) => binary.name),
+      ['pandoc'],
+      'an explicit manifest is the answer; scanning past it would add a requirement ' +
+        'the author did not ask for',
+    );
+  });
+
+  it('a needs-user-approval row survives the database status CHECK', () => {
+    const rel = writeSkill('bin-status', {
+      'SKILL.md': ['---', 'name: Waiting', 'requires_binaries: ffmpeg', '---'].join('\n'),
+    });
+    const detection = deps.detectDependencies(path.join(testHome, 'skills', rel));
+    const skill = registry.insertSkill({
+      name: 'bin-status',
+      description: 'Needs a system tool',
+      sourceType: 'upload',
+      relPath: rel,
+      detection,
+    });
+
+    // What the provisioner writes when the probe found nothing on PATH. The write
+    // fails outright if migration 009 did not widen the CHECK.
+    registry.recordDependencyOutcome(skill.id, {
+      ...skill.deps,
+      status: 'needs-user-approval',
+      binaries: [{ name: 'ffmpeg', declared: true, source: 'SKILL.md', present: false }],
+      error: 'ffmpeg is not installed on this computer.',
+      provisionedAt: Date.now(),
+    });
+
+    const view = registry.dependencyView(registry.requireSkill(skill.id));
+    assert.equal(
+      view.status,
+      'needs-user-approval',
+      'the status must survive the round trip; an unrecognised one falls back to ' +
+        'none-declared, which reads as runnable',
+    );
+    assert.equal(view.runnable, false, 'the scripts would fail mid-task without ffmpeg');
+    assert.deepEqual(view.missingBinaries, ['ffmpeg']);
+    assert.equal(view.stale, false, 'nothing changed on disk, so this is not a stale install');
+  });
+
+  it('waiting on a person is not the same as having failed', () => {
+    const skill = registry.findSkillByName('bin-status');
+    assert.ok(skill);
+    const view = registry.dependencyView(skill);
+
+    assert.notEqual(
+      view.status,
+      'failed',
+      'nothing went wrong — reporting a fault would send the user to retry an install ' +
+        'instead of answering the question',
+    );
+    assert.deepEqual(view.failed, [], 'no dependency failed to install');
+  });
+
+  it('names the missing binary in the summary and the prompt block', () => {
+    const entry = registry.skillsSummary().find((s) => s.name === 'bin-status');
+    assert.ok(entry, 'an enabled skill appears in the summary');
+    assert.deepEqual(
+      entry.missingBinaries,
+      ['ffmpeg'],
+      'the caller writing the message to the user is the one reading this list',
+    );
+
+    const block = registry.skillsPromptBlock();
+    assert.ok(/needs ffmpeg installed/i.test(block), 'the model can name what to ask for');
+    assert.ok(
+      block.includes('bin-status'),
+      'the skill stays listed; hiding it would stop the model mentioning it at all',
+    );
+  });
+});
+
+/**
+ * The HTTP half of the approval gate.
+ *
+ * Driven through a real server because the point being asserted is the contract a
+ * frontend sees — that an unconfirmed request installs nothing, and that a refusal
+ * arrives as an answer rather than an error the UI has to special-case.
+ *
+ * Neither case reaches `where`/`which` or a package manager: `installBinary`
+ * refuses before probing, which is what makes it safe to assert here.
+ */
+describe('the approval route', () => {
+  let server: import('node:http').Server;
+  let base: string;
+  let skillId: string;
+
+  before(async () => {
+    const rel = writeSkill('bin-route', {
+      'SKILL.md': ['---', 'name: Route subject', 'requires_binaries: ffmpeg', '---'].join('\n'),
+    });
+    const detection = deps.detectDependencies(path.join(testHome, 'skills', rel));
+    skillId = registry.insertSkill({
+      name: 'bin-route',
+      sourceType: 'upload',
+      relPath: rel,
+      detection,
+    }).id;
+
+    const { createApp } = await import('../src/http/app.ts');
+    server = createApp().listen(0, '127.0.0.1');
+    await new Promise<void>((resolve, reject) => {
+      server.once('listening', resolve);
+      server.once('error', reject);
+    });
+    const address = server.address();
+    if (address === null || typeof address === 'string') {
+      throw new Error('expected an AddressInfo from listen(0)');
+    }
+    base = `http://127.0.0.1:${address.port}`;
+  });
+
+  after(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  it('installs nothing when the request did not confirm', async () => {
+    const res = await fetch(`${base}/api/skills/${skillId}/binaries`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'ffmpeg' }),
+    });
+    const payload = (await res.json()) as {
+      installed: boolean;
+      message: string;
+      installable: boolean;
+    };
+
+    assert.equal(res.status, 200, 'a refusal is an answer about the machine, not a bad request');
+    assert.equal(payload.installed, false);
+    assert.match(payload.message, /confirmation/i, 'the message says what is missing');
+    assert.equal(payload.installable, true, 'ffmpeg is on the curated list, so it can be offered');
+  });
+
+  it('says so plainly when a binary is not one it installs', async () => {
+    const res = await fetch(`${base}/api/skills/${skillId}/binaries`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'imagemagick', confirm: true }),
+    });
+    const payload = (await res.json()) as {
+      installed: boolean;
+      message: string;
+      installable: boolean;
+    };
+
+    assert.equal(res.status, 200);
+    assert.equal(payload.installed, false);
+    assert.equal(payload.installable, false);
+    assert.match(
+      payload.message,
+      /install it yourself/i,
+      'an unknown binary gets instructions, not a shrug — confirm: true must not widen ' +
+        'the allow-list',
+    );
+  });
+
+  it('rejects a request with no binary named', async () => {
+    const res = await fetch(`${base}/api/skills/${skillId}/binaries`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ confirm: true }),
+    });
+    const payload = (await res.json()) as { error: { code: string } };
+
+    assert.equal(res.status, 400, 'this one the caller can fix by retyping');
+    assert.equal(payload.error.code, 'bad_request');
+  });
+
+  it('keeps the skill readable at its own route afterwards', async () => {
+    const res = await fetch(`${base}/api/skills/${skillId}`);
+    const payload = (await res.json()) as {
+      skill: { dependencies: { binaries: { name: string }[]; runnable: boolean } };
+    };
+
+    assert.equal(res.status, 200, 'POST /:id/binaries must not shadow GET /:id');
+    assert.deepEqual(
+      payload.skill.dependencies.binaries.map((binary) => binary.name),
+      ['ffmpeg'],
+      'the requirement is on the record the UI already fetches',
+    );
+    assert.equal(payload.skill.dependencies.runnable, false);
+  });
+});
+

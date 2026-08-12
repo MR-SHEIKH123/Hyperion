@@ -18,6 +18,14 @@
  * pure instructions with no code to run — and produces `none-declared` rather
  * than an error.
  *
+ * Packages are only half the question. A skill that shells out to `ffmpeg` is
+ * just as broken without it as one missing a pip package, but no manifest
+ * mentions it, so `requires_binaries:` in the front matter is read as well — and
+ * when the author declared nothing, a narrow heuristic looks for a handful of
+ * well-known commands in the skill's own files. Nothing here probes the machine
+ * or installs anything: this module reports what a skill *needs*, and the
+ * provisioner decides what is actually present.
+ *
  * Two deliberate limits:
  *
  *   1. **We install what a skill *declares*, never what it *scripts*.** Entries
@@ -47,12 +55,24 @@ export type DepEcosystem = 'python' | 'node';
 /**
  * The per-skill provisioning outcome.
  *
- * Exactly these four values are stored and returned; "currently installing" and
+ * Exactly these five values are stored and returned; "currently installing" and
  * "the manifest changed since we installed" are *derived* at read time rather
  * than being extra statuses, so this contract stays small for the agentic layer
  * that branches on it.
+ *
+ * `needs-user-approval` is not a failure. It means a required *system* binary is
+ * missing and installing one is a machine-wide change only the user can approve.
+ * Both it and `failed` are non-runnable, which is exactly why they must stay
+ * distinguishable: the status decides whether the UI shows a fix-it error or a
+ * question. Adding a value here also means adding it to `DEPS_STATUSES` in
+ * `registry.ts`, or `mapDeps` silently reads the row back as `none-declared`.
  */
-export type DepsStatus = 'none-declared' | 'ready' | 'partial' | 'failed';
+export type DepsStatus =
+  | 'none-declared'
+  | 'ready'
+  | 'partial'
+  | 'failed'
+  | 'needs-user-approval';
 
 export type ManifestKind = 'requirements.txt' | 'pyproject.toml' | 'package.json' | 'skill.md';
 
@@ -81,12 +101,34 @@ export interface DeclaredDep {
   rejected: string | null;
 }
 
+/**
+ * A system command a skill needs but that no package manager will supply.
+ *
+ * `declared` separates the two ways we can learn about one, because the user
+ * deserves to know which they are looking at: "this skill's author says it needs
+ * ffmpeg" and "we noticed ffmpeg in scripts/clip.py" warrant differently worded
+ * questions. Both block until answered — a guess that turns out to be right
+ * saves a baffling mid-task failure, and a guess that turns out to be wrong
+ * costs one click — but the wording should never present the second as the
+ * first.
+ */
+export interface RequiredBinary {
+  /** The command as it would be typed, lowercased. */
+  name: string;
+  /** True when the author asked for it; false when we inferred it. */
+  declared: boolean;
+  /** Where we saw it — a manifest path, or the file the heuristic matched. */
+  source: string;
+}
+
 export interface DependencyDetection {
   /** True when no manifest declared anything at all. */
   noneDeclared: boolean;
   ecosystems: DepEcosystem[];
   manifests: DetectedManifest[];
   deps: DeclaredDep[];
+  /** System commands the skill needs on PATH. Empty for most skills. */
+  binaries: RequiredBinary[];
   /**
    * `package.json` lifecycle scripts we will not run. Recorded so the user can
    * see *why* a package that relies on one may still be unusable.
@@ -141,6 +183,33 @@ const FRONTMATTER_KEYS: { key: string; ecosystem: DepEcosystem | 'either' }[] = 
   { key: 'npm_dependencies', ecosystem: 'node' },
 ];
 
+/** Front-matter keys that declare *system* commands rather than packages. */
+const BINARY_KEYS = ['requires_binaries', 'requiresbinaries', 'system_dependencies', 'binaries'];
+
+/**
+ * Commands the heuristic is allowed to infer.
+ *
+ * Deliberately tiny. The scan reads a skill's own scripts looking for these
+ * names, and every entry is a trade: a real one saves the user a baffling
+ * mid-task failure, a false positive stops a skill that would have worked. These
+ * three are safe bets because each is a well-known standalone executable whose
+ * name is not an ordinary English word, so seeing it in a script almost always
+ * means invoking it. Anything vaguer (`convert`, `sox`, `dot`) belongs in
+ * `requires_binaries:` where the author takes responsibility for it.
+ *
+ * Note this is *not* the install allow-list — see `INSTALLABLE_BINARIES` in
+ * `provision.ts`. Detecting a need is safe; installing is the part that changes
+ * the machine.
+ */
+const HEURISTIC_BINARIES = ['ffmpeg', 'ffprobe', 'pandoc'];
+
+/** Files the heuristic reads. Anything else is data, not something that runs. */
+const SCANNED_EXTENSIONS = new Set(['.py', '.js', '.mjs', '.cjs', '.ts', '.sh', '.bash', '.ps1']);
+
+/** Cap on the heuristic's work, so a skill bundling a corpus stays cheap. */
+const MAX_SCANNED_FILES = 40;
+const MAX_SCANNED_BYTES = 256 * 1024;
+
 // --- entry point ------------------------------------------------------------
 
 /** Reads a skill directory and reports what it declares. Never throws. */
@@ -150,6 +219,7 @@ export function detectDependencies(root: string): DependencyDetection {
     ecosystems: [],
     manifests: [],
     deps: [],
+    binaries: [],
     lifecycleScripts: [],
     fingerprint: '',
     warnings: [],
@@ -199,6 +269,7 @@ export function detectDependencies(root: string): DependencyDetection {
         for (const [ecosystem, raws] of parseFrontMatterDeps(text)) {
           collect(detection, entry, 'skill.md', ecosystem, raws);
         }
+        collectBinaries(detection, entry.file, text);
         break;
     }
   }
@@ -210,7 +281,17 @@ export function detectDependencies(root: string): DependencyDetection {
     detection.deps = detection.deps.slice(0, MAX_DEPS);
   }
 
-  detection.noneDeclared = detection.deps.length === 0;
+  // The heuristic only runs when the author declared nothing. Someone who wrote
+  // `requires_binaries:` has taken charge of that list, and mixing guesses into
+  // it would add entries they have no way to remove.
+  if (detection.binaries.length === 0) {
+    detection.binaries.push(...inferBinaries(root));
+  }
+
+  // A skill needing only `ffmpeg` has declared something, so it must not take the
+  // `none-declared` early exit in the provisioner — that exit means "nothing to
+  // check" and reports the skill as runnable.
+  detection.noneDeclared = detection.deps.length === 0 && detection.binaries.length === 0;
   detection.fingerprint = fingerprintOf(hashed);
   return detection;
 }
@@ -505,6 +586,116 @@ function parseFrontMatterDeps(text: string): Map<DepEcosystem, RawDep[]> {
       out.set(resolved, bucket);
     }
   }
+  return out;
+}
+
+// --- system binaries --------------------------------------------------------
+
+/**
+ * A command name we are willing to record: a bare executable, nothing more.
+ *
+ * The name reaches a `where`/`which` probe, and on Windows that probe runs
+ * through a shell, so anything with a space, slash or metacharacter is refused
+ * rather than quoted. A path is refused too — `requires_binaries: /usr/bin/ffmpeg`
+ * is asking us to check one machine's layout, which is not portable and not what
+ * the field means.
+ */
+const BINARY_NAME = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/;
+
+/** Reads `requires_binaries:` from front matter into the detection. */
+function collectBinaries(detection: DependencyDetection, file: string, text: string): void {
+  let manifest: ReturnType<typeof parseSkillMd>;
+  try {
+    manifest = parseSkillMd(text);
+  } catch {
+    return;
+  }
+
+  for (const key of BINARY_KEYS) {
+    const value = manifest.raw[key];
+    if (value === undefined) continue;
+    const entries = Array.isArray(value) ? value : value.split(',');
+
+    for (const entry of entries) {
+      // `ffmpeg >= 6` is a version constraint we cannot check and will not
+      // enforce; the name is the part that matters for "is it on PATH?".
+      const name = entry.trim().split(/[\s>=<]/)[0]?.toLowerCase() ?? '';
+      if (name === '') continue;
+      if (!BINARY_NAME.test(name)) {
+        detection.warnings.push(
+          `"${entry.trim()}" in ${key} is not a plain command name, so it was ignored.`,
+        );
+        continue;
+      }
+      if (detection.binaries.some((binary) => binary.name === name)) continue;
+      detection.binaries.push({ name, declared: true, source: file });
+    }
+  }
+}
+
+/**
+ * Looks for well-known commands in a skill's own scripts.
+ *
+ * Only runs when the author declared none. Matching is on a word boundary and
+ * limited to `HEURISTIC_BINARIES`, so this reports `ffmpeg` in
+ * `subprocess.run(["ffmpeg", ...])` and stays quiet about everything else. It
+ * reads at most `MAX_SCANNED_FILES` files and skips the same directories the
+ * manifest search does, because a skill's bundled `node_modules` is full of
+ * mentions that say nothing about what *this* skill runs.
+ *
+ * The caps are deliberately mean because `isStale` re-runs detection on every
+ * read of every skill, so this sits on the `GET /api/skills` path.
+ */
+function inferBinaries(root: string): RequiredBinary[] {
+  const out: RequiredBinary[] = [];
+  const queue: { dir: string; depth: number }[] = [{ dir: '', depth: 0 }];
+  let scanned = 0;
+
+  while (queue.length > 0 && scanned < MAX_SCANNED_FILES) {
+    const current = queue.shift();
+    if (current === undefined) break;
+
+    const absolute =
+      current.dir === '' ? root : path.join(root, current.dir.split('/').join(path.sep));
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(absolute, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (scanned >= MAX_SCANNED_FILES) break;
+      const relative = current.dir === '' ? entry.name : `${current.dir}/${entry.name}`;
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) {
+        if (SKIP_DIRS.has(entry.name.toLowerCase())) continue;
+        if (current.depth + 1 < MAX_DEPTH) queue.push({ dir: relative, depth: current.depth + 1 });
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      if (!SCANNED_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) continue;
+
+      let text: string;
+      try {
+        const stat = fs.statSync(path.join(absolute, entry.name));
+        if (stat.size > MAX_SCANNED_BYTES) continue;
+        text = fs.readFileSync(path.join(absolute, entry.name), 'utf8');
+      } catch {
+        continue;
+      }
+      scanned += 1;
+
+      for (const name of HEURISTIC_BINARIES) {
+        if (out.some((binary) => binary.name === name)) continue;
+        if (new RegExp(`\\b${name}\\b`, 'i').test(text)) {
+          out.push({ name, declared: false, source: relative });
+        }
+      }
+      if (out.length === HEURISTIC_BINARIES.length) return out;
+    }
+  }
+
   return out;
 }
 

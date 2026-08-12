@@ -32,7 +32,8 @@ import {
   toPublic,
   updateSkill,
 } from '../services/skills/registry.ts';
-import { provisionSkill } from '../services/skills/provision.ts';
+import { canInstallBinary, installBinary, provisionSkill } from '../services/skills/provision.ts';
+
 import { DISCLAIMER } from '../services/skills/riskscan.ts';
 
 import { AppError } from '../util/errors.ts';
@@ -176,6 +177,43 @@ skillsRouter.post(
   }),
 );
 
+/**
+ * Installs one system binary a skill is waiting on — the `needs-user-approval`
+ * exit.
+ *
+ * `confirm: true` is mandatory and deliberately not defaulted. Everything else in
+ * the skills system stays inside Hyperion's own directories; this installs
+ * software for the whole computer, so the decision has to arrive from a person.
+ * Without the flag the service refuses and says why.
+ *
+ * A refusal is a **200**, not a 4xx. "ffmpeg is not on the curated list" and
+ * "winget is not available here" are answers about the machine, not mistakes in
+ * the request, and the client renders the message either way. Only a malformed
+ * request (no `name`) is a 400. Read `installed` for the outcome and the returned
+ * skill for the new status.
+ *
+ * Registered before `/:id` so Express doesn't match "binaries" as an id.
+ */
+skillsRouter.post(
+  '/:id/binaries',
+  wrap(async (req, res) => {
+    const id = pathParam(req, 'id');
+    const payload = body(req);
+    const name = asString(payload.name, 'name');
+    const confirmed = asBool(payload.confirm, 'confirm') ?? false;
+
+    const result = await installBinary(id, name, { confirmed });
+    res.json({
+      installed: result.installed,
+      message: result.message,
+      // So a UI can tell "we could install this for you, just confirm" apart from
+      // "you have to do this yourself" without a second endpoint.
+      installable: canInstallBinary(name),
+      skill: toPublic(result.skill),
+    });
+  }),
+);
+
 skillsRouter.get(
   '/:id',
 
@@ -183,6 +221,7 @@ skillsRouter.get(
     res.json({ skill: toPublic(requireSkill(pathParam(req, 'id'))) });
   }),
 );
+
 
 const patchHandler = wrap(async (req, res) => {
   const id = pathParam(req, 'id');

@@ -55,6 +55,8 @@ export interface AssetRow {
   origin: string;
   tool: string | null;
   pinned: number;
+  is_brand_approved: number;
+  brand_approved_at: number | null;
   created_at: number;
   last_accessed_at: number;
 }
@@ -71,6 +73,15 @@ export interface AssetRecord {
   origin: AssetOrigin;
   tool: string | null;
   pinned: boolean;
+  /**
+   * Distinct from `pinned` (see migration 011): a pin means "do not auto-delete
+   * this", approval means "this IS the brand" — the asset an agent should reach
+   * for when it needs the real logo rather than a lookalike. Approval implies
+   * the cleanup exemption, but the reverse is not true.
+   */
+  brandApproved: boolean;
+  /** When approval was granted; null whenever `brandApproved` is false. */
+  brandApprovedAt: number | null;
   createdAt: number;
   lastAccessedAt: number;
 }
@@ -96,6 +107,8 @@ function mapRow(row: AssetRow): AssetRecord {
     origin: row.origin === 'generated' ? 'generated' : 'uploaded',
     tool: row.tool,
     pinned: row.pinned === 1,
+    brandApproved: row.is_brand_approved === 1,
+    brandApprovedAt: row.brand_approved_at,
     createdAt: row.created_at,
     lastAccessedAt: row.last_accessed_at,
   };
@@ -133,6 +146,8 @@ export interface AssetQuery {
   origin?: AssetOrigin;
   /** Only pinned (true) or only unpinned (false); omit for both. */
   pinned?: boolean;
+  /** Only brand-approved (true) or only unapproved (false); omit for both. */
+  brandApproved?: boolean;
   /** Substring match on the original filename. */
   search?: string;
   limit?: number;
@@ -166,6 +181,10 @@ function buildWhere(query: AssetQuery): { sql: string; params: unknown[] } {
   if (typeof query.pinned === 'boolean') {
     clauses.push('pinned = ?');
     params.push(query.pinned ? 1 : 0);
+  }
+  if (typeof query.brandApproved === 'boolean') {
+    clauses.push('is_brand_approved = ?');
+    params.push(query.brandApproved ? 1 : 0);
   }
   if (query.search) {
     clauses.push('filename LIKE ?');
@@ -348,6 +367,42 @@ export function setAssetPinned(id: string, pinned?: boolean): AssetRecord {
   const next = pinned ?? !asset.pinned;
   getDb().prepare('UPDATE attachments SET pinned = ? WHERE id = ?').run(next, id);
   return requireAsset(id);
+}
+
+/**
+ * Toggle or set brand approval. Approved assets are exempt from cleanup for the
+ * same reason pinned ones are — the exemption lives in `cleanup.ts`'s WHERE
+ * clauses, so read that file too before assuming this flag only affects sorting.
+ *
+ * The timestamp is cleared on unapproval rather than kept as history: a stale
+ * `brand_approved_at` on a revoked asset would make the approved listing's
+ * ordering depend on decisions the user has since taken back.
+ */
+export function setAssetBrandApproved(id: string, approved?: boolean): AssetRecord {
+  const asset = requireAsset(id);
+  const next = approved ?? !asset.brandApproved;
+  getDb()
+    .prepare('UPDATE attachments SET is_brand_approved = ?, brand_approved_at = ? WHERE id = ?')
+    .run(next, next ? Date.now() : null, id);
+  return requireAsset(id);
+}
+
+/**
+ * The brand's approved assets, most recently approved first — what an agent
+ * asks for when it needs the real logo instead of generating a lookalike.
+ * Ordered by approval time rather than creation time because the newest
+ * decision is the current one.
+ */
+export function listApprovedAssets(limit = 100): AssetPublic[] {
+  const rows = getDb()
+    .prepare<AssetRow>(
+      `SELECT * FROM attachments
+        WHERE is_brand_approved = 1
+        ORDER BY brand_approved_at DESC
+        LIMIT ?`,
+    )
+    .all(Math.min(Math.max(limit, 1), 500));
+  return rows.map((row) => toPublic(mapRow(row)));
 }
 
 /**

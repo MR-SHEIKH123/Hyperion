@@ -33,12 +33,36 @@ import { env } from '../../config/env.ts';
 import { fromRelative, toRelative } from '../../security/fsScope.ts';
 
 import { createLogger } from '../../util/logger.ts';
-import type { DeclaredDep, DependencyDetection } from './deps.ts';
+import type { DeclaredDep, DependencyDetection, RequiredBinary } from './deps.ts';
 import { clearProvisioning, detectDependencies, isProvisioning, markProvisioning } from './deps.ts';
-import type { FailedDep, SkillDeps, SkillRecord } from './registry.ts';
-import { recordDependencyOutcome } from './registry.ts';
+import type { CheckedBinary, FailedDep, SkillDeps, SkillRecord } from './registry.ts';
+import { recordDependencyOutcome, requireSkill } from './registry.ts';
 
 const log = createLogger('skills:deps');
+
+/**
+ * System binaries we are willing to install, and how, per platform.
+ *
+ * Short on purpose. Everything else in this file installs into a directory the
+ * skill owns; a system binary is a **machine-wide** change that outlives the
+ * skill and affects every other program on the computer. That is not a decision
+ * to make on a user's behalf from a string found in a skill's front matter, so
+ * an entry here only says an install is *offerable* — `installBinary` still
+ * refuses without explicit confirmation.
+ *
+ * `ffmpeg` is the whole list to start with: it is the one a media skill almost
+ * always wants, it is packaged under the same name by every manager below, and
+ * it installs without prompting. Adding an entry means checking both of those,
+ * because a manager that stops to ask a question mid-install is a hang.
+ */
+const INSTALLABLE_BINARIES: Record<string, { win32: string[]; darwin: string[]; linux: string[] }> =
+  {
+    ffmpeg: {
+      win32: ['winget', 'install', '--id', 'Gyan.FFmpeg', '-e', '--accept-source-agreements', '--accept-package-agreements'],
+      darwin: ['brew', 'install', 'ffmpeg'],
+      linux: ['apt-get', 'install', '-y', 'ffmpeg'],
+    },
+  };
 
 /** Keeps a stored error readable in a UI without truncating past the useful part. */
 const MAX_ERROR_CHARS = 2_000;
@@ -98,11 +122,18 @@ async function run(skill: SkillRecord, options: ProvisionOptions): Promise<Skill
       detection,
       installed: [],
       failed: [],
+      binaries: [],
       error: null,
       pythonPath: null,
       nodeModulesPath: null,
     });
   }
+
+  // PATH is checked before anything is installed, because a missing binary is a
+  // question for the user and there is no point spending a network install on a
+  // skill that cannot run either way.
+  const binaries = await checkBinaries(detection.binaries);
+  const missing = binaries.filter((binary) => !binary.present);
 
   if (env.skillDepsDisabled) {
     return record(skill, {
@@ -110,9 +141,46 @@ async function run(skill: SkillRecord, options: ProvisionOptions): Promise<Skill
       detection,
       installed: [],
       failed: [],
+      binaries,
       error:
         'Automatic dependency installation is disabled (HYPERION_SKILL_DEPS_DISABLED). ' +
         'Install this skill\'s dependencies yourself, or unset that variable and re-provision.',
+      pythonPath: null,
+      nodeModulesPath: null,
+    });
+  }
+
+  // A missing system binary stops the run *before* the package installs, and the
+  // status says "waiting on a person" rather than "broken": nothing failed, and
+  // the fix is a machine-wide install only the user can authorise. Packages are
+  // deliberately left uninstalled — they would be wasted work on a skill that
+  // still cannot run, and the install runs anyway once the binary is approved.
+  if (missing.length > 0) {
+    const names = missing.map((binary) => binary.name);
+    const installable = names.filter((name) => INSTALLABLE_BINARIES[name] !== undefined);
+    const guessed = missing.filter((binary) => !binary.declared).map((binary) => binary.name);
+
+    const parts = [
+      `This skill needs ${names.join(', ')}, which ${names.length === 1 ? 'is' : 'are'} not installed on this computer.`,
+    ];
+    if (guessed.length > 0) {
+      parts.push(
+        `${guessed.join(', ')} ${guessed.length === 1 ? 'was' : 'were'} inferred from the skill's own files rather than declared by its author, so it may be a false alarm.`,
+      );
+    }
+    parts.push(
+      installable.length > 0
+        ? `Hyperion can install ${installable.join(', ')} for you, but installing a system program affects the whole computer, so it needs your approval first.`
+        : 'Install it yourself and then re-provision the skill.',
+    );
+
+    return record(skill, {
+      status: 'needs-user-approval',
+      detection,
+      installed: [],
+      failed: [],
+      binaries,
+      error: truncate(parts.join(' ')),
       pythonPath: null,
       nodeModulesPath: null,
     });
@@ -187,6 +255,7 @@ async function run(skill: SkillRecord, options: ProvisionOptions): Promise<Skill
     detection,
     installed,
     failed,
+    binaries,
     error,
     pythonPath,
     nodeModulesPath,
@@ -421,6 +490,117 @@ async function provisionNode(
   };
 }
 
+// --- system binaries --------------------------------------------------------
+
+/**
+ * Is each required command on PATH?
+ *
+ * `where` on Windows, `which` elsewhere — both exit non-zero when the name is
+ * unknown, which is the whole answer. Already being on PATH is the common case
+ * and it means **no approval is needed**: the user installed it at some point,
+ * and asking again would be noise.
+ *
+ * Deliberately not cached. The point of the flow is that the user goes and
+ * installs something, and a cache would keep reporting the old answer to the very
+ * re-provision that exists to notice the new one.
+ */
+async function checkBinaries(required: RequiredBinary[]): Promise<CheckedBinary[]> {
+  const out: CheckedBinary[] = [];
+  for (const binary of required) {
+    out.push({ ...binary, present: await onPath(binary.name) });
+  }
+  return out;
+}
+
+async function onPath(name: string): Promise<boolean> {
+  const probe =
+    process.platform === 'win32'
+      ? await exec('where', [name], { timeoutMs: 10_000, shell: true })
+      : await exec('which', [name], { timeoutMs: 10_000 });
+  return probe.ok;
+}
+
+/**
+ * Installs one system binary, but only when the user has explicitly said yes.
+ *
+ * The `confirmed` flag is not decoration. This is the one place in the skills
+ * system that changes something outside the app's own directories, so the
+ * decision has to arrive from a person through the route layer; a caller that
+ * forgets gets a refusal rather than a silent machine-wide install.
+ *
+ * On Linux this needs root and we do not escalate — a GUI app silently invoking
+ * sudo is worse than a clear message telling the user the command to run.
+ */
+export async function installBinary(
+  skillId: string,
+  name: string,
+  options: { confirmed: boolean },
+): Promise<{ installed: boolean; message: string; skill: SkillRecord }> {
+  const skill = requireSkill(skillId);
+  const lower = name.toLowerCase();
+  const recipe = INSTALLABLE_BINARIES[lower];
+
+  if (!recipe) {
+    return {
+      installed: false,
+      message: `Hyperion does not install "${name}" automatically. Install it yourself, then re-provision the skill.`,
+      skill,
+    };
+  }
+  if (!options.confirmed) {
+    return {
+      installed: false,
+      message: `Installing ${lower} changes this whole computer, so it needs explicit confirmation.`,
+      skill,
+    };
+  }
+  if (await onPath(lower)) {
+    return { installed: true, message: `${lower} is already installed.`, skill };
+  }
+
+  const platform =
+    process.platform === 'win32' ? 'win32' : process.platform === 'darwin' ? 'darwin' : 'linux';
+  const [command, ...args] = recipe[platform];
+  if (command === undefined) {
+    return { installed: false, message: `No way to install ${lower} on this platform.`, skill };
+  }
+
+  log.info(`installing system binary "${lower}" via ${command} (user confirmed)`);
+  const result = await exec(command, args, { shell: process.platform === 'win32' });
+
+  // Trust PATH over the exit code: winget reports success while leaving the new
+  // entry out of *this* process's environment, and a package manager can exit 0
+  // having installed nothing.
+  if (await onPath(lower)) {
+    return { installed: true, message: `${lower} was installed.`, skill: requireSkill(skillId) };
+  }
+
+  if (isMissingExecutable(result)) {
+    return {
+      installed: false,
+      message:
+        `${lower} could not be installed because ${command} is not available on this computer. ` +
+        `Install ${lower} yourself, then re-provision the skill.`,
+      skill,
+    };
+  }
+  return {
+    installed: false,
+    message: truncate(
+      `${lower} could not be installed: ${lastMeaningfulLine(result.output)}. ` +
+        (platform === 'linux'
+          ? `Installing a system package needs root, so try: sudo ${command} ${args.join(' ')}`
+          : 'A new terminal may be needed for a freshly installed program to appear on PATH.'),
+    ),
+    skill,
+  };
+}
+
+/** True when Hyperion knows how to install this binary on this platform. */
+export function canInstallBinary(name: string): boolean {
+  return INSTALLABLE_BINARIES[name.toLowerCase()] !== undefined;
+}
+
 // --- process plumbing -------------------------------------------------------
 
 interface ExecResult {
@@ -533,6 +713,7 @@ interface Outcome {
   detection: DependencyDetection;
   installed: string[];
   failed: FailedDep[];
+  binaries: CheckedBinary[];
   error: string | null;
   pythonPath: string | null;
   nodeModulesPath: string | null;
@@ -548,6 +729,7 @@ function record(skill: SkillRecord, outcome: Outcome): SkillRecord {
     installed: outcome.installed,
     failed: outcome.failed,
     lifecycleScripts: outcome.detection.lifecycleScripts,
+    binaries: outcome.binaries,
     error: outcome.error,
     fingerprint: outcome.detection.fingerprint,
     provisionedAt: Date.now(),

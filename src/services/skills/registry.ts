@@ -23,6 +23,7 @@ import type {
   DependencyDetection,
   DepsStatus,
   DetectedManifest,
+  RequiredBinary,
 } from './deps.ts';
 import { detectDependencies, isProvisioning } from './deps.ts';
 import type { RiskFlag } from './riskscan.ts';
@@ -40,6 +41,11 @@ export interface FailedDep {
   error: string;
 }
 
+/** A required system binary plus the result of looking for it on PATH. */
+export interface CheckedBinary extends RequiredBinary {
+  present: boolean;
+}
+
 /** The stored half of a skill's dependency state — what provisioning wrote. */
 export interface SkillDeps {
   status: DepsStatus;
@@ -51,6 +57,11 @@ export interface SkillDeps {
   failed: FailedDep[];
   /** `package.json` lifecycle scripts that were deliberately not run. */
   lifecycleScripts: string[];
+  /**
+   * System commands the skill needs, each with whether it was on PATH when we
+   * last looked. A missing one is what makes the status `needs-user-approval`.
+   */
+  binaries: CheckedBinary[];
   /** The overall failure reason, when there is one. */
   error: string | null;
   fingerprint: string | null;
@@ -98,6 +109,13 @@ export interface SkillDepsPublic {
   /** Declared entries we refuse to install automatically, with the reason. */
   rejected: { name: string; spec: string; reason: string }[];
   lifecycleScriptsSkipped: string[];
+  /**
+   * Every system command the skill needs, present or not, so the UI can render
+   * "ffmpeg ✓ / pandoc ✗" without a second call.
+   */
+  binaries: CheckedBinary[];
+  /** The subset that is missing — what an approval prompt is asking about. */
+  missingBinaries: string[];
   error: string | null;
   /** Absolute path to the skill's own interpreter, for running its scripts. */
   pythonPath: string | null;
@@ -147,7 +165,20 @@ interface Row {
 }
 
 
-const DEPS_STATUSES: DepsStatus[] = ['none-declared', 'ready', 'partial', 'failed'];
+/**
+ * Must list every member of `DepsStatus`. `mapDeps` treats anything absent as
+ * unrecognised and silently falls back to `none-declared` — which is *runnable*,
+ * so forgetting to add a value here turns a skill that is waiting on the user
+ * into one the agentic layer will happily execute. The database CHECK (009) and
+ * this array have to move together.
+ */
+const DEPS_STATUSES: DepsStatus[] = [
+  'none-declared',
+  'ready',
+  'partial',
+  'failed',
+  'needs-user-approval',
+];
 
 function emptyDeps(): SkillDeps {
   return {
@@ -158,6 +189,7 @@ function emptyDeps(): SkillDeps {
     installed: [],
     failed: [],
     lifecycleScripts: [],
+    binaries: [],
     error: null,
     fingerprint: null,
     provisionedAt: null,
@@ -186,6 +218,7 @@ function mapDeps(row: Row): SkillDeps {
       if (Array.isArray(parsed.installed)) deps.installed = parsed.installed;
       if (Array.isArray(parsed.failed)) deps.failed = parsed.failed;
       if (Array.isArray(parsed.lifecycleScripts)) deps.lifecycleScripts = parsed.lifecycleScripts;
+      if (Array.isArray(parsed.binaries)) deps.binaries = parsed.binaries;
     } catch {
       /* a corrupt blob must not make the skill unreadable */
     }
@@ -282,6 +315,13 @@ function isStale(skill: SkillRecord): boolean {
  * declared will fail somewhere in the middle of a task, which is exactly the
  * failure mode this whole feature exists to prevent. The caller is told which
  * package is missing so it can say so up front instead.
+ *
+ * `needs-user-approval` is not runnable either — a missing system binary fails
+ * the same way mid-task — but it is a *question*, not a fault. The distinction
+ * lives in `status`; this boolean only answers "may I run it right now?".
+ *
+ * Deliberately an allowlist. A denylist would make every future status runnable
+ * by default, which is the wrong way round for a check that gates execution.
  */
 function computeRunnable(deps: SkillDeps, installing: boolean, stale: boolean): boolean {
   if (installing || stale) return false;
@@ -308,6 +348,8 @@ export function dependencyView(skill: SkillRecord): SkillDepsPublic {
       .filter((dep) => dep.rejected !== null)
       .map((dep) => ({ name: dep.name, spec: dep.spec, reason: dep.rejected ?? '' })),
     lifecycleScriptsSkipped: deps.lifecycleScripts,
+    binaries: deps.binaries,
+    missingBinaries: deps.binaries.filter((binary) => !binary.present).map((b) => b.name),
     error: deps.error,
     pythonPath: absoluteOrNull(deps.pythonPath),
     nodeModulesPath: absoluteOrNull(deps.nodeModulesPath),
@@ -397,6 +439,9 @@ function seedDeps(detection: DependencyDetection | undefined): SkillDeps {
   deps.declared = detection.deps;
   deps.lifecycleScripts = detection.lifecycleScripts;
   deps.fingerprint = detection.fingerprint;
+  // Seeded as not-yet-found rather than absent: provisioning is what probes PATH,
+  // and until it has run "we have not looked" must not read as "it is there".
+  deps.binaries = detection.binaries.map((binary) => ({ ...binary, present: false }));
 
   if (detection.noneDeclared) {
     deps.status = 'none-declared';
@@ -462,6 +507,7 @@ function depsBlob(deps: SkillDeps): string {
     installed: deps.installed,
     failed: deps.failed,
     lifecycleScripts: deps.lifecycleScripts,
+    binaries: deps.binaries,
   });
 }
 
@@ -564,7 +610,17 @@ export interface SkillSummaryEntry {
   status: DepsStatus;
   /** False when the skill's scripts must not be run yet. */
   runnable: boolean;
+  /**
+   * System commands the skill needs that are not on PATH.
+   *
+   * Present here, and not only on the full record, because "cannot run" and
+   * "cannot run *because ffmpeg is missing*" are different messages to give a
+   * user, and the caller of this list is usually the one writing that message.
+   * `runnable` stays the boolean to branch on; this is only the reason.
+   */
+  missingBinaries: string[];
 }
+
 
 /**
  * Name + description for every enabled skill — never the file contents.
@@ -588,7 +644,9 @@ export function skillsSummary(): SkillSummaryEntry[] {
         description: skill.description ?? '',
         status: view.status,
         runnable: view.runnable,
+        missingBinaries: view.missingBinaries,
       };
+
     });
 }
 
@@ -600,14 +658,24 @@ export function skillsSummary(): SkillSummaryEntry[] {
  * installed on purpose; saying nothing would let the model confidently propose a
  * skill whose scripts cannot run. The marker lets it recommend the skill *and*
  * tell the user what needs fixing first.
+ *
+ * A skill waiting on a system binary gets a marker naming it. The generic wording
+ * would send the model down the wrong path — it reads as a broken install to be
+ * retried, when the actual next step is a person saying yes to `ffmpeg`, and only
+ * the specific name lets the model tell the user that.
  */
 export function skillsPromptBlock(): string {
   const entries = skillsSummary();
   if (entries.length === 0) return '';
   const lines = entries.map((entry) => {
     const head = entry.description ? `- ${entry.name}: ${entry.description}` : `- ${entry.name}`;
-    return entry.runnable ? head : `${head} [dependencies not installed — its scripts cannot run yet]`;
+    if (entry.runnable) return head;
+    if (entry.status === 'needs-user-approval' && entry.missingBinaries.length > 0) {
+      return `${head} [needs ${entry.missingBinaries.join(', ')} installed — ask the user before using it]`;
+    }
+    return `${head} [dependencies not installed — its scripts cannot run yet]`;
   });
+
   return [
     'Skills available in this workspace. If one is clearly relevant to the current task,',
     'say so and ask to use it; otherwise ignore this list.',

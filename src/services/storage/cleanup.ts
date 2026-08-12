@@ -14,6 +14,15 @@
  * of my way" — an intentional filing decision, not a step toward deletion — so
  * it would be a betrayal for the sweep to treat it as neglect.
  *
+ * Cowork's knowledge sources are exempt entirely, and structurally rather than
+ * by a clause below: they are not gallery assets, they carry no access
+ * timestamp to age against, and no query in this file names
+ * `knowledge_sources`. That library is a standing reference shelf, so a
+ * document the user filed and did not open for a year is doing exactly its
+ * job. Only an explicit delete removes one. Keep it that way — adding an
+ * access timestamp to that table would be the first step toward silently
+ * reaping it.
+ *
  * Design notes worth keeping:
  *
  *   - This code deletes user data, so every run writes a `cleanup_log` row
@@ -104,10 +113,16 @@ export function runCleanup(options: CleanupOptions = {}): CleanupResult {
   // --- assets -------------------------------------------------------------
   // `pinned = 0` in the WHERE clause, not a post-filter: exemption is a
   // property of the query, so no code path can forget it.
+  //
+  // `is_brand_approved = 0` is a second, independent exemption (migration 011).
+  // An approved asset is the brand's canonical artwork, so ageing it out would
+  // mean an agent later generating a lookalike logo because the real one was
+  // reaped for going three months unopened — which is exactly what a brand
+  // asset does between campaigns. The user need not also have pinned it.
   const expiredAssets = db
     .prepare<AssetRow>(
       `SELECT * FROM attachments
-        WHERE pinned = 0 AND last_accessed_at < ?
+        WHERE pinned = 0 AND is_brand_approved = 0 AND last_accessed_at < ?
         ORDER BY last_accessed_at ASC`,
     )
     .all(assetCutoff);
@@ -128,10 +143,12 @@ export function runCleanup(options: CleanupOptions = {}): CleanupResult {
 
   // Rows whose bytes are already gone: reap at any age, but still respect the
   // pin — a pinned-but-missing row is something the user asked us to keep, and
-  // its absence is worth showing them rather than silently tidying away.
+  // its absence is worth showing them rather than silently tidying away. An
+  // approved asset earns the same treatment, and more so: a vanished brand logo
+  // is news the user needs, not litter to sweep up.
   const survivors = db
     .prepare<{ id: string; filename: string; bytes: number; rel_path: string }>(
-      'SELECT id, filename, bytes, rel_path FROM attachments WHERE pinned = 0',
+      'SELECT id, filename, bytes, rel_path FROM attachments WHERE pinned = 0 AND is_brand_approved = 0',
     )
     .all();
 

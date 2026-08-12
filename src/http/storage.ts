@@ -37,6 +37,7 @@ function readQuery(req: Request): AssetQuery {
     tool: asTool(queryString(req, 'tool')),
     origin: asEnum<AssetOrigin>(queryString(req, 'origin'), 'origin', ORIGINS),
     pinned: queryBool(req, 'pinned'),
+    brandApproved: queryBool(req, 'brandApproved'),
     search: queryString(req, 'search'),
     limit: queryNumber(req, 'limit'),
     offset: queryNumber(req, 'offset'),

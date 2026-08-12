@@ -95,7 +95,22 @@ export interface IntakeDependencyPreview {
   rejected: { spec: string; reason: string }[];
   /** `package.json` lifecycle scripts that exist but will not be run. */
   lifecycleScriptsSkipped: string[];
+  /**
+   * System commands the skill needs, machine-wide ones included.
+   *
+   * Shown at preview time because this is the part of the install that reaches
+   * outside Hyperion's own directories. "This skill wants ffmpeg on your computer"
+   * belongs in the same decision as the risk flags, not in a prompt that appears
+   * after the user has already committed.
+   *
+   * `inferred` entries came from a heuristic scan of the skill's scripts rather
+   * than a declaration, so they can be wrong; they are listed separately to stop a
+   * UI presenting a guess with the same confidence as an author's manifest.
+   */
+  binaries: string[];
+  inferredBinaries: string[];
 }
+
 
 
 // --- staging ---------------------------------------------------------------
@@ -375,9 +390,14 @@ function buildPreview(
         .filter((dep) => dep.rejected !== null)
         .map((dep) => ({ spec: dep.spec, reason: dep.rejected ?? '' })),
       lifecycleScriptsSkipped: detection.lifecycleScripts,
+      binaries: detection.binaries.map((binary) => binary.name),
+      inferredBinaries: detection.binaries
+        .filter((binary) => !binary.declared)
+        .map((binary) => binary.name),
     },
   };
 }
+
 
 
 function guessNameFromUrl(raw: string): string | null {
