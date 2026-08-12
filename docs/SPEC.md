@@ -67,6 +67,8 @@ Design a schema covering at minimum:
 - **Bind the server to `127.0.0.1` only** — never `0.0.0.0`. This is the single most important setting; without it, anyone on the same network could reach the app and its stored keys.
 - **Never send provider API keys to the frontend**, even transiently. The browser talks only to your backend; your backend attaches real keys server-side before calling any provider.
 - **Scope filesystem access for MCP/Code** to a specific root directory (e.g. `~/Hyperion/projects/`), not the whole filesystem — this bounds the blast radius of anything the Code tool or filesystem MCP server does.
+  - *Since Prompt 1.16 that root is the **active project's** directory, not one fixed path.* `~/Hyperion/projects/` is the default and the fallback when no project is open; opening a project repoints the `projects` scope at it, and a project may be an existing directory anywhere on disk. Containment itself is unchanged — there is still exactly one project root at a time, and everything still resolves through `resolveInScope`. See *Projects* in `docs/API.md` and *Project scoping* in `docs/CONTRACTS.md`.
+
 
 ### 5. MCP config-writer backend logic
 
@@ -222,8 +224,9 @@ special-casing:
 
 | name | command | seeded state |
 | --- | --- | --- |
-| `filesystem` | `npx -y @modelcontextprotocol/server-filesystem <projects dir>` | **enabled** |
+| `filesystem` | `npx -y @modelcontextprotocol/server-filesystem <active project dir>` | **enabled** |
 | `wigolo` | `npx -y wigolo` | **disabled** |
+
 
 wigolo ships disabled on purpose: it needs a one-time `init` before it can run,
 so enabling it is the user's explicit action. Seeding is idempotent through

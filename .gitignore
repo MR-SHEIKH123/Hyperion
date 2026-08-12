@@ -31,5 +31,17 @@ secret.key
 /tmp/
 /mcp_config.json
 
+# Editor/agent tooling, not part of the application. These are instructions for
+# Cline about how to work on Hyperion; no src/ file imports them, tsconfig only
+# includes src/ and test/, and `npm test` only globs test/. Deleting the
+# directory changes nothing about how Hyperion builds or runs, so it does not
+# belong in the project's history. The canonical copy lives in the user's global
+# Cline rules directory — keeping a second one here only lets the two drift.
+#
+# Anchored, per the note above: unanchored it would also hide a source
+# directory that happened to share the name.
+/.clinerules/
+
 .DS_Store
 Thumbs.db
+
