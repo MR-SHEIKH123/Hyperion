@@ -12,10 +12,10 @@
     "dev": "node --watch src/index.ts",
     "migrate": "node src/db/migrate.ts",
     "test": "node --test test/*.test.ts",
-
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "adm-zip": "^0.5.16",
     "dotenv": "^16.4.7",
     "express": "^5.1.0",
@@ -24,7 +24,8 @@
   },
   "optionalDependencies": {
     "better-sqlite3": "^11.8.1 || ^12.6.2",
-    "sharp": "0.34.4"
+    "sharp": "0.34.4",
+    "web-push": "3.6.7"
   },
   "devDependencies": {
     "@types/adm-zip": "^0.5.7",

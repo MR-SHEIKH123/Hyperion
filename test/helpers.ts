@@ -31,6 +31,11 @@ process.env.HYPERION_HEALTH_FAILURE_THRESHOLD = '2';
 process.env.HYPERION_LOCAL_DETECT_TIMEOUT_MS = '400';
 process.env.HYPERION_REQUEST_TIMEOUT_MS = '5000';
 process.env.HYPERION_CLEANUP_DISABLED = '1';
+// Same reasoning as the cleanup switch, and it covers both background jobs:
+// without it a test file that boots the app would start writing real backup
+// archives and firing Cowork runs against a registered agent, on a timer no
+// assertion is waiting for.
+process.env.HYPERION_SCHEDULER_DISABLED = '1';
 
 export const testHome = root;
 

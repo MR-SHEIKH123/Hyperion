@@ -14,7 +14,12 @@
  *      would throw. The nearest existing ancestor is resolved instead, then the
  *      remaining segments are appended — that ancestor is where any symlink
  *      trickery would have to live.
+ *
+ * One root moves: `projects` follows whichever project is active (see
+ * `setProjectRoot`). The rest are fixed for the life of the process, because
+ * they hold the app's own data rather than the user's work.
  */
+
 import fs from 'node:fs';
 import path from 'node:path';
 import { env } from '../config/env.ts';
@@ -26,10 +31,25 @@ export type ScopeName =
   | 'backups'
   | 'tmp'
   | 'mcp'
-  | 'worktrees';
+  | 'worktrees'
+  | 'knowledge';
+
+/**
+ * The default `projects` root, and the boundary on what may become one.
+ *
+ * A project directory may sit anywhere on disk, but the *fallback* — what
+ * `projects` means when nothing is active — stays inside the app's own home, so
+ * a fresh install with no projects yet cannot resolve a bare `.` to somewhere
+ * arbitrary.
+ */
+const DEFAULT_PROJECTS_ROOT = env.paths.projects;
 
 const ROOTS: Record<ScopeName, string> = {
-  projects: env.paths.projects,
+  // Overwritten by `setProjectRoot` whenever the active project changes. This
+  // is the one root that is not a fixed location under ~/Hyperion, because it
+  // names the user's current work rather than the app's own storage.
+  projects: DEFAULT_PROJECTS_ROOT,
+
   attachments: env.paths.attachments,
   skills: env.paths.skills,
   backups: env.paths.backups,
@@ -43,6 +63,10 @@ const ROOTS: Record<ScopeName, string> = {
   // cannot see each other's half-written files. Note that scope membership is
   // not enough on its own for those tasks — see `resolveInSubtree`.
   worktrees: env.paths.worktrees,
+  // Cowork's reference library. Separate from `attachments` because these files
+  // are exempt from the storage sweep: giving them their own root means the
+  // exemption survives any future change to how attachments are cleaned up.
+  knowledge: env.paths.knowledge,
 };
 
 
@@ -59,8 +83,9 @@ export class ScopeViolationError extends Error {
   constructor(scope: ScopeName, attempted: string, boundary?: string) {
     super(
       `Path escapes the "${scope}" scope: ${attempted}. ` +
-        `Access is restricted to ${boundary ?? ROOTS[scope]}.`,
+        `Access is restricted to ${boundary ?? getRoot(scope)}.`,
     );
+
     this.name = 'ScopeViolationError';
     this.scope = scope;
     this.attempted = attempted;
@@ -71,6 +96,56 @@ export class ScopeViolationError extends Error {
 export function getRoot(scope: ScopeName): string {
   return ROOTS[scope];
 }
+
+/**
+ * Point the `projects` scope at the active project's directory.
+ *
+ * Called when a project is opened and on boot, so containment follows the work
+ * the user is actually doing. Passing `null` restores the default root, which is
+ * what deleting or closing the active project leaves behind.
+ *
+ * The path is resolved once, here, rather than on every check: `resolveInScope`
+ * runs on every file an agent touches, and re-reading a database row per path
+ * would put a query in the middle of the hottest loop in the app. The cost of
+ * caching is that this must be called whenever the setting changes — which is
+ * why `services/projects/active.ts` owns both writes and nothing else sets the
+ * setting directly.
+ *
+ * A relative path is refused rather than resolved against the process cwd. The
+ * cwd of a PM2-managed daemon is not a location the user chose, so accepting one
+ * would silently scope the tools somewhere nobody named.
+ */
+export function setProjectRoot(projectPath: string | null): void {
+  if (projectPath === null) {
+    ROOTS.projects = DEFAULT_PROJECTS_ROOT;
+    return;
+  }
+  if (projectPath.includes('\0') || !path.isAbsolute(projectPath)) {
+    throw new Error(`A project root must be an absolute path, got "${projectPath}"`);
+  }
+  ROOTS.projects = path.resolve(projectPath);
+}
+
+/** The default root, for callers that need to know what "no project" resolves to. */
+export function defaultProjectRoot(): string {
+  return DEFAULT_PROJECTS_ROOT;
+}
+
+/**
+ * True when `target` is `root` or lies below it, both resolved through symlinks.
+ *
+ * Exported for the one caller that has to reason about containment *between* two
+ * arbitrary directories rather than against a scope: registering a project
+ * requires knowing whether the proposed directory overlaps the app's own home.
+ * That policy lives in the route, but the comparison belongs here, where the
+ * symlink resolution, the sibling-prefix trap and the Windows case rules are
+ * already handled once.
+ */
+export function pathContains(root: string, target: string): boolean {
+  return isInside(realpathAllowingMissing(root), realpathAllowingMissing(target));
+}
+
+
 
 /**
  * Resolve a path as far as it exists on disk, then re-append the missing tail.
@@ -209,7 +284,8 @@ export function ensureDirInScope(scope: ScopeName, candidate: string): string {
  * restores and a changed HYPERION_HOME.
  */
 export function toRelative(scope: ScopeName, absolute: string): string {
-  const resolvedRoot = realpathAllowingMissing(ROOTS[scope]);
+  const resolvedRoot = realpathAllowingMissing(getRoot(scope));
+
   const resolvedTarget = realpathAllowingMissing(absolute);
   if (!isInside(resolvedRoot, resolvedTarget)) {
     throw new ScopeViolationError(scope, absolute);

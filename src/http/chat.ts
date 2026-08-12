@@ -3,7 +3,10 @@ import { Router } from 'express';
 import {
   createChat,
   deleteChat,
+  deleteChats,
+  findChat,
   listChats,
+  listMessagePage,
   listMessages,
   markChatOpened,
   requireChat,
@@ -12,24 +15,31 @@ import {
   touchChat,
 } from '../db/chats.ts';
 import { concurrencyMode } from '../db/settings.ts';
+import { createTemporaryChat, isTemporaryChat } from '../db/temporaryChats.ts';
+
 import { sendMessage, switchAndResume } from '../orchestrator/chat.ts';
 import { currentJob, isBusy, withLock } from '../orchestrator/lock.ts';
 import { latestRunForChat, listPausedRuns } from '../orchestrator/runState.ts';
 import { openStream } from '../orchestrator/sse.ts';
+import { exportChat } from '../services/export/index.ts';
 import type { ToolName } from '../types/core.ts';
 import { AppError } from '../util/errors.ts';
+import { attachDownloadHeaders } from './download.ts';
 import { wrap } from './errors.ts';
 import {
   asBool,
+  asEnum,
   asNullableString,
   asNumber,
   asOptionalString,
   asString,
+  asStringArray,
   asTool,
   body,
   pathParam,
   queryBool,
   queryNumber,
+
   queryString,
   requireTool,
 } from './params.ts';
@@ -135,18 +145,61 @@ chatRouter.get(
   }),
 );
 
+/**
+ * Creates a chat.
+ *
+ * `temporary: true` opens an incognito session instead: held in memory, never
+ * inserted, gone when it is ended or when the process exits. The response shape
+ * is identical apart from the `temporary` flag, so the frontend renders both the
+ * same way — but the flag is echoed so it can show that nothing is being saved.
+ */
 chatRouter.post(
   '/',
   wrap(async (req, res) => {
     const payload = body(req);
-    const chat = createChat({
+    const input = {
       tool: requireTool(payload.tool),
       title: asOptionalString(payload.title, 'title'),
       modelId: asNullableString(payload.modelId, 'modelId'),
       providerId: asNullableString(payload.providerId, 'providerId'),
       id: asOptionalString(payload.id, 'id'),
-    });
-    res.status(201).json({ chat });
+    };
+
+    if (asBool(payload.temporary, 'temporary') === true) {
+      // A client-supplied id that already names a saved chat is refused rather
+      // than shadowed: `findChat` prefers the in-memory entry, so adopting it
+      // would hide the real transcript for as long as the session lasted.
+      if (input.id !== undefined && findChat(input.id) !== null) {
+        throw new AppError('conflict', `Chat "${input.id}" already exists and is saved.`, {
+          details: { field: 'id', chatId: input.id },
+        });
+      }
+      const chat = createTemporaryChat(input);
+      res.status(201).json({ chat, temporary: true });
+      return;
+    }
+
+    res.status(201).json({ chat: createChat(input), temporary: false });
+  }),
+);
+
+/**
+ * Deletes several chats at once, as permanently as deleting one.
+ *
+ * Declared above `/:id` so the literal segment is not taken for an id. Missing
+ * ids are reported in `missing` rather than failing the call — see `deleteChats`
+ * for why one stale id must not cost the caller the other forty deletions.
+ */
+chatRouter.post(
+  '/bulk-delete',
+  wrap(async (req, res) => {
+    const ids = asStringArray(body(req).ids, 'ids');
+    if (ids === undefined || ids.length === 0) {
+      throw new AppError('bad_request', 'ids must be a non-empty array of chat ids.', {
+        details: { field: 'ids' },
+      });
+    }
+    res.json(deleteChats(ids));
   }),
 );
 
@@ -254,25 +307,56 @@ chatRouter.patch(
   }),
 );
 
+/**
+ * Deletes a saved chat, or ends a temporary one.
+ *
+ * One route for both because it is one user gesture, and because a temporary
+ * session is already at least as gone as a deleted row. `temporary` is read
+ * before the delete — afterwards there is nothing left to ask — and reported so
+ * the frontend can word the confirmation honestly.
+ */
 chatRouter.delete(
   '/:id',
   wrap(async (req, res) => {
     const id = pathParam(req, 'id');
+    const temporary = isTemporaryChat(id);
     if (!deleteChat(id)) {
       throw new AppError('not_found', `Chat ${id} was not found`);
     }
-    res.json({ deleted: true, id });
+    res.json({ deleted: true, id, temporary });
   }),
 );
 
+
+/**
+ * The transcript, paged backwards from the newest message.
+ *
+ * Cursor-based rather than offset-based: a chat grows at the end while it is
+ * being scrolled, and every appended message shifts an offset by one, so
+ * `?offset=` silently repeats or skips a row. `before` names a message id, and
+ * a message's position in its chat never moves.
+ *
+ * With no `before` this returns the newest page. Callers wanting the whole
+ * transcript oldest-first still use `GET /api/chat/:id`, which is unchanged.
+ */
 chatRouter.get(
   '/:id/messages',
   wrap(async (req, res) => {
     const id = pathParam(req, 'id');
     requireChat(id);
-    res.json({ messages: listMessages(id, queryNumber(req, 'limit') ?? 500) });
+
+    const limit = queryNumber(req, 'limit') ?? 50;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
+      throw new AppError('bad_request', 'limit must be an integer between 1 and 500.', {
+        details: { field: 'limit' },
+      });
+    }
+
+    const page = listMessagePage(id, limit, queryString(req, 'before'));
+    res.json({ messages: page.messages, nextBefore: page.nextBefore });
   }),
 );
+
 
 /** Resets the idle timer used by the cleanup job. */
 chatRouter.post(
@@ -333,5 +417,29 @@ chatRouter.get(
       latest: latestRunForChat(id),
       paused: listPausedRuns(id),
     });
+  }),
+);
+
+/**
+ * One chat as a file — Markdown by default, `?format=json` for the structured
+ * form.
+ *
+ * Markdown is the default because the usual reason to export a conversation is
+ * to read or share it, not to re-import it; the JSON form keeps the
+ * per-message metadata the transcript drops.
+ *
+ * The extra path segment is what keeps this reachable at all: `/:id` is
+ * declared above, but it only matches a single segment, so `/:id/export` is
+ * never swallowed by it.
+ */
+chatRouter.get(
+  '/:id/export',
+  wrap(async (req, res) => {
+    const id = pathParam(req, 'id');
+    const format = asEnum(queryString(req, 'format'), 'format', ['markdown', 'json'] as const);
+
+    const exported = exportChat(id, format ?? 'markdown');
+    attachDownloadHeaders(res, exported.filename, exported.contentType);
+    res.send(exported.content);
   }),
 );

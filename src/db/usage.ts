@@ -6,10 +6,19 @@
  * aggregates report priced and unpriced traffic separately. Defaulting unknown
  * prices to zero would make the dashboard confidently wrong, which is worse
  * than admitting it does not know.
+ *
+ * The same instinct governs `chat_id`: a temporary chat's id is written as NULL
+ * rather than as itself, because `usage_log.chat_id` has a real foreign key to
+ * `chats` and a temporary chat has no row there. See `recordUsage`.
  */
 
 import { getDb } from './adapter.ts';
+import { isTemporaryChat } from './temporaryChats.ts';
+import { createLogger } from '../util/logger.ts';
+
 import type { ToolName } from '../types/core.ts';
+
+const log = createLogger('usage');
 
 export interface RecordUsageInput {
   chatId?: string | null;
@@ -58,10 +67,35 @@ export function computeCost(
 /**
  * Appends a usage row. Never throws — a failure to log spend must not fail the
  * request that produced it.
+ *
+ * A temporary chat contributes an **anonymous** row: real tokens and real cost,
+ * but `chat_id` and `message_id` NULL. Two independent reasons demand this, and
+ * either alone would be enough.
+ *
+ * The first is correctness. `usage_log.chat_id` is
+ * `REFERENCES chats (id) ON DELETE SET NULL` and FK enforcement is on, so an
+ * insert naming a chat with no row raises SQLITE_CONSTRAINT — which the catch
+ * below would swallow, discarding the spend entirely. That is precisely the cap
+ * bypass this feature promised to close: toggling incognito would have made the
+ * tokens free as far as `assertWithinSpendCap` could tell. Found by
+ * `test/temporarychats.test.ts`.
+ *
+ * The second is privacy. A temporary chat's id must not reach disk at all, or a
+ * row in `usage_log` would attest that a private session happened, and when —
+ * which is metadata the user asked not to keep.
  */
 export function recordUsage(input: RecordUsageInput): void {
   try {
     const cost = computeCost(input.modelId, input.providerId ?? null, input.tokensIn, input.tokensOut);
+    const temporary = input.chatId != null && isTemporaryChat(input.chatId);
+    if (temporary) {
+      // The cost is the point of the row, so log that it was kept while the
+      // linkage was dropped; otherwise an anonymous row looks like a bug later.
+      log.debug('recording anonymous usage for a temporary chat', {
+        tool: input.tool,
+        modelId: input.modelId,
+      });
+    }
     getDb()
       .prepare(
         `INSERT INTO usage_log
@@ -70,8 +104,8 @@ export function recordUsage(input: RecordUsageInput): void {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
-        input.chatId ?? null,
-        input.messageId ?? null,
+        temporary ? null : input.chatId ?? null,
+        temporary ? null : input.messageId ?? null,
         input.tool,
         input.modelId,
         input.providerId ?? null,

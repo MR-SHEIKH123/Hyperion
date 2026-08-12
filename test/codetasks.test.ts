@@ -580,13 +580,32 @@ describe('per-task worktrees', gitOnly, () => {
     for (const bad of ['', '   ', '../escape', 'has space', '.hidden', 'a'.repeat(101)]) {
       await assert.rejects(
         worktrees.provisionWorktree(bad, repo),
-        /Unusable Code task id/,
+        (error: unknown) => {
+          assert.equal((error as { code?: string }).code, 'bad_request');
+          return true;
+        },
         `"${bad}" should have been refused`,
       );
     }
     // Sanitising instead would let two different tasks collapse onto one
     // directory, which is the failure this module exists to prevent.
-    assert.throws(() => worktrees.containAgentCwd(worktreesRoot, '../escape'), /Unusable Code task id/);
+    assert.throws(() => worktrees.containAgentCwd(worktreesRoot, '../escape'), {
+      code: 'bad_request',
+    });
+  });
+
+  it('reports a bad task id as the client’s error, not the server’s', async () => {
+    // `taskId` comes straight from the request body, so this decides what the
+    // user sees. A plain Error here became `internal_error` — the server
+    // claiming it was broken when the input was. Asserting the code, not the
+    // message, is the point: the message can be reworded, the contract cannot.
+    await assert.rejects(worktrees.provisionWorktree('../escape', repo), (error: unknown) => {
+      const app = error as { code?: string; status?: number; details?: { field?: string } };
+      assert.equal(app.code, 'bad_request');
+      assert.equal(app.details?.field, 'taskId');
+      assert.notEqual(app.code, 'internal_error');
+      return true;
+    });
   });
 
   it('refuses a project outside the projects root', async () => {

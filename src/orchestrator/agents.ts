@@ -143,15 +143,24 @@ export function requireTerminal(): TerminalModule {
  * Both the HTTP route and Kimi's code agent go through here so the scope check
  * cannot be bypassed by one caller forgetting it. `options.taskId` tightens the
  * boundary to that task's own worktree — the thing that keeps parallel Code
- * tasks out of each other's directories. Note the import is lazy: this module
+ * tasks out of each other's directories. Note the imports are lazy: this module
  * is imported by `services/mcp/test.ts`, and `fsScope` pulls in `env`, which
  * would otherwise widen the import graph of every consumer.
+ *
+ * The capability gate runs **before** the scope check and before the terminal
+ * module is asked for anything. Prompt 1.20 §2 requires that `executeCommand`
+ * calls be "rejected before Sol's module ever runs anything", and putting the
+ * gate here rather than in the HTTP route is what makes that true of the agent
+ * path too — a route-level check would leave Kimi's code agent ungated.
  */
 export async function executeCommand(
   cwd: string,
   command: string,
   options?: { timeoutMs?: number; signal?: AbortSignal; taskId?: string },
 ): Promise<CommandResult> {
+  const { assertCommandAllowed } = await import('../services/limits/capabilities.ts');
+  assertCommandAllowed(command);
+
   const module = requireTerminal();
   const { containAgentCwd } = await import('../services/code/worktree.ts');
   const safeCwd = containAgentCwd(cwd, options?.taskId);

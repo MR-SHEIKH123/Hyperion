@@ -66,6 +66,24 @@ export function asNullableString(value: unknown, field: string): string | null |
   return asString(value, field);
 }
 
+/**
+ * A required string that is allowed to be blank, returning `null` when it is.
+ *
+ * `asString` refuses an empty string, which is right almost everywhere: a blank
+ * title or filename is a mistake, not an intention. But for a free-text field
+ * the user is meant to be able to *empty*, refusing blank makes the setting
+ * impossible to clear — they select-all, delete, save, and get a 400 with no way
+ * forward. Clearing must be reachable through the same control that set it.
+ *
+ * The field is still required, so an omitted key is an error rather than a
+ * silent wipe; only an explicitly blank value means "unset".
+ */
+export function asClearableString(value: unknown, field: string): string | null {
+  if (typeof value !== 'string') fail(`${field} is required and must be a string.`, field);
+  const trimmed = value.trim();
+  return trimmed === '' ? null : trimmed;
+}
+
 /** An optional finite number; rejects NaN and numeric-looking junk. */
 export function asNumber(value: unknown, field: string): number | undefined {
   if (absent(value)) return undefined;

@@ -96,6 +96,14 @@ const paths = {
   /** mem0's self-hosted store (vector index + history db). Never leaves disk. */
   memory: path.join(home, 'memory'),
   /**
+   * Cowork's standing reference library. A sibling of `attachments` rather than
+   * a directory inside it, because the two have opposite lifetimes: everything
+   * under `attachments` is subject to the 3-month sweep, and everything here is
+   * exempt by definition. Separate roots mean a future change to that sweep
+   * cannot reach these files by accident.
+   */
+  knowledge: path.join(home, 'knowledge'),
+  /**
    * Per-task git worktrees for parallel Code runs. Deliberately a sibling of
    * `projects` rather than a directory inside it: a worktree is scratch space
    * owned by a task, and nesting it under the user's code would put it in
@@ -151,6 +159,52 @@ export const env = {
   chatTtlDays: int('HYPERION_CHAT_TTL_DAYS', 120),
 
   cleanupDisabled: bool('HYPERION_CLEANUP_DISABLED', false),
+
+  // --- background jobs ------------------------------------------------------
+
+  /**
+   * Disables the automatic daily backup and the scheduled-task runner. Same
+   * escape hatch as HYPERION_CLEANUP_DISABLED, and the switch the test helper
+   * reaches for: a suite that boots the app must not start firing real Cowork
+   * runs against the user's providers.
+   */
+  schedulerDisabled: bool('HYPERION_SCHEDULER_DISABLED', false),
+
+  /**
+   * How many automatic backups to keep. Unbounded retention turns a safety
+   * feature into the thing that fills the disk, and an automatic backup is only
+   * worth keeping until the next few have proved themselves.
+   */
+  autoBackupKeep: int('HYPERION_AUTO_BACKUP_KEEP', 7),
+
+  /**
+   * An extra directory each automatic backup is copied into — typically a
+   * Drive/Dropbox/OneDrive sync folder, so the archive leaves the machine
+   * without Hyperion needing to know anything about cloud storage.
+   *
+   * Deliberately env-only, with no setting and no HTTP write path. This is the
+   * one path in the app that is legitimately *outside* every fsScope root, and
+   * a caller-supplied value would turn "back up my data" into an arbitrary
+   * file-write primitive. An env var is set by the person who owns the machine,
+   * which is a different trust level from a request body.
+   *
+   * The canonical archive still lands in the backups root: listing, inspection,
+   * import and retention all resolve through that scope, and redirecting the
+   * primary write would quietly break all four. This is a copy, not a move.
+   */
+  backupDest: str('HYPERION_BACKUP_DEST', ''),
+
+
+  /**
+   * How long a due scheduled task waits for the app-wide lock before recording
+   * itself `skipped`.
+   *
+   * Fifteen minutes because the collision this exists for is a user mid-chat,
+   * which resolves in minutes; a task still blocked after that is competing
+   * with something long-running, and silently starting it an hour late is worse
+   * than telling the user it did not run.
+   */
+  scheduledTaskWaitMs: int('HYPERION_SCHEDULED_TASK_WAIT_MS', 15 * 60_000),
 
   maxUploadBytes: int('HYPERION_MAX_UPLOAD_BYTES', 100 * 1024 * 1024),
 
@@ -233,6 +287,7 @@ export function ensureDirectories(): void {
     paths.memory,
     paths.mcp,
     paths.worktrees,
+    paths.knowledge,
   ]) {
 
     fs.mkdirSync(dir, { recursive: true });

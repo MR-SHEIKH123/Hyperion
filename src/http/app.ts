@@ -6,14 +6,25 @@
  */
 import express from 'express';
 
-import { env } from '../config/env.ts';
+import { activityRouter } from './activity.ts';
 import { agentsRouter } from './agents.ts';
+import { artifactsRouter } from './artifacts.ts';
 import { backupRouter } from './backup.ts';
 import { chatRouter } from './chat.ts';
+import { coworkRouter } from './cowork.ts';
+import { designRouter } from './design.ts';
 import { errorHandler, notFoundHandler } from './errors.ts';
+import { errorLogRouter } from './errorLog.ts';
+import { exportsRouter } from './exports.ts';
+
+import { healthRouter } from './health.ts';
+
 import { mcpRouter } from './mcp.ts';
 import { memoryRouter } from './memory.ts';
+import { projectsRouter } from './projects.ts';
 import { providersRouter } from './providers.ts';
+import { pushRouter } from './push.ts';
+
 import { resourcesRouter } from './resources.ts';
 import { settingsRouter } from './settings.ts';
 import { skillsRouter } from './skills.ts';
@@ -33,14 +44,8 @@ export function createApp(): Express {
   app.use(express.json({ limit: '25mb' }));
   app.use(express.urlencoded({ extended: false }));
 
-  app.get('/api/health', (_req, res) => {
-    res.json({
-      ok: true,
-      name: 'hyperion',
-      uptimeSec: Math.round(process.uptime()),
-      loopback: env.bindIsLoopback,
-    });
-  });
+  app.use('/api/health', healthRouter);
+  app.use('/api/activity', activityRouter);
 
   app.use('/api/providers', providersRouter);
   app.use('/api/chat', chatRouter);
@@ -51,7 +56,26 @@ export function createApp(): Express {
   app.use('/api/backup', backupRouter);
   app.use('/api/settings', settingsRouter);
   app.use('/api/memory', memoryRouter);
+  app.use('/api/projects', projectsRouter);
   app.use('/api/resources', resourcesRouter);
+  app.use('/api/artifacts', artifactsRouter);
+  app.use('/api/export', exportsRouter);
+
+
+  app.use('/api/push', pushRouter);
+  app.use('/api/errors', errorLogRouter);
+
+
+  // Cowork's knowledge library and scheduled tasks. Mounted before the bare
+  // `/api` agents router so its `/cowork/...` paths are matched here first;
+  // the two do not overlap, but the specific mount deciding is the safer order.
+  app.use('/api/cowork', coworkRouter);
+
+  // Brand-approved assets, for the same reason: `agentsRouter` already owns
+  // /design/run-task and /design/tasks/..., and while /design/assets/... does
+  // not collide with either, letting the specific mount decide keeps a future
+  // /design/:something in agents.ts from swallowing these.
+  app.use('/api/design', designRouter);
 
   // Agent routes own their own sub-paths (/code/..., /cowork/..., /design/...).
   app.use('/api', agentsRouter);

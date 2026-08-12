@@ -10,10 +10,18 @@ import 'dotenv/config';
 
 import { env, ensureDirectories, migrateLegacyHome } from './config/env.ts';
 import { closeDb, openDatabase, setDb } from './db/adapter.ts';
+import { logError } from './db/errorLog.ts';
 import { runMigrations } from './db/migrate.ts';
+import { reconcileOrphanedTaskRuns } from './db/taskRuns.ts';
+
+
 import { reconcileOrphanedRuns } from './orchestrator/runState.ts';
+import { startBackupScheduler, stopBackupScheduler } from './services/backup/schedule.ts';
+import { startTaskScheduler, stopTaskScheduler } from './services/cowork/scheduler.ts';
 import { seedDefaultServers } from './services/mcp/defaults.ts';
+import { restoreActiveProject } from './services/projects/active.ts';
 import { ensureSkillDirs } from './services/skills/intake.ts';
+
 import { startCleanupScheduler, stopCleanupScheduler } from './services/storage/cleanup.ts';
 import { createApp } from './http/app.ts';
 import { createLogger } from './util/logger.ts';
@@ -48,16 +56,35 @@ function bootstrap(): void {
     log.info('migrations applied', { applied: migrations.applied, skipped: migrations.skipped });
   }
 
-  const orphaned = reconcileOrphanedRuns();
-  if (orphaned > 0) {
-    log.warn('reconciled orphaned runs from a previous process', { count: orphaned });
+  const orphanedChatRuns = reconcileOrphanedRuns();
+  if (orphanedChatRuns > 0) {
+    log.warn('reconciled orphaned chat runs from a previous process', { count: orphanedChatRuns });
   }
 
+  const orphanedTaskRuns = reconcileOrphanedTaskRuns();
+  if (orphanedTaskRuns > 0) {
+    log.warn('reconciled orphaned task runs from a previous process', { count: orphanedTaskRuns });
+  }
+
+
   ensureSkillDirs();
+
+  // Strictly before seedDefaultServers(): the default filesystem MCP server is
+  // seeded with the active project's directory as its argument, so the scope has
+  // to be restored first or a fresh install would hard-code the default root
+  // into a server definition that then never follows the project again.
+  const active = restoreActiveProject();
+  log.info(
+    active === null
+      ? 'no active project; filesystem scope is the default projects root'
+      : `active project restored: ${active.name}`,
+    active === null ? undefined : { projectId: active.id, path: active.path },
+  );
 
   // Idempotent and marker-guarded: a default the user deletes stays deleted,
   // and an existing server of the same name is never overwritten.
   const seeded = seedDefaultServers();
+
   if (seeded.created.length > 0) {
     log.info('seeded default MCP servers', { created: seeded.created });
   }
@@ -112,6 +139,16 @@ function installShutdownHandlers(server: Server): void {
         log.error('failed to stop cleanup scheduler', error);
       }
       try {
+        stopBackupScheduler();
+      } catch (error) {
+        log.error('failed to stop backup scheduler', error);
+      }
+      try {
+        stopTaskScheduler();
+      } catch (error) {
+        log.error('failed to stop task scheduler', error);
+      }
+      try {
         reconcileOrphanedRuns();
       } catch (error) {
         log.error('failed to reconcile runs during shutdown', error);
@@ -131,12 +168,47 @@ function installShutdownHandlers(server: Server): void {
 
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+  // Neither handler exits. A background bug — a scheduled task, a worktree
+  // cleanup — should not take the whole process down and with it every
+  // in-flight Code task's lane slot and SSE connection. PM2's restart-on-crash
+  // stays the true last resort rather than the first thing a stray rejection
+  // reaches. Both persist to error_log so the failure is still diagnosable
+  // after the fact: stderr alone is lost to log rotation and invisible to the
+  // debug console, which is the only place the user would ever look.
   process.on('unhandledRejection', (reason: unknown) => {
     log.error('unhandled rejection', reason);
+    recordProcessError('unhandled rejection', reason);
   });
   process.on('uncaughtException', (error: unknown) => {
     log.error('uncaught exception', error);
+    recordProcessError('uncaught exception', error);
   });
+}
+
+/**
+ * Persist a process-level failure to `error_log`.
+ *
+ * Wrapped in its own try/catch and deliberately silent on failure: this runs
+ * from a handler that exists to stop the process dying, so a throw here — the
+ * database closed mid-shutdown, the disk full — would defeat the entire point.
+ * `log.error` has already put the original on stderr before this is called, so
+ * nothing is lost when the write cannot happen.
+ */
+function recordProcessError(kind: string, cause: unknown): void {
+  try {
+    const error = cause instanceof Error ? cause : undefined;
+    logError({
+      timestamp: Date.now(),
+      severity: 'error',
+      endpoint: `process:${kind}`,
+      error_code: 'internal_error',
+      error_message: error?.message ?? String(cause),
+      ...(error?.stack !== undefined ? { stack_trace: error.stack } : {}),
+    });
+  } catch {
+    // Already on stderr via log.error; there is nowhere better to put this.
+  }
 }
 
 function main(): void {
@@ -149,7 +221,16 @@ function main(): void {
 
   const server = startServer();
   installShutdownHandlers(server);
+
+  // Background jobs start last, once the process is otherwise up. All three are
+  // unref'd interval timers with staggered boot delays, so none of them can
+  // hold shutdown open or collide on the job lock during startup. Scheduled
+  // tasks fire whether or not a browser tab is open — PM2 keeps this process
+  // alive, and that is the whole point of running them here rather than in the
+  // frontend.
   startCleanupScheduler();
+  startBackupScheduler();
+  startTaskScheduler();
 }
 
 main();

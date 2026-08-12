@@ -31,10 +31,14 @@
 import path from 'node:path';
 
 import { env } from '../../config/env.ts';
+import { listProjects } from '../../db/projects.ts';
 import { getSetting, setSetting } from '../../db/settings.ts';
+import { defaultProjectRoot, getRoot } from '../../security/fsScope.ts';
+
 import { createLogger } from '../../util/logger.ts';
 import type { McpServerInput } from './registry.ts';
-import { createServer, findServerByName } from './registry.ts';
+import { createServer, findServerByName, updateServer } from './registry.ts';
+
 
 const log = createLogger('mcp:defaults');
 
@@ -48,6 +52,19 @@ export interface DefaultServer {
   /** Shown in the seed log and useful to Sol when rendering setup hints. */
   note: string;
 }
+
+/** The server's name in the registry, and the key `rescopeFilesystemServer` finds it by. */
+const FILESYSTEM_NAME = 'filesystem';
+
+/**
+ * Everything before the root on the filesystem server's argv.
+ *
+ * Shared with `rescopeFilesystemServer`, which recognises a still-default entry
+ * by matching this prefix. Written down once so seeding and rescoping cannot
+ * drift into disagreeing about what "the default filesystem server" looks like.
+ */
+const FILESYSTEM_ARGV = ['-y', '@modelcontextprotocol/server-filesystem'] as const;
+
 
 /**
  * The seed set.
@@ -69,15 +86,17 @@ export interface DefaultServer {
 export function defaultServers(): DefaultServer[] {
   return [
     {
-      note: 'Filesystem access scoped to the projects directory.',
+      note: 'Filesystem access scoped to the active project.',
       input: {
-        name: 'filesystem',
+        name: FILESYSTEM_NAME,
         type: 'local',
         command: 'npx',
-        args: ['-y', '@modelcontextprotocol/server-filesystem', env.paths.projects],
+        args: [...FILESYSTEM_ARGV, getRoot('projects')],
         enabled: true,
       },
+
     },
+
     {
       note:
         'Local-first web research (search, fetch, crawl, extract, find-similar). ' +
@@ -203,3 +222,46 @@ export function seedDefaultServers(): SeedResult {
 
   return result;
 }
+
+/**
+ * Re-point the default filesystem server at the active project.
+ *
+ * Seeding runs once, so without this the root chosen on first boot would be
+ * frozen into the entry forever and the MCP server would keep serving the
+ * previous project after a switch — the one scope the user cannot see is wrong.
+ *
+ * Only an entry that still looks exactly like the seeded one is touched: same
+ * command, same package, and a single root argument that is a directory this app
+ * knows about (a registered project, or the default root). Anything else means
+ * the user edited it — added a second root, pointed it somewhere of their own —
+ * and their configuration wins, which is the same "never clobber" rule seeding
+ * follows. A `false` return is therefore a normal outcome, not a failure.
+ */
+export function rescopeFilesystemServer(): boolean {
+  const server = findServerByName(FILESYSTEM_NAME);
+  if (server === null) return false;
+
+  const root = getRoot('projects');
+  const args = server.args;
+
+  const isDefaultShape =
+    server.command === 'npx' &&
+    args.length === FILESYSTEM_ARGV.length + 1 &&
+    FILESYSTEM_ARGV.every((arg, index) => args[index] === arg);
+  if (!isDefaultShape) return false;
+
+  const current = args[args.length - 1];
+  if (current === root) return false; // already correct
+
+  // The existing root must be one we would have set ourselves: the default root
+  // from a fresh seed, or a directory that is a registered project. A path the
+  // user typed is in neither list and must not be silently replaced.
+  const ours = new Set([defaultProjectRoot(), ...listProjects().map((project) => project.path)]);
+  if (current === undefined || !ours.has(current)) return false;
+
+
+  updateServer(server.id, { args: [...FILESYSTEM_ARGV, root] });
+  log.info('re-scoped the filesystem MCP server to the active project', { root });
+  return true;
+}
+

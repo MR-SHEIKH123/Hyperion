@@ -41,6 +41,7 @@ import path from 'node:path';
 
 import { env } from '../../config/env.ts';
 import { resolveInScope, resolveInSubtree } from '../../security/fsScope.ts';
+import { AppError } from '../../util/errors.ts';
 import { createLogger } from '../../util/logger.ts';
 
 const log = createLogger('code:worktree');
@@ -107,8 +108,9 @@ const worktrees = new Map<string, Worktree>();
  * Never throws for an environmental reason — no git, not a repository, no
  * commits, a git that refuses — because none of those should stop a Code task
  * from running. Each returns `mode: 'direct'` with the reason attached. It does
- * throw for a *caller* mistake: an unusable task id, or a `repoDir` outside the
- * projects scope, are bugs rather than conditions to degrade around.
+ * throw for bad input: an unusable task id, or a `repoDir` outside the projects
+ * scope, are things to reject rather than degrade around. Both surface as
+ * `bad_request`, since both arrive from the client.
  */
 export async function provisionWorktree(taskId: string, repoDir: string): Promise<Worktree> {
   const id = safeTaskId(taskId);
@@ -483,13 +485,21 @@ function firstLine(output: string): string {
  * Task ids become a directory name and a git ref, so they are checked rather
  * than sanitised. Silently rewriting a bad id would let two different tasks
  * collapse onto one directory, which is the failure this whole module exists to
- * prevent; an id we cannot use is a caller bug and says so.
+ * prevent.
+ *
+ * This is `bad_request`, not an internal fault: `taskId` arrives from the client
+ * in the `POST /api/code/run-task` body, so a rejected id is something the user
+ * can fix by retyping. It threw a plain `Error` until an audit sent `../escape`
+ * over HTTP and got back `internal_error` — which told the user we were broken
+ * when the input was.
  */
 function safeTaskId(taskId: string): string {
   const id = taskId.trim();
   if (id === '' || id.length > 100 || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id) || id.includes('..')) {
-    throw new Error(
-      `Unusable Code task id "${taskId}": expected letters, digits, dot, dash or underscore.`,
+    throw new AppError(
+      'bad_request',
+      'taskId must start with a letter or digit and contain only letters, digits, dot, dash or underscore.',
+      { details: { field: 'taskId' } },
     );
   }
   return id;

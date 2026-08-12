@@ -29,6 +29,10 @@ export type ErrorCode =
   // agents
   | 'agent_not_registered'
   | 'terminal_not_registered'
+  // capability gates and spending limits
+  | 'capability_disabled'
+  | 'network_egress_disabled'
+  | 'spending_cap_reached'
   // security / storage
   | 'scope_violation'
   | 'encryption_failed'
@@ -56,6 +60,16 @@ const STATUS: Record<ErrorCode, number> = {
 
   agent_not_registered: 501,
   terminal_not_registered: 501,
+
+  // 403 rather than 400: the request is well-formed and the caller cannot fix
+  // it by resending. Something is switched off, and only changing a setting
+  // changes the answer.
+  capability_disabled: 403,
+  network_egress_disabled: 403,
+  // 429 rather than 403: a spending cap is a quota that lifts on its own at the
+  // next daily boundary, which is what "too many requests" means and what
+  // "forbidden" does not.
+  spending_cap_reached: 429,
 
   scope_violation: 403,
   encryption_failed: 500,
