@@ -1047,10 +1047,12 @@ retry, or show a result.
 TaskRun {
   runId: string; taskId: string; tool: 'code'|'cowork'|'design';
   chatId: string|null;
-  state: 'running'|'paused'|'complete'|'error';
+  state: 'running'|'paused'|'complete'|'error'
+       |'blocked'|'ready_for_review'|'stopped';
   pauseReason: string|null; errorCode: string|null; errorMessage: string|null;
   startedAt: number; updatedAt: number; completedAt: number|null;
 }
+
 ```
 
 | Method | Path | Response |
@@ -1067,9 +1069,20 @@ never run is **404 `not_found`** with `details: { taskId }`; `run` is never
 The three tools keep separate namespaces, so the same `taskId` under `code` and
 under `cowork` are different runs and do not collide.
 
-`completedAt` is stamped only for terminal states (`complete`, `error`); it is
-`null` for `running` and `paused`, so a resumed run does not carry a completion
-time it has not reached.
+`completedAt` is stamped only for terminal states (`complete`, `error`,
+`stopped`); it is `null` for `running`, `paused`, `blocked` and
+`ready_for_review`, so a run that has not ended does not carry a completion time
+it has not reached.
+
+`blocked` and `ready_for_review` are written mid-run: `blocked` when the run is
+waiting on something only the user can resolve, `ready_for_review` when the work
+is finished and specifically wants their eyes. **A restart resolves those two
+differently.** `blocked` is demoted to `error`, because the confirmation it waits
+for is delivered into a live agent loop that no longer exists — nothing can ever
+unblock it. `ready_for_review` survives untouched, because its result already
+exists and needs no process to display. `stopped` means a configured ceiling was
+reached (§20.5), not a fault.
+
 
 ---
 

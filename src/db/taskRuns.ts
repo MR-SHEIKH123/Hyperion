@@ -210,26 +210,46 @@ export function latestRunForTask(tool: TaskRunTool, taskId: string): TaskRun | n
 }
 
 /**
- * Demote runs left `running` by a process that died, mirroring
- * `reconcileOrphanedRuns` for chat.
+ * Demote runs a dead process left mid-flight, mirroring `reconcileOrphanedRuns`
+ * for chat.
  *
  * A row saying `running` after a restart is a lie the state endpoint would
  * repeat forever, leaving a client waiting on a stream nothing will ever write
  * to. `error` rather than `paused`: unlike a chat run there is no resume path
  * for a task whose agent process is gone, so claiming it is resumable would be
  * the same lie in a different shape.
+ *
+ * **`blocked` is demoted too, and that is the subtle half.** A blocked run waits
+ * for an answer only its own live process can consume — a confirmation is
+ * delivered into the agent loop, not into this table. Once that process dies
+ * nothing can unblock the run, so leaving the row `blocked` strands it forever
+ * behind a prompt whose answer now goes nowhere, and the notification feed keeps
+ * advertising it as awaiting a decision the user can no longer give.
+ *
+ * **`ready_for_review` is deliberately left alone.** There the work is already
+ * finished and merely wants a human to look at it; no live process is needed to
+ * show a result that already exists, so demoting it would report completed work
+ * as failed and discard something real. That is the dividing line — demote a
+ * state that needed a process it no longer has, preserve one whose value
+ * survives the restart.
  */
 export function reconcileOrphanedTaskRuns(): number {
   const now = Date.now();
   const result = getDb()
     .prepare(
+      // SET expressions see the pre-update row, so this CASE reads the state the
+      // crash left behind and names the right cause for each.
       `UPDATE task_runs
           SET state = 'error',
               error_code = 'internal_error',
-              error_message = 'The server restarted while this task was running.',
+              error_message = CASE state
+                WHEN 'blocked'
+                  THEN 'The server restarted while this task was waiting for you, so it can no longer receive an answer.'
+                ELSE 'The server restarted while this task was running.'
+              END,
               updated_at = ?,
               completed_at = ?
-        WHERE state = 'running'`,
+        WHERE state IN ('running', 'blocked')`,
     )
     .run(now, now);
   return Number(result.changes ?? 0);

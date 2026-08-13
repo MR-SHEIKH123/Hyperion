@@ -981,15 +981,44 @@ not reached.
 ### Orphaned runs are demoted to `error`, not `paused`
 
 `reconcileOrphanedTaskRuns()` runs at boot and rewrites every row still saying
-`running` to `error`. A row claiming `running` after a restart is a lie the state
-endpoint would otherwise repeat forever, leaving a client waiting on a stream
-nothing will ever write to.
+`running` **or `blocked`** to `error`. A row claiming either after a restart is a
+lie the state endpoint would otherwise repeat forever, leaving a client waiting on
+a stream nothing will ever write to.
 
 **`error` rather than `paused`** is the load-bearing choice. Unlike a chat run
 there is no resume path for a task whose agent process is gone — the worktree
 state, the agent's own progress and the lane slot all died with it. Marking it
 `paused` would advertise a recovery that does not exist, which is the same lie in
 a different shape.
+
+### `blocked` is reconciled, `ready_for_review` is not (added by Prompt 1.21)
+
+These two arrived together and are both non-terminal, so the tempting reading is
+that reconciliation should treat them alike. It must not, and the dividing line is
+**whether the state still needs a process that no longer exists.**
+
+A `blocked` run is waiting for an answer only its own live process can consume — a
+confirmation is delivered into the agent loop, not written into `task_runs`. Once
+that process dies nothing can unblock the row, so leaving it `blocked` strands the
+task forever behind a prompt whose answer now goes nowhere, and
+`GET /api/notifications` keeps advertising a decision the user is no longer able to
+give. It is therefore demoted, with a message naming the real loss ("waiting for
+you, so it can no longer receive an answer") rather than the generic restart text,
+because "still running" and "waiting on you" are different things to have lost.
+
+A `ready_for_review` run is the opposite case: the work is already **finished** and
+only wants a human to look at it. No live process is needed to show a result that
+already exists on disk, so demoting it would report completed work as failed and
+throw away something real. It survives untouched, and the test asserts
+`updatedAt` is unchanged so a future widening of the `WHERE` clause cannot quietly
+rewrite the row.
+
+The plan for 1.21 flagged this as needing revisiting and it was initially missed —
+the states were added to the vocabulary while reconciliation still filtered on
+`state = 'running'` alone. Anything added to `TaskRunState` from here on has to
+answer the same question explicitly: does it depend on a live process, or is its
+value already durable?
+
 
 ### The chat FK is stored as NULL when the chat does not exist
 

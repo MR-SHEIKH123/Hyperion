@@ -28,9 +28,9 @@ import type { Server } from 'node:http';
 import type { AgentModule, TaskResult } from '../src/types/core.ts';
 
 const { ensureChat } = await import('../src/db/chats.ts');
-const { latestRunForTask, reconcileOrphanedTaskRuns, startTaskRun, getTaskRun } = await import(
-  '../src/db/taskRuns.ts'
-);
+const { latestRunForTask, reconcileOrphanedTaskRuns, startTaskRun, getTaskRun, updateTaskRunState } =
+  await import('../src/db/taskRuns.ts');
+
 const { registerAgent, resetModules } = await import('../src/orchestrator/agents.ts');
 const { resetCodeLane, resetLock } = await import('../src/orchestrator/lock.ts');
 const { createApp } = await import('../src/http/app.ts');
@@ -385,5 +385,41 @@ describe('a process that died leaves rows claiming to be running', () => {
     assert.equal(res.status, 200);
     assert.equal(body.run.state, 'error');
     assert.match(body.run.errorMessage, /restarted/);
+  });
+
+  test('a blocked run is demoted too, because nothing can answer it any more', async () => {
+    // The subtle half of reconciliation. `blocked` means the run is waiting for a
+    // confirmation delivered into the *agent loop*, not into this table — so once
+    // that process dies nothing can ever unblock it. Left alone, the row waits
+    // forever behind a prompt whose answer now goes nowhere.
+    startTaskRun({ runId: 'orphan-blocked', taskId: 'task-orphan-blocked', tool: 'code' });
+    updateTaskRunState('orphan-blocked', 'blocked');
+
+    assert.equal(reconcileOrphanedTaskRuns(), 1);
+
+    const record = getTaskRun('orphan-blocked');
+    assert.ok(record);
+    assert.equal(record.state, 'error');
+    assert.equal(record.errorCode, 'internal_error');
+    // Named for what the user actually lost: not just "it was running", but that
+    // the question it asked can no longer be answered.
+    assert.match(record.errorMessage ?? '', /waiting for you/);
+    assert.notEqual(record.completedAt, null);
+  });
+
+  test('a run ready for review survives, because its work is already finished', async () => {
+    // The dividing line: `blocked` needed a live process it no longer has, while
+    // `ready_for_review` only wants a human to look at a result that already
+    // exists. Demoting this one would report finished work as failed.
+    startTaskRun({ runId: 'orphan-review', taskId: 'task-orphan-review', tool: 'code' });
+    updateTaskRunState('orphan-review', 'ready_for_review');
+    const before = getTaskRun('orphan-review');
+
+    assert.equal(reconcileOrphanedTaskRuns(), 0, 'finished work waiting on a human was destroyed');
+
+    const record = getTaskRun('orphan-review');
+    assert.equal(record?.state, 'ready_for_review');
+    assert.equal(record?.errorCode, null);
+    assert.equal(record?.updatedAt, before?.updatedAt, 'the row was rewritten needlessly');
   });
 });
