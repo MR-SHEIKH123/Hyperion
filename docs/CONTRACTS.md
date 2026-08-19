@@ -2217,13 +2217,45 @@ returns `404 not_found` — `No provider with id "active"`. The same trap as
 `/bulk-delete` and `/assets/approved`. There is an HTTP-level test asserting the
 200, because no module-level call can reach a route-ordering bug.
 
+## Stopping a run is not the same as losing the client (groundwork for Prompt 1.24)
 
+### `ctx.signal` combines disconnect with cancellation
 
+`AgentContext.signal` used to be `sse.signal` verbatim. That signal fires on one
+event only: the browser going away. It is the right thing to abort an in-flight
+provider request with, and it was never a cancellation channel.
 
+Cancelling through it would have meant calling `sse` abort on a live stream — the
+same stream that still has to deliver the terminal `stopped` frame and whatever
+partial work the agent completed. The user would press stop and lose the output
+they were stopping *to keep*.
 
+So `createAgentContext` takes an optional `cancelSignal` and derives
+`stopSignal = AbortSignal.any([sse.signal, cancelSignal])`. Every place that
+previously read `sse.signal` — `llm.stream`, `llm.complete`, `executeCommand`, and
+the `signal` getter — now reads the composite. A disconnect therefore still aborts
+exactly as it always did; cancellation is simply a second reason to stop.
 
+### With no `cancelSignal`, the identity of the signal is preserved
 
+`AbortSignal.any` is deliberately skipped when no cancel signal is supplied, so
+`ctx.signal === sse.signal` remains literally true for every existing caller.
+That is asserted by identity rather than by behaviour, because it is the cheapest
+proof that this refactor changed nothing for a run that cannot be cancelled.
 
+### The composite is derived once, not per read
 
+`sse.signal` is backed by a single `AbortController` created with the stream, so
+reading it once at construction is equivalent to the old getter. The getter must
+keep returning that one derived object: any long-running agent loop will store
+`ctx.signal` in a local, and a getter that built a fresh `AbortSignal.any` per
+call would leave the stored copy permanently unaborted. There is a test that
+captures the signal first and aborts afterwards for exactly this reason.
 
+### Why this landed before the cancel endpoint
 
+This was committed on its own, ahead of Prompt 1.24. An earlier claim that cancel
+needed "only a registry and a route" was wrong — it rested on `ctx.signal`
+already being a general-purpose stop signal, and it was not. Separating the
+signal change from the endpoint keeps the part that touches every existing agent
+call path in a commit whose whole diff can be read against the old behaviour.

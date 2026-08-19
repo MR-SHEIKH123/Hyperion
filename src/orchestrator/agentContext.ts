@@ -43,6 +43,15 @@ export interface AgentContextInput {
    * another task's checkout even though both live under the same scope root.
    */
   taskId?: string;
+  /**
+   * A second reason to stop, independent of the browser. `sse.signal` fires only
+   * on disconnect, so cancelling through it would mean closing the very stream
+   * that still has to deliver the `stopped` frame and whatever partial work was
+   * done. Passing cancellation in separately keeps the channel open while the
+   * work unwinds; the two are combined below rather than replacing each other,
+   * because a disconnect must still abort an in-flight request as it always has.
+   */
+  cancelSignal?: AbortSignal;
 }
 
 interface ArtifactInput {
@@ -73,8 +82,16 @@ function fileBytes(absolute: string): number | null {
 }
 
 export function createAgentContext(input: AgentContextInput): AgentContext {
-  const { tool, chatId, modelId, sse, taskId } = input;
+  const { tool, chatId, modelId, sse, taskId, cancelSignal } = input;
   const log = createLogger(`agent:${tool}`);
+
+  // Disconnect *or* cancellation, whichever comes first. `sse.signal` is backed
+  // by one controller created with the stream, so reading it once here is the
+  // same signal the getter used to return. Without a cancelSignal this is that
+  // signal unchanged — `AbortSignal.any` is deliberately not used in that case,
+  // so a run with nothing to cancel keeps the exact object it always had.
+  const stopSignal =
+    cancelSignal === undefined ? sse.signal : AbortSignal.any([sse.signal, cancelSignal]);
 
   // Without a task this is exactly the old rule, the projects scope; with one it
   // narrows to that task's worktree. Going through a single resolver keeps the
@@ -89,7 +106,7 @@ export function createAgentContext(input: AgentContextInput): AgentContext {
   const llmStream = async function* (
     request: CompletionRequest,
   ): AsyncGenerator<StreamChunk, void, unknown> {
-    const signal = request.signal ?? sse.signal;
+    const signal = request.signal ?? stopSignal;
     for await (const event of routerStream({ ...request, signal })) {
       switch (event.type) {
         case 'token':
@@ -126,7 +143,7 @@ export function createAgentContext(input: AgentContextInput): AgentContext {
   const llmComplete = async (
     request: CompletionRequest,
   ): Promise<{ text: string; usage: TokenUsage }> => {
-    const signal = request.signal ?? sse.signal;
+    const signal = request.signal ?? stopSignal;
     const result = await routerComplete({ ...request, signal });
     return { text: result.text, usage: result.usage };
   };
@@ -138,7 +155,7 @@ export function createAgentContext(input: AgentContextInput): AgentContext {
   ): Promise<CommandResult> =>
     runCommand(resolvePath(cwd), command, {
       timeoutMs: options?.timeoutMs,
-      signal: sse.signal,
+      signal: stopSignal,
       ...(taskId === undefined ? {} : { taskId }),
     });
 
@@ -200,7 +217,7 @@ export function createAgentContext(input: AgentContextInput): AgentContext {
     getSkillsSummary,
     resolvePath,
     get signal(): AbortSignal {
-      return sse.signal;
+      return stopSignal;
     },
     log,
   };
