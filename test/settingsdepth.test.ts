@@ -26,12 +26,14 @@ const {
   CAPABILITIES,
   capabilityToggles,
   dailySpendCapUsd,
+  isCapabilityOn,
   responsePreferences,
   subagentCountLimit,
   taskIterationCeiling,
   taskTokenCeiling,
   toolAccessMode,
 } = await import('../src/db/settings.ts');
+const { assertCapability } = await import('../src/services/limits/capabilities.ts');
 const { createChat, appendMessage } = await import('../src/db/chats.ts');
 
 let server: Server;
@@ -173,6 +175,65 @@ describe('capability toggles are all-or-nothing', () => {
     assert.equal(res.status, 200);
     assert.deepEqual(res.body.updated, [target]);
     assert.equal(capabilityToggles()[target], next);
+  });
+});
+
+/**
+ * `web_research` is the one capability most likely to be "tidied" into a
+ * sub-toggle of `code_execution` later, on the reasoning that both reach the
+ * network. These cases exist to make that change fail loudly: research goes
+ * through a supervised MCP server, not an arbitrary binary, so a research-only
+ * install with shell execution switched off must keep working.
+ */
+describe('web research is a peer capability, not a sub-toggle', () => {
+  test('it is a capability in its own right rather than an alias for egress', async () => {
+    assert.ok(CAPABILITIES.includes('web_research'));
+    assert.ok(CAPABILITIES.includes('network_egress'));
+
+    const res = await fetch(`${base}/api/settings/capabilities`);
+    const body = (await res.json()) as {
+      capabilities: Record<string, boolean>;
+      effective: Record<string, boolean>;
+    };
+    assert.equal(typeof body.capabilities.web_research, 'boolean');
+    assert.equal(typeof body.effective.web_research, 'boolean');
+  });
+
+  test('switching code execution off leaves web research effective', async () => {
+    const res = await put('/api/settings/capabilities', {
+      capabilities: { code_execution: false, web_research: true },
+    });
+    assert.equal(res.status, 200);
+
+    const after = await fetch(`${base}/api/settings/capabilities`);
+    const body = (await after.json()) as { effective: Record<string, boolean> };
+
+    // The contrast is the whole point: egress collapses with execution because
+    // there is nothing left to reach the network *with*, while research does not,
+    // because the MCP server is still there and still supervised.
+    assert.equal(body.effective.network_egress, false);
+    assert.equal(body.effective.web_research, true);
+    assert.equal(isCapabilityOn('web_research'), true);
+  });
+
+  test('turning it off refuses by name instead of returning nothing', async () => {
+    await put('/api/settings/capabilities', { capabilities: { web_research: false } });
+
+    // A disabled research capability must throw, not answer with an empty result
+    // set — an agent that "found no sources" is indistinguishable from a broken
+    // search, and the user has no way back to the switch they flipped.
+    assert.throws(
+      () => assertCapability('web_research'),
+      (error: unknown) => {
+        const err = error as { code?: string; details?: { capability?: string }; message?: string };
+        assert.equal(err.code, 'capability_disabled');
+        assert.equal(err.details?.capability, 'web_research');
+        assert.match(String(err.message), /Web research/);
+        return true;
+      },
+    );
+
+    await put('/api/settings/capabilities', { capabilities: { web_research: true, code_execution: true } });
   });
 });
 

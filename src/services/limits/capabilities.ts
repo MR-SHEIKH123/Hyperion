@@ -20,6 +20,7 @@ const LABELS: Record<Capability, string> = {
   cowork_research: 'Cowork research',
   code_execution: 'Code execution',
   network_egress: 'Network access from executed commands',
+  web_research: 'Web research',
   artifacts: 'Artifacts',
   chat_search: 'Chat search',
   memory_generation: 'Memory generation',

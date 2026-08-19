@@ -1635,10 +1635,20 @@ exactly as with `GET /api/skills/summary` (§7).
 `PUT` adds `updated: string[]`, naming only the capabilities the request actually
 changed. `GET` returns the two maps alone.
 
+Both maps always carry every known capability: `cowork_research`,
+`code_execution`, `network_egress`, `web_research`, `artifacts`, `chat_search`,
+`memory_generation`. All of them default to **on**.
+
 **`capabilities` is the stored switch; `effective` is what the backend acts on.**
 They differ wherever one capability depends on another — `network_egress` is only
 effective when `code_execution` is also on (§20.4) — so a UI can show a toggle as
 on-but-inert instead of silently lying about it.
+
+`network_egress` is the **only** derived entry. In particular `web_research` is a
+peer capability, not a sub-toggle of `code_execution`: it governs the agent
+fetching pages through a supervised MCP server, which needs no shell at all, so
+turning code execution off leaves `effective.web_research` **true**. Refusals name
+it as `capability_disabled` with `details.capability = "web_research"`.
 
 Validation is **all-or-nothing**: every entry is checked before any is written,
 because a half-applied set is worse than a rejected one, the user having no way

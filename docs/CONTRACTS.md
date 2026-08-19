@@ -1849,6 +1849,35 @@ bind and `fsScope`. If genuine network containment is ever needed, it needs a
 different mechanism and a different label; do not quietly upgrade this one's
 description.
 
+### `network_egress` is the only derived capability (added by the Slice 2 groundwork)
+
+`isCapabilityOn` special-cases exactly one name. `network_egress` is ANDed with
+`code_execution`, because egress happens *by way of* a shell command: with command
+execution off there is no request for the setting to permit, so reporting it as
+effective would be a lie the UI would repeat.
+
+Every other capability — including `web_research` — falls straight through to its
+own stored value. **`web_research` is a peer, not a second name for
+`network_egress` and not a sub-toggle of `code_execution`.** The two govern
+different mechanisms: `network_egress` covers a command *the agent chose to run*,
+an `npm install` reaching the registry from inside a worktree, while
+`web_research` covers the agent fetching pages through a supervised MCP server —
+no arbitrary binary, and traffic the user can see in the transcript.
+
+Folding it under `code_execution` the way egress is folded would break a
+research-only install, which is a configuration a user can reasonably want: they
+switch code execution off, and web research silently stops working while its own
+toggle still reads "on". That is precisely the silent no-op these gates exist to
+prevent, and it is why the AND lives in one branch naming one capability instead
+of a general "derived from `code_execution`" rule that a third capability could be
+swept into by accident.
+
+Adding a capability needs no migration — `CAPABILITIES` is a `const` array in
+`src/db/settings.ts` and the rows are created on demand, defaulting to on. What it
+*does* need is a label in `LABELS` in `src/services/limits/capabilities.ts`, since
+`assertCapability` refuses by name and an unlabelled capability would refuse as
+`undefined`.
+
 ### Response preferences are stored and returned, never injected
 
 `/api/settings/preferences` persists the user's text and reads it back. **No code

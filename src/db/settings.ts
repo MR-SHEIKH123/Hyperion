@@ -158,11 +158,25 @@ export function responsePreferences(): string {
  * reaching the network is a strictly larger permission than running a local
  * command, so it is meaningless when `code_execution` is off. `isCapabilityOn`
  * enforces that relationship in one place.
+ *
+ * `web_research` is a **peer**, not a second name for `network_egress`, and the
+ * distinction is deliberate. `network_egress` governs a *shell command the agent
+ * chose to run* — an `npm install` inside a worktree. `web_research` governs the
+ * agent fetching pages through a supervised MCP server, which is a narrower and
+ * differently-shaped permission: no arbitrary binary runs, and the traffic is
+ * one the user can see in the transcript.
+ *
+ * Folding it under `code_execution` the way `network_egress` is folded would
+ * mean a user who switched code execution off — a reasonable thing to want for
+ * a research-only install — silently lost web research too, with the Settings
+ * toggle still reading "on". That is exactly the silent-no-op failure the
+ * capability gates exist to prevent.
  */
 export const CAPABILITIES = [
   'cowork_research',
   'code_execution',
   'network_egress',
+  'web_research',
   'artifacts',
   'chat_search',
   'memory_generation',
