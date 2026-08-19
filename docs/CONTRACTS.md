@@ -2259,3 +2259,93 @@ needed "only a registry and a route" was wrong — it rested on `ctx.signal`
 already being a general-purpose stop signal, and it was not. Separating the
 signal change from the endpoint keeps the part that touches every existing agent
 call path in a commit whose whole diff can be read against the old behaviour.
+
+## Task cancellation  *(added by Prompt 1.24)*
+
+### Every cancel outcome is a 200, including "there was nothing to signal"
+
+`POST /api/{tool}/tasks/:taskId/cancel` answers the question "is this task
+stopped?", and three different situations all answer it with yes: a live run was
+signalled, the run had already finished, or a row was stranded in a non-terminal
+state by a process that died. Only a task id that was **never** seen is a 404.
+
+The temptation is to 404 when the registry has no controller, since that is the
+one case where nothing was aborted. That would be wrong twice over. A run that
+completed a moment before the click is not missing — it is finished, which is the
+outcome the user wanted — and a stranded `running` row is precisely the case where
+cancelling matters most, because nothing else will ever clear it. Returning 404
+for either would make a working stop button look broken.
+
+For the same reason it is not a 409 either. There is no conflict to report: the
+end state the caller asked for is the end state they get.
+
+### `stopping` is not `stopped`
+
+A live cancel replies `state: 'stopping'` with `wasRunning: true`. The signal has
+been delivered; the work has not necessarily ended. An agent may be mid-tool-call
+and unwinds asynchronously, so claiming `stopped` in that reply would be a lie the
+client could observe — it would poll `/state` and still see `running`.
+
+The two remaining cases reply with a state that is already true, and
+`wasRunning: false` distinguishes "we interrupted something" from "nothing was
+running". A client that wants the terminal state watches the SSE stream or polls
+§12.4 rather than trusting the cancel response to be final.
+
+### A cancelled run is `stopped`/`cancelled`, never `error`
+
+An abort raised by a user's cancel and an abort raised by a crash arrive at the
+same `catch`. The `cancelled` flag on the registry entry is the only thing that
+tells them apart, which is why the flag lives beside the signal rather than being
+inferred from `signal.aborted`.
+
+Recording `error` would be wrong in a way that compounds: the run would earn a
+retry prompt in the UI and a row in the error log (§13 of `API.md`), so stopping
+a task on purpose would look like a fault and pollute the very view used to find
+real ones. `pause_reason: 'cancelled'` is what separates a user stop from a
+ceiling stop, which also lands on `stopped`.
+
+### Registration happens before the lock, not inside it
+
+`registerCancellable` is called before `withLock`/the Code lane, so a task parked
+in a queue is cancellable. Registering inside the lock would mean a task waiting
+behind a full lane had no controller yet, and the endpoint would report it as a
+task it had never heard of — a 404 for the run the user can most plainly see
+sitting in the queue.
+
+The cancellable's signal is therefore also passed to the lock itself
+(`AbortSignal.any([sse.signal, cancellable.signal])`), so a cancelled queued task
+leaves the queue instead of waiting for its turn only to stop immediately.
+
+### The registry is in-process and keyed two ways
+
+Cancellation is not persisted, exactly like the job lock: it applies to work this
+process is running, and a registry that survived a restart would offer to stop
+runs that no longer exist. Boot-time reconciliation already handles rows a dead
+process left behind.
+
+`byRunId` and `byTask` exist for different questions. "Cancel this task" resolves
+through `(tool, taskId)`, where the **newest** registration wins, because a retry
+reuses the task id and the run the user is looking at is the current one.
+"Was *this attempt* cancelled?" resolves through `runId`, so a retry cannot make
+the previous attempt look cancelled. `dispose()` clears the task index only when
+the entry there is still its own — a keyed check, mirroring the lock's release —
+so a late dispose cannot unregister the retry that succeeded it.
+
+### A cancelled scheduled run is `skipped`, and its `last_run_at` is stamped
+
+Scheduled Cowork runs land on `skipped` rather than a new status. Migration `006`
+constrains `scheduled_task_runs.status` to
+`('running','success','failed','skipped')`, and widening a CHECK constraint is its
+own migration — but `skipped` is also the honest word: `failed` against a task
+that did exactly what it was told is a lie the history keeps repeating.
+
+The stamped `last_run_at` is load-bearing rather than incidental. Due-ness is
+computed from it, so a cancelled run that left it untouched would come due again
+on the very next tick and restart the work the user just stopped.
+
+### The cancel routes are declared after the `/state` routes
+
+Express matches in registration order. Both live under
+`/api/{tool}/tasks/:taskId/...`, so the literal suffixes must not be able to
+shadow one another — the same ordering rule that made `/api/providers/active`
+resolve as a provider id when it was declared too late.

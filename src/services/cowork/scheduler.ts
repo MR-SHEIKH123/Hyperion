@@ -41,6 +41,7 @@
 import { env } from '../../config/env.ts';
 import { requireAgent } from '../../orchestrator/agents.ts';
 import { createAgentContext } from '../../orchestrator/agentContext.ts';
+import { registerCancellable } from '../../orchestrator/cancel.ts';
 import { withLock } from '../../orchestrator/lock.ts';
 import { SseStream } from '../../orchestrator/sse.ts';
 import { AppError } from '../../util/errors.ts';
@@ -123,6 +124,37 @@ export async function runScheduledTask(id: string): Promise<void> {
   const task = requireScheduledTask(id);
   const runId = startRun(task.id);
 
+  /**
+   * A scheduled run is stoppable too, under the task's own id — that is the
+   * handle the user has for it in the UI, and a run nobody is watching is
+   * exactly the kind that most needs an off switch.
+   *
+   * There is no `task_runs` row here (this path keeps its history in
+   * `scheduled_task_runs`), so the cancel endpoint reaches this run through the
+   * live registry or not at all. That is why registration happens before the
+   * lock: a task queued behind the user's own work must not be uncancellable
+   * for however long that work takes.
+   */
+  const cancellable = registerCancellable(runId, 'cowork', task.id);
+
+  /**
+   * Record a stopped scheduled run.
+   *
+   * `skipped`, not `failed`: the run was stopped on purpose, and a red mark
+   * against a task working exactly as told is a lie the history would keep
+   * repeating. `skipped` also stamps `last_run_at`, which is what stops this
+   * task coming due again on the very next tick — a cancelled run that stayed
+   * due would restart within the minute and ignore the user's decision.
+   */
+  const finishCancelled = (): void => {
+    finishRun(runId, task.id, {
+      status: 'skipped',
+      summary: 'Stopped before it finished.',
+    });
+    log.info('scheduled task stopped', { id: task.id });
+  };
+
+
   const input: TaskInput = {
     tool: 'cowork',
     chatId: chatIdFor(task, runId),
@@ -149,6 +181,9 @@ export async function runScheduledTask(id: string): Promise<void> {
         // retry, so waiting is the only behaviour that isn't just a silent loss.
         mode: 'queue',
         waitMs: env.scheduledTaskWaitMs,
+        // A cancelled task leaves the queue immediately instead of sitting out
+        // the remaining wait to record a `skipped` nobody asked for.
+        signal: cancellable.signal,
       },
       async () => {
         const ctx = createAgentContext({
@@ -156,6 +191,7 @@ export async function runScheduledTask(id: string): Promise<void> {
           chatId: input.chatId,
           modelId: input.modelId,
           sse,
+          cancelSignal: cancellable.signal,
           ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
         });
         return await agent.runTask(input, ctx);
@@ -163,6 +199,15 @@ export async function runScheduledTask(id: string): Promise<void> {
     );
 
     sse.close();
+
+    // An agent that honours `ctx.signal` returns what it had rather than
+    // throwing, so a stopped run reaches here looking finished. Checked before
+    // the history row is written, and before the push: a notification saying
+    // this "finished" would contradict the stop the user just asked for.
+    if (cancellable.cancelled) {
+      finishCancelled();
+      return;
+    }
 
     const artifact = result.artifacts?.[0];
     finishRun(runId, task.id, {
@@ -175,6 +220,14 @@ export async function runScheduledTask(id: string): Promise<void> {
     log.info('scheduled task finished', { id: task.id, ok: result.ok });
     await notify(task, result);
   } catch (error) {
+    // Cancelling aborts whatever the run was waiting on, so it lands here as an
+    // `aborted` error. Handled ahead of every other branch because the reason
+    // the run stopped is a decision, not the exception it raised on the way out.
+    if (cancellable.cancelled) {
+      finishCancelled();
+      return;
+    }
+
     // Losing the queue race is not a failure — the app was busy with work the
     // user was actually watching, which rightly wins.
     const busy = error instanceof AppError && error.code === 'busy';
@@ -210,6 +263,11 @@ export async function runScheduledTask(id: string): Promise<void> {
 
     log.error('scheduled task failed', { id: task.id, error: String(error) });
     await notify(task, { ok: false, summary: `${task.name} failed to run.` });
+  } finally {
+    // Every exit unregisters, including the early returns above. A registration
+    // left behind would keep offering to cancel a run that has already ended,
+    // and would shadow the next attempt at this task id.
+    cancellable.dispose();
   }
 
 }

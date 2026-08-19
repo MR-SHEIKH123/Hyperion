@@ -37,6 +37,11 @@ import {
 } from '../orchestrator/agents.ts';
 import { createAgentContext } from '../orchestrator/agentContext.ts';
 import {
+  CANCEL_REASON,
+  cancelRun,
+  registerCancellable,
+} from '../orchestrator/cancel.ts';
+import {
   codeLaneBusyError,
   codeLaneHasCapacity,
   codeLaneStatus,
@@ -176,8 +181,12 @@ function failureReason(error: unknown): { code: string; message: string } {
  */
 function markTaskRun(
   runId: string,
-  state: 'complete' | 'error',
-  reason?: { code: string; message: string },
+  state: 'complete' | 'error' | 'stopped',
+  reason?: {
+    pauseReason?: string | undefined;
+    code?: string | undefined;
+    message?: string | undefined;
+  },
 ): void {
   try {
     finishTaskRun(runId, state, reason);
@@ -211,13 +220,39 @@ function runTaskRoute(tool: AgentTool) {
     }
 
     const runId = randomUUID();
+    // Registered before the lock rather than inside it, so a task parked in
+    // the queue is cancellable too. Until it holds the lock the only thing
+    // there is to stop is the wait itself, and a queued run that could not be
+    // stopped would look to the cancel endpoint like a task never heard of.
+    const cancellable = registerCancellable(runId, tool, taskId);
     const sse = openStream(res);
+
+    /**
+     * Record a run the user stopped.
+     *
+     * `stopped` rather than `error` because nothing broke, and an `agent`
+     * frame rather than `sendError` because a red failure in the UI is the
+     * wrong answer to something the user asked for.
+     */
+    const finishCancelled = (): void => {
+      markTaskRun(runId, 'stopped', { pauseReason: CANCEL_REASON });
+      sse.emit('agent', {
+        channel: 'stopped',
+        tool,
+        chatId: input.chatId,
+        taskId,
+        reason: CANCEL_REASON,
+      });
+    };
+
     void withLock(
       {
         tool,
         label: `${tool}:${input.chatId}`,
         mode: concurrencyMode(),
-        signal: sse.signal,
+        // Either reason to stop leaves the queue. Waiting on `sse.signal`
+        // alone would keep a cancelled task parked until it timed out.
+        signal: AbortSignal.any([sse.signal, cancellable.signal]),
       },
       async () => {
         // Inside the lock, not before it: a request that waits its turn in
@@ -235,6 +270,7 @@ function runTaskRoute(tool: AgentTool) {
           chatId: input.chatId,
           modelId: input.modelId,
           sse,
+          cancelSignal: cancellable.signal,
           ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
         });
         const result: TaskResult = await agent.runTask(input, ctx);
@@ -243,13 +279,25 @@ function runTaskRoute(tool: AgentTool) {
       },
     )
       .then(() => {
-        markTaskRun(runId, 'complete');
+        // An agent that honours `ctx.signal` returns whatever it had rather
+        // than throwing, so a cancelled run can arrive here looking like a
+        // successful one. Recording `complete` would claim work finished
+        // that the user stopped halfway through.
+        if (cancellable.cancelled) finishCancelled();
+        else markTaskRun(runId, 'complete');
       })
       .catch((error: unknown) => {
+        // A cancelled run and a broken one both surface as an aborted
+        // request; only the registry knows which this was.
+        if (cancellable.cancelled) {
+          finishCancelled();
+          return;
+        }
         markTaskRun(runId, 'error', failureReason(error));
         sse.sendError(error);
       })
       .finally(() => {
+        cancellable.dispose();
         sse.close();
       });
   };
@@ -287,13 +335,37 @@ function runCodeTaskRoute() {
     // successful one. This says which it was.
     let provisioned = true;
 
+    // Before the lane for the same reason the other tools register before the
+    // lock: a task queued behind a full lane has to be stoppable as well.
+    const cancellable = registerCancellable(runId, 'code', taskId);
     const sse = openStream(res);
+
+    /**
+     * Record a code run the user stopped.
+     *
+     * The `provisioned` guard is the same one the rest of this chain uses: a
+     * run whose worktree could not be created has already recorded its own
+     * failure, and must not have it overwritten with `stopped`. A run
+     * cancelled while still queued has no row at all, so the update matches
+     * nothing — which is the truth, because it never started.
+     */
+    const finishCancelled = (): void => {
+      if (provisioned) markTaskRun(runId, 'stopped', { pauseReason: CANCEL_REASON });
+      sse.emit('agent', {
+        channel: 'stopped',
+        tool: 'code',
+        chatId: input.chatId,
+        taskId,
+        reason: CANCEL_REASON,
+      });
+    };
+
     void withCodeLane(
       {
         tool: 'code',
         label: `${input.chatId}:${taskId}`,
         mode: concurrencyMode(),
-        signal: sse.signal,
+        signal: AbortSignal.any([sse.signal, cancellable.signal]),
         taskId,
       },
       async () => {
@@ -322,6 +394,7 @@ function runCodeTaskRoute() {
           modelId: input.modelId,
           sse,
           taskId,
+          cancelSignal: cancellable.signal,
           ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
         });
         const result: TaskResult = await agent.runTask(input, ctx);
@@ -330,19 +403,25 @@ function runCodeTaskRoute() {
       },
     )
       .then(() => {
-        if (provisioned) markTaskRun(runId, 'complete');
+        if (cancellable.cancelled) finishCancelled();
+        else if (provisioned) markTaskRun(runId, 'complete');
         void releaseWorktree(taskId).catch((error: unknown) => {
           log.warn(`code task ${taskId}: worktree release failed: ${String(error)}`);
         });
       })
       .catch((error: unknown) => {
-        if (provisioned) markTaskRun(runId, 'error', failureReason(error));
-        sse.sendError(error);
+        if (cancellable.cancelled) {
+          finishCancelled();
+        } else {
+          if (provisioned) markTaskRun(runId, 'error', failureReason(error));
+          sse.sendError(error);
+        }
         void releaseWorktree(taskId).catch((error: unknown) => {
           log.warn(`code task ${taskId}: worktree release failed: ${String(error)}`);
         });
       })
       .finally(() => {
+        cancellable.dispose();
         sse.close();
       });
 
@@ -406,6 +485,62 @@ function taskStateRoute(tool: TaskRunTool) {
 agentsRouter.get('/code/tasks/:taskId/state', taskStateRoute('code'));
 agentsRouter.get('/cowork/tasks/:taskId/state', taskStateRoute('cowork'));
 agentsRouter.get('/design/tasks/:taskId/state', taskStateRoute('design'));
+
+/**
+ * Stop a task, for `POST /api/{tool}/tasks/:taskId/cancel`.
+ *
+ * Three cases, all of them a 200, because each is a real answer to "stop
+ * this" rather than a failure of the request:
+ *
+ *   - **A live run.** Its cancel signal is raised and the answer is
+ *     `stopping`, not `stopped`: the run is still unwinding, and it owns the
+ *     transition to a terminal state. Saying `stopped` here would have the
+ *     client believe the work had already put its tools down.
+ *   - **A row with no live run.** Nothing is left in this process to signal —
+ *     the state was left behind by a run whose process is gone — so the
+ *     transition is made directly. "No controller found" is success, not a
+ *     404: the user asked for this task to be stopped, and afterwards it is.
+ *   - **A run that already ended.** Idempotent success carrying the state it
+ *     actually reached. Cancelling something that finished a moment ago is a
+ *     race the user cannot avoid, so it must not read as an error.
+ *
+ * A task id with no row at all is still a 404, on the same reasoning as the
+ * state endpoint: "I have never heard of this task" and "this task is not
+ * running" are different answers, and only one of them means the client is
+ * asking about something that exists.
+ */
+function cancelTaskRoute(tool: AgentTool) {
+  return wrap(async (req: Request, res: Response) => {
+    const taskId = pathParam(req, 'taskId');
+
+    const signalled = cancelRun(tool, taskId);
+    if (signalled !== null) {
+      res.json({ tool, taskId, runId: signalled, state: 'stopping', wasRunning: true });
+      return;
+    }
+
+    const run = latestRunForTask(tool, taskId);
+    if (run === null) {
+      throw new AppError('not_found', `No ${tool} task run recorded for "${taskId}".`, {
+        details: { taskId },
+      });
+    }
+
+    const ended =
+      run.state === 'complete' || run.state === 'error' || run.state === 'stopped';
+    if (ended) {
+      res.json({ tool, taskId, runId: run.runId, state: run.state, wasRunning: false });
+      return;
+    }
+
+    finishTaskRun(run.runId, 'stopped', { pauseReason: CANCEL_REASON });
+    res.json({ tool, taskId, runId: run.runId, state: 'stopped', wasRunning: false });
+  });
+}
+
+agentsRouter.post('/code/tasks/:taskId/cancel', cancelTaskRoute('code'));
+agentsRouter.post('/cowork/tasks/:taskId/cancel', cancelTaskRoute('cowork'));
+agentsRouter.post('/design/tasks/:taskId/cancel', cancelTaskRoute('design'));
 
 /**
  * A code task's changes as a unified patch.

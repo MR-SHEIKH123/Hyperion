@@ -926,6 +926,9 @@ as plain JSON.
 | GET | `/api/code/tasks/:taskId/state` | plain JSON *(new in 1.15)* |
 | GET | `/api/cowork/tasks/:taskId/state` | plain JSON *(new in 1.15)* |
 | GET | `/api/design/tasks/:taskId/state` | plain JSON *(new in 1.15)* |
+| POST | `/api/code/tasks/:taskId/cancel` | plain JSON *(new in 1.24)* |
+| POST | `/api/cowork/tasks/:taskId/cancel` | plain JSON *(new in 1.24)* |
+| POST | `/api/design/tasks/:taskId/cancel` | plain JSON *(new in 1.24)* |
 | GET | `/api/code/rules` | plain JSON *(new in 1.13)* |
 | GET | `/api/code/agents` | plain JSON *(new in 1.13)* |
 | GET | `/api/code/commands` | plain JSON *(new in 1.13)* |
@@ -1139,8 +1142,73 @@ differently.** `blocked` is demoted to `error`, because the confirmation it wait
 for is delivered into a live agent loop that no longer exists — nothing can ever
 unblock it. `ready_for_review` survives untouched, because its result already
 exists and needs no process to display. `stopped` means a configured ceiling was
-reached (§20.5), not a fault.
+reached (§20.5), not a fault, and as of 1.24 it is also how a run the user
+stopped is recorded — distinguished by `pauseReason` (§12.5).
 
+
+---
+
+### 12.5 Stopping a task  *(new in 1.24)*
+
+A long agent run needs a stop button that does not require closing the tab. These
+endpoints stop the run **without** tearing down its SSE stream, so the partial
+work and the final `stopped` frame still reach the client.
+
+| Method | Path | Response |
+| --- | --- | --- |
+| POST | `/api/code/tasks/:taskId/cancel` | `CancelResult` |
+| POST | `/api/cowork/tasks/:taskId/cancel` | `CancelResult` |
+| POST | `/api/design/tasks/:taskId/cancel` | `CancelResult` |
+
+```ts
+CancelResult {
+  tool: 'code'|'cowork'|'design';
+  taskId: string;
+  runId: string;
+  state: 'stopping'|'complete'|'error'|'stopped';
+  wasRunning: boolean;
+}
+
+```
+
+No request body. Three outcomes, **all 200**:
+
+- **A live run** — `wasRunning: true`, `state: 'stopping'`. The reply means "the
+  signal was delivered", not "the work has ended": the run unwinds
+  asynchronously and announces its own end on the SSE stream. Poll §12.4 or watch
+  the stream for the terminal state.
+- **A run that already finished** — `wasRunning: false` and the state it actually
+  reached (`complete`, `error` or a previous `stopped`). Stopping something that
+  already stopped is not an error, so this is not a 409.
+- **A row stranded in a non-terminal state** — a run whose process died, leaving
+  `running` or `paused` behind. There is no signal to send, so the state is
+  transitioned directly to `stopped` with `pauseReason: "cancelled"`, and
+  `wasRunning` is `false`.
+
+A task id that has **never** run is **404 `not_found`** with
+`details: { taskId }` — the same rule as §12.4, and the only non-200 this
+endpoint returns apart from a malformed path.
+
+A cancelled run records **`stopped` with `pauseReason: "cancelled"`**, never
+`error`. The distinction matters to the UI: an error deserves a retry prompt and
+a place in the error log (§13), whereas a stop the user asked for deserves
+neither. `pauseReason` is what separates a user stop from a ceiling stop
+(§20.5), which also lands on `stopped`.
+
+Queued tasks are cancellable too. A Code task parked behind a full lane (§12.1),
+or a Cowork task waiting on the job lock, is registered as cancellable *before*
+it acquires the lock — so it can leave the queue instead of having to start
+first.
+
+Cancellation is **in-process**, like the job lock: it applies to work this
+process is running. It is not persisted, because a registry that survived a
+restart would offer to stop runs that no longer exist. Boot-time reconciliation
+already demotes rows a dead process left behind.
+
+Scheduled Cowork runs (§17.2) are cancellable through the same
+`/api/cowork/tasks/:taskId/cancel` path, using the scheduled task's own id. A
+stopped scheduled run is recorded with status `skipped` and its `lastRunAt` is
+stamped, so it does not immediately come due again on the next tick.
 
 ---
 
