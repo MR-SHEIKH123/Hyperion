@@ -116,9 +116,52 @@ export type MessageRole = 'system' | 'user' | 'assistant' | 'tool';
  * The minimal shape sent to a provider. Deliberately just role + content —
  * persistence metadata must never leak into an upstream request body.
  */
+/**
+ * One tool invocation requested by the model.
+ *
+ * `arguments` stays a raw JSON *string* rather than a parsed object because
+ * that is how providers stream it — in fragments that are only valid JSON once
+ * concatenated. Parsing is the caller's job, and it has to cope with a model
+ * that emitted malformed JSON.
+ */
+export interface ToolCall {
+  id: string;
+  name: string;
+  arguments: string;
+}
+
+/**
+ * A tool the model is allowed to call, in JSON Schema form.
+ *
+ * `parameters` is deliberately opaque here: schemas are authored by whichever
+ * layer owns the tool (MCP server, built-in, subagent) and this spine only
+ * forwards them.
+ */
+export interface ToolSchema {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+/**
+ * The minimal shape sent to a provider.
+ *
+ * Still deliberately narrow — persistence metadata must never leak into an
+ * upstream request body. The two tool fields are the exception, because the
+ * protocol requires them: an assistant turn that requested tools has to carry
+ * `toolCalls`, and each answering `tool` message has to carry the
+ * `toolCallId` it responds to. Without that pairing the provider cannot match
+ * a result to its request and rejects the whole conversation.
+ */
 export interface ChatMessage {
   role: MessageRole;
   content: string;
+  /** Set only on an assistant message that requested tools. */
+  toolCalls?: ToolCall[];
+  /** Required on a `tool` message; identifies the call being answered. */
+  toolCallId?: string;
+  /** Set on a `tool` message so a provider that wants the name has it. */
+  name?: string;
 }
 
 export type MessageStatus = 'streaming' | 'paused' | 'complete' | 'error';
@@ -157,6 +200,13 @@ export interface TokenUsage {
 /** What a provider adapter yields while streaming. */
 export type StreamChunk =
   | { type: 'token'; text: string }
+  /**
+   * Emitted once per completed tool call, after its argument fragments have
+   * been reassembled. Adapters do not surface partial calls: a half-built
+   * `arguments` string is not parseable, so there is nothing a consumer could
+   * usefully do with it.
+   */
+  | { type: 'tool_call'; call: ToolCall }
   | { type: 'usage'; usage: TokenUsage }
   | { type: 'done'; finishReason?: string };
 
@@ -166,6 +216,17 @@ export interface CompletionRequest {
   temperature?: number;
   maxTokens?: number;
   signal?: AbortSignal;
+  /**
+   * Offered tools. Omitted entirely for a plain chat turn, because some
+   * gateways reject an empty `tools: []` rather than ignoring it.
+   */
+  tools?: ToolSchema[];
+  /**
+   * `auto` lets the model choose; `none` forces prose. Left undefined when no
+   * tools are offered — sending `tool_choice` without `tools` is an error on
+   * several gateways.
+   */
+  toolChoice?: 'auto' | 'none';
 }
 
 /** Implemented once per provider protocol (OpenAI-compatible, Ollama). */

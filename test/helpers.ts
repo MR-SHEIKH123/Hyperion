@@ -82,12 +82,28 @@ export interface MockBehaviour {
   truncateAfter?: number;
   /** Hang without responding, to exercise the timeout path. */
   hang?: boolean;
+  /**
+   * Tool calls to stream instead of finishing with prose.
+   *
+   * Arguments are split across frames on purpose: reassembling fragments keyed
+   * by index is the part of the protocol most likely to be implemented wrong,
+   * and a single-frame mock would never catch it.
+   */
+  toolCalls?: { id: string; name: string; arguments: string }[];
+  /** Script a different behaviour for each successive request. */
+  thenBehave?: MockBehaviour;
 }
 
 export interface MockProvider {
   baseUrl: string;
-  /** Requests received, for asserting that zero calls were made. */
-  streamCalls: { model: string }[];
+  /**
+   * Requests received, for asserting that zero calls were made.
+   *
+   * `body` is the parsed request, so a test can assert what was actually sent
+   * upstream — that `tools` was present, or that a `tool` message carried its
+   * `tool_call_id`.
+   */
+  streamCalls: { model: string; body: Record<string, unknown> }[];
   modelCalls: number;
   behave(next: MockBehaviour): void;
   close(): Promise<void>;
@@ -102,7 +118,7 @@ export interface MockProvider {
  */
 export async function startMockProvider(initial: MockBehaviour = {}): Promise<MockProvider> {
   let behaviour: MockBehaviour = { models: ['mock-model'], tokens: ['Hello', ' world'], ...initial };
-  const streamCalls: { model: string }[] = [];
+  const streamCalls: { model: string; body: Record<string, unknown> }[] = [];
   let modelCalls = 0;
   let streamRequests = 0;
 
@@ -131,7 +147,7 @@ export async function startMockProvider(initial: MockBehaviour = {}): Promise<Mo
       req.on('end', () => {
         streamRequests++;
         const parsed = JSON.parse(body || '{}') as { model?: string };
-        streamCalls.push({ model: parsed.model ?? '' });
+        streamCalls.push({ model: parsed.model ?? '', body: parsed as Record<string, unknown> });
 
         if (behaviour.hang) return; // never respond
 
@@ -150,6 +166,49 @@ export async function startMockProvider(initial: MockBehaviour = {}): Promise<Mo
           'Cache-Control': 'no-cache',
           Connection: 'keep-alive',
         });
+
+        const scripted = behaviour.toolCalls ?? [];
+        if (scripted.length > 0) {
+          // First frame per call carries id and name; the arguments are then
+          // dribbled out in two-character slices so the client has to
+          // reassemble them by index.
+          for (const [index, call] of scripted.entries()) {
+            res.write(
+              `data: ${JSON.stringify({
+                choices: [
+                  {
+                    index: 0,
+                    delta: { tool_calls: [{ index, id: call.id, type: 'function', function: { name: call.name, arguments: '' } }] },
+                  },
+                ],
+              })}\n\n`,
+            );
+            for (let at = 0; at < call.arguments.length; at += 2) {
+              res.write(
+                `data: ${JSON.stringify({
+                  choices: [
+                    {
+                      index: 0,
+                      delta: { tool_calls: [{ index, function: { arguments: call.arguments.slice(at, at + 2) } }] },
+                    },
+                  ],
+                })}\n\n`,
+              );
+            }
+          }
+          res.write(
+            `data: ${JSON.stringify({
+              choices: [{ delta: {}, finish_reason: 'tool_calls', index: 0 }],
+              usage: { prompt_tokens: 11, completion_tokens: 22 },
+            })}\n\n`,
+          );
+          res.write('data: [DONE]\n\n');
+          res.end();
+          // A scripted follow-up is how a loop test gets a *different* second
+          // turn: without it the model would request the same tool forever.
+          if (behaviour.thenBehave) behaviour = behaviour.thenBehave;
+          return;
+        }
 
         const tokens = behaviour.tokens ?? [];
         const limit = behaviour.truncateAfter ?? tokens.length;
@@ -179,6 +238,7 @@ export async function startMockProvider(initial: MockBehaviour = {}): Promise<Mo
         );
         res.write('data: [DONE]\n\n');
         res.end();
+        if (behaviour.thenBehave) behaviour = behaviour.thenBehave;
       });
       return;
     }

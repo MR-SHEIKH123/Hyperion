@@ -19,12 +19,81 @@ import { redactSecrets } from '../util/redact.ts';
 import { tryDecrypt } from '../security/keystore.ts';
 import { env } from '../config/env.ts';
 import type {
+  ChatMessage,
   CompletionRequest,
   ModelInfo,
   ProviderAdapter,
   ProviderRecord,
   StreamChunk,
+  ToolCall,
 } from '../types/core.ts';
+
+/**
+ * Translate one message into OpenAI wire form.
+ *
+ * Kept separate from the request body so the tool fields are only ever emitted
+ * when set: a `tool_calls: undefined` key serializes to nothing, but an empty
+ * array does not, and some gateways reject the latter.
+ */
+function wireMessage(m: ChatMessage): Record<string, unknown> {
+  return {
+    role: m.role,
+    content: m.content,
+    ...(m.toolCalls && m.toolCalls.length > 0
+      ? {
+          tool_calls: m.toolCalls.map((c) => ({
+            id: c.id,
+            type: 'function',
+            function: { name: c.name, arguments: c.arguments },
+          })),
+        }
+      : {}),
+    ...(m.toolCallId !== undefined ? { tool_call_id: m.toolCallId } : {}),
+    ...(m.name !== undefined ? { name: m.name } : {}),
+  };
+}
+
+/**
+ * Reassembles `tool_calls` deltas.
+ *
+ * The provider streams one call across many frames, keyed by `index`: the
+ * first carries the id and name, later ones carry slices of the argument JSON
+ * that are meaningless alone. Accumulating by index — not by id, which later
+ * fragments omit — is what makes the reassembly correct.
+ */
+class ToolCallAccumulator {
+  private readonly byIndex = new Map<number, { id: string; name: string; args: string }>();
+
+  add(delta: OpenAiToolCallDelta): void {
+    const index = delta.index ?? 0;
+    const slot = this.byIndex.get(index) ?? { id: '', name: '', args: '' };
+    if (typeof delta.id === "string" && delta.id !== "") slot.id = delta.id;
+    const fn = delta.function;
+    if (fn) {
+      if (typeof fn.name === "string" && fn.name !== "") slot.name = fn.name;
+      if (typeof fn.arguments === "string") slot.args += fn.arguments;
+    }
+    this.byIndex.set(index, slot);
+  }
+
+  /**
+   * Completed calls in stream order. A slot with no name is dropped: it cannot
+   * be dispatched, and inventing a name would call the wrong tool.
+   */
+  drain(): ToolCall[] {
+    const out: ToolCall[] = [];
+    for (const index of [...this.byIndex.keys()].sort((a, b) => a - b)) {
+      const slot = this.byIndex.get(index);
+      if (slot === undefined || slot.name === '') continue;
+      // An id is required to answer the call; synthesize one only if the
+      // provider omitted it, which some OpenAI-compatible gateways do.
+      const id = slot.id !== '' ? slot.id : `call_${index}`;
+      out.push({ id, name: slot.name, arguments: slot.args === '' ? '{}' : slot.args });
+    }
+    this.byIndex.clear();
+    return out;
+  }
+}
 
 /** Join a base URL and path without doubling or dropping slashes. */
 function url(base: string, path: string): string {
@@ -214,12 +283,27 @@ export const openAiAdapter: ProviderAdapter = {
         },
         body: JSON.stringify({
           model: request.modelId,
-          messages: request.messages.map((m) => ({ role: m.role, content: m.content })),
+          messages: request.messages.map(wireMessage),
           stream: true,
           // Ask for token counts in the stream; harmless where unsupported.
           stream_options: { include_usage: true },
           ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
           ...(request.maxTokens !== undefined ? { max_tokens: request.maxTokens } : {}),
+          // Only sent when tools exist: an empty array is rejected outright by
+          // some gateways instead of being treated as "no tools".
+          ...(request.tools && request.tools.length > 0
+            ? {
+                tools: request.tools.map((t) => ({
+                  type: 'function',
+                  function: {
+                    name: t.name,
+                    description: t.description,
+                    parameters: t.parameters,
+                  },
+                })),
+                tool_choice: request.toolChoice ?? 'auto',
+              }
+            : {}),
         }),
       },
       env.requestTimeoutMs,
@@ -231,6 +315,7 @@ export const openAiAdapter: ProviderAdapter = {
     let finishReason: string | undefined;
     let sawUsage = false;
     let approxOut = 0;
+    const toolCalls = new ToolCallAccumulator();
 
     for await (const data of sseFrames(response, request.signal)) {
       if (data === '' || data === '[DONE]') continue;
@@ -256,7 +341,19 @@ export const openAiAdapter: ProviderAdapter = {
         approxOut += 1;
         yield { type: 'token', text };
       }
-      if (choice?.finish_reason) finishReason = choice.finish_reason;
+
+      for (const delta of choice?.delta?.tool_calls ?? []) {
+        toolCalls.add(delta);
+      }
+
+      if (choice?.finish_reason) {
+        finishReason = choice.finish_reason;
+        // Drained at finish rather than per frame: argument JSON is only
+        // parseable once every fragment for that call has arrived.
+        for (const call of toolCalls.drain()) {
+          yield { type: 'tool_call', call };
+        }
+      }
 
       if (frame.usage) {
         sawUsage = true;
@@ -281,8 +378,17 @@ export const openAiAdapter: ProviderAdapter = {
   },
 };
 
+interface OpenAiToolCallDelta {
+  index?: number;
+  id?: string;
+  function?: { name?: string; arguments?: string };
+}
+
 interface OpenAiStreamFrame {
-  choices?: { delta?: { content?: string }; finish_reason?: string }[];
+  choices?: {
+    delta?: { content?: string; tool_calls?: OpenAiToolCallDelta[] };
+    finish_reason?: string;
+  }[];
   usage?: { prompt_tokens?: number; completion_tokens?: number };
   error?: { message?: string };
 }

@@ -32,7 +32,7 @@ import {
   listFailoverCandidates,
   requireProvider,
 } from './repository.ts';
-import type { CompletionRequest, ProviderRecord, TokenUsage } from '../types/core.ts';
+import type { CompletionRequest, ProviderRecord, TokenUsage, ToolCall } from '../types/core.ts';
 
 const log = createLogger('router');
 
@@ -43,6 +43,12 @@ export type RouteEvent =
   /** Always first. Tells the caller which provider actually got the request. */
   | { type: 'provider'; provider: ProviderRecord; modelId: string; attempt: number }
   | { type: 'token'; text: string }
+  /**
+   * A tool call the model requested. Forwarded rather than swallowed so the
+   * agent loop above sees it; failover treats it as output, because a provider
+   * that has already asked for a tool cannot be swapped out mid-decision.
+   */
+  | { type: 'tool_call'; call: ToolCall }
   | { type: 'usage'; usage: TokenUsage }
   /** A different provider is about to be tried. Emitted before any of its output. */
   | { type: 'switched'; from: ProviderRecord; to: ProviderRecord; reason: SwitchReason; message: string }
@@ -200,6 +206,11 @@ export async function* stream(
         if (chunk.type === 'token') {
           emitted = true;
           yield { type: 'token', text: chunk.text };
+        } else if (chunk.type === 'tool_call') {
+          // Counts as output: the decision to call a tool is part of the answer,
+          // so retrying it on another provider would duplicate a side effect.
+          emitted = true;
+          yield { type: 'tool_call', call: chunk.call };
         } else if (chunk.type === 'usage') {
           yield { type: 'usage', usage: chunk.usage };
         } else {

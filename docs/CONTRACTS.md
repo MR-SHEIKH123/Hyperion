@@ -2349,3 +2349,74 @@ Express matches in registration order. Both live under
 `/api/{tool}/tasks/:taskId/...`, so the literal suffixes must not be able to
 shadow one another — the same ordering rule that made `/api/providers/active`
 resolve as a provider id when it was declared too late.
+
+---
+
+## The tool-call protocol  *(added by Slice 2, step 1)*
+
+**Who depends on this:** every agent loop. Until this landed the provider path
+was text-only — no `tools`, no `tool_calls`, no `tool_call_id` anywhere in the
+repo — so an agent could describe an action but never request one. This is the
+foundation the Code, Cowork and Design loops all sit on, which is why it shipped
+as its own change ahead of them.
+
+### Argument fragments are reassembled by index, not by id
+
+A provider streams one tool call across many SSE frames. The first frame carries
+the `id` and the function `name`; every later frame carries only a **slice of the
+argument JSON** and the `index` it belongs to. Those slices are not individually
+valid JSON — `{"pa` parses as nothing.
+
+So accumulation is keyed on `index`, which every fragment carries, and **not** on
+`id`, which later fragments omit. Getting this wrong produces a call whose
+arguments are only the final fragment, which then fails to parse or, worse,
+parses into something plausible but incomplete.
+
+`ToolCallAccumulator` in `src/providers/adapters.ts` owns this. The mock provider
+deliberately splits arguments into two-character slices so the reassembly is
+actually exercised; a single-frame mock would assert none of it.
+
+### A tool call is emitted only once it is complete
+
+`StreamChunk` gains `{ type: 'tool_call'; call: ToolCall }`, yielded when
+`finish_reason` arrives — not per frame. A half-built `arguments` string is
+useless to a consumer, so partial calls are never surfaced.
+
+The corollary matters for anything reading the stream: **`tool_call` chunks are
+emitted before `done`**, never after. A consumer that stops reading at `done`
+would silently lose the call, so there is a test asserting the ordering.
+
+### `arguments` stays a string
+
+`ToolCall.arguments` is the raw JSON text, not a parsed object. That is how it
+arrives, and a model can emit malformed JSON — parsing at the boundary would turn
+"the model made a mistake" into "the adapter threw". The dispatcher parses it and
+gets to decide what a parse failure means, which is a decision the protocol layer
+should not make on its behalf.
+
+### An empty `tools` array is not the same as no tools
+
+`tools` and `tool_choice` are omitted from the request body entirely when no
+tools are offered. Several OpenAI-compatible gateways **reject** `tools: []`
+rather than treating it as "no tools available", so sending an empty array would
+break plain chat on those gateways. Likewise `tool_choice` is never sent without
+`tools`. Both are asserted against the real request body the mock received.
+
+### A `tool` message must carry the id of the call it answers
+
+`ChatMessage` gains `toolCalls` (on the assistant turn that requested them) and
+`toolCallId` (on the `tool` message answering one). Without that pairing the
+provider cannot match a result to its request and rejects **the whole
+conversation**, not just the offending message.
+
+`MessageRole` already included `'tool'` before this change, but nothing could
+populate it usefully because there was nowhere to put the id — which is why the
+role existing was not evidence that tool calling worked.
+
+### Failover treats a tool call as output
+
+In `src/providers/router.ts` a `tool_call` sets `emitted = true`, exactly as a
+token does. A provider that has already decided to call a tool cannot be swapped
+out mid-decision: retrying on another provider would re-issue the call and
+duplicate whatever side effect it has.
+
