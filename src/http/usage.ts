@@ -14,6 +14,7 @@ import {
   deletePrice,
   listPrices,
   setPrice,
+  summarizeExposure,
   summarizeUsage,
 } from '../db/usage.ts';
 import type { PriceInput, UsageQuery } from '../db/usage.ts';
@@ -34,6 +35,32 @@ usageRouter.get(
       providerId: queryString(req, 'providerId'),
     };
     res.json(summarizeUsage(query));
+  }),
+);
+
+/**
+ * The same spend, grouped by whether it left the machine (Part 1.23).
+ *
+ * A sibling of `/` rather than a field on it: the totals answer "what did this
+ * cost", and this answers "how much of my work went to somebody else's server".
+ * Mixing them would make every existing caller pay for a second aggregation it
+ * did not ask for.
+ *
+ * `hasUnclassified` is reported rather than hidden. Rows written before
+ * migration 013, or by a provider since deleted, have no type to classify, and
+ * quietly filing them under `local` would understate exposure — the one direction
+ * this feature must never err in.
+ */
+usageRouter.get(
+  '/exposure-summary',
+  wrap(async (req, res) => {
+    const query: UsageQuery = {
+      from: queryNumber(req, 'from'),
+      to: queryNumber(req, 'to'),
+      tool: asTool(queryString(req, 'tool')),
+      providerId: queryString(req, 'providerId'),
+    };
+    res.json(summarizeExposure(query));
   }),
 );
 

@@ -57,6 +57,8 @@ interface StreamInput {
   maxTokens: number | undefined;
   attachments: { id: string; filename: string }[] | undefined;
   resumeRunId: string | undefined;
+  /** Send anyway, after an outbound-safety refusal (Part 1.23). */
+  acknowledgeSensitive: boolean | undefined;
 }
 
 function parseAttachments(value: unknown): { id: string; filename: string }[] | undefined {
@@ -115,6 +117,7 @@ function parseStreamInput(payload: Record<string, unknown>): StreamInput {
     maxTokens: asNumber(payload.maxTokens, 'maxTokens'),
     attachments: parseAttachments(payload.attachments),
     resumeRunId: asOptionalString(payload.resumeRunId, 'resumeRunId'),
+    acknowledgeSensitive: asBool(payload.acknowledgeSensitive, 'acknowledgeSensitive'),
   };
 }
 

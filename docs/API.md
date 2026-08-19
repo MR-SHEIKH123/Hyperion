@@ -35,10 +35,11 @@ this body, produced by `AppError.toJSON()` in `src/util/errors.ts`:
 `details` is omitted when nothing was attached. **Branch on `code`, never on the
 HTTP status or the message text** — codes are the stable contract.
 
-This is the complete set, transcribed from `ERROR_STATUS` in
-`src/util/errors.ts`. Only four codes default to `retryable: true` —
-`DEFAULT_RETRYABLE` in the same file — and every other code is `false` unless a
-call site overrides it explicitly.
+This is the complete set, transcribed from the module-private `STATUS` record in
+`src/util/errors.ts`. (It is not exported — this table is a transcription, so it
+has to be updated by hand when a code is added.) Only four codes default to
+`retryable: true` — `DEFAULT_RETRYABLE` in the same file — and every other code
+is `false` unless a call site overrides it explicitly.
 
 | code | HTTP | retryable |
 | --- | --- | --- |
@@ -62,6 +63,7 @@ call site overrides it explicitly.
 | `capability_disabled` | 403 | false |
 | `network_egress_disabled` | 403 | false |
 | `spending_cap_reached` | 429 | false |
+| `redaction_flagged` | 409 | false |
 | `scope_violation` | 403 | false |
 | `encryption_failed` | 500 | false |
 | `storage_error` | 500 | false |
@@ -234,6 +236,7 @@ Three routes also spread a registry summary into the response:
 | POST | `/api/providers/colibri/probe` | `ColibriProbeResult & { defaultBaseUrl }` |
 | GET | `/api/providers/active/models` | `{ providerId, providerName, models }` |
 | GET | `/api/providers/active/current` | `{ provider: ProviderPublic \| null }` |
+| GET | `/api/providers/active` | `{ provider: ProviderPublic \| null, egress, redactionCheckEnabled }` *(new in 1.23)* |
 | GET | `/api/providers/:id` | `{ provider }` |
 | PATCH | `/api/providers/:id` | `{ provider }` |
 | DELETE | `/api/providers/:id` | **204**, no body |
@@ -258,6 +261,31 @@ carry `acknowledgeSlow: true` — see §3.3.
 **Model lists** accept `?refresh=true` to bypass the cache
 (`HYPERION_MODEL_CACHE_TTL_MS`). `/active/models` 503s with `no_healthy_provider`
 when nothing is enabled.
+
+**GET /api/providers/active** *(new in 1.23)* answers "where would my next
+message go, and is it being checked?" in one call:
+
+```json
+{ "provider": { "…": "ProviderPublic" }, "egress": "remote",
+  "redactionCheckEnabled": true }
+```
+
+`egress` is `local` | `remote` | `unknown`, computed from the provider's `type`
+by `classifyProviderType` (§20.6). It is served rather than derived client-side
+because the mapping is not guessable from the name — **`opencodex` is `remote`**
+(it routes to upstream vendors) and **`colibri` is `local`** (it serves a model on
+this machine). A frontend inferring it from the type string would get both
+backwards.
+
+With nothing enabled this is a **200** with `provider: null` and
+`egress: "unknown"`, not a 404: "nothing is configured" is the answer to the
+question. `unknown` is deliberately never reported as `local` — understating
+exposure is the one error this feature must not make.
+
+This route is declared **above `/:id`**, which is load-bearing: registered after
+it, Express matched `/active` as an id and the response was
+`404 not_found "No provider with id \"active\""`. There is a test asserting the
+200 for exactly that reason.
 
 **POST /api/providers/detect-local** body `{ baseUrl? }`, defaults to
 `OLLAMA_URL` (the env var is unprefixed — `src/config/env.ts` reads
@@ -435,6 +463,7 @@ Body:
 | `temperature`, `maxTokens` | no | |
 | `attachments` | no | `{ id, filename }[]` |
 | `resumeRunId` | no | continue an existing run |
+| `acknowledgeSensitive` | no | send anyway after a `redaction_flagged` refusal (§20.6) |
 
 **History is rebuilt server-side from the database.** A `messages[]` array is
 only mined for the newest user turn; client-supplied history is never trusted.
@@ -767,6 +796,7 @@ PriceInput   { modelId, providerId: string|null,
 | Method | Path | Response |
 | --- | --- | --- |
 | GET | `/api/usage` | `UsageSummary` (bare) — query `from`, `to` (epoch ms), `tool`, `providerId` |
+| GET | `/api/usage/exposure-summary` | `ExposureSummary` (bare) — same query params *(new in 1.23)* |
 | GET | `/api/usage/prices` | `{ prices: PriceInput[] }` |
 | PUT / POST | `/api/usage/prices` | `{ price }` (same handler, upsert) |
 | DELETE | `/api/usage/prices` | `{ deleted: boolean }` |
@@ -781,6 +811,34 @@ rows, and `unpricedRequests` per bucket plus the top-level `hasUnpriced` tell th
 dashboard to show "cost incomplete" instead of a wrong total.
 
 There is no per-row usage endpoint — aggregates only.
+
+### 9.1 Exposure summary  *(new in 1.23)*
+
+The same spend, grouped by **where the bytes went** rather than by which provider
+sent them.
+
+```ts
+ExposureBucket  extends UsageBucket { key: 'local'|'remote'|'unknown',
+                                      providerTypes: string[] }
+ExposureSummary { range: { from, to }, totals: UsageBucket,
+                  byClass: ExposureBucket[], hasUnclassified: boolean }
+```
+
+`providerTypes` names every provider type folded into the bucket, so a user can
+see *why* a row landed under `remote` — `["opencodex", "remote"]` rather than an
+unexplained total.
+
+The class comes from a `provider_type` column **stamped on the usage row at write
+time** (migration `013`), not from a join against `providers`. Deleting a provider
+therefore does not erase the record of what it sent, and re-pointing one cannot
+rewrite history retroactively.
+
+**`hasUnclassified` is reported rather than hidden.** The column is nullable —
+`recordUsage` swallows its own failures, so a `NOT NULL` constraint would silently
+discard spend rows — and rows written before `013`, or by a path that omits the
+type, land in the `unknown` bucket. They are never folded into `local`, because a
+summary that guessed would understate exposure. `totals` always equals the plain
+`/api/usage` total over the same range.
 
 ---
 
@@ -1761,6 +1819,104 @@ A scheduled run refused this way records itself `skipped`, not `failed` (§17.2)
 Ceilings are enforced *during* a run rather than at its start. A task that trips
 one stops cleanly and is recorded `stopped` with `pause_reason:
 'ceiling_reached'` — **not `error`**, because nothing broke.
+
+### 20.6 Outbound data safety — `GET|PUT /api/settings/redaction-check`  *(new in 1.23)*
+
+A check on the way out: before a chat turn is sent to a **remote** provider, the
+payload is scanned for credential-shaped text, and a match refuses the send.
+
+```json
+// GET
+{ "enabled": false, "appliesTo": "remote", "enforced": "pattern_match" }
+
+// PUT  { "enabled": true }
+{ "enabled": true, "appliesTo": "remote" }
+```
+
+`enabled` is required on the `PUT`; omitting it is **400 `bad_request`** with
+`details.field = "enabled"`. As in §20.4 the descriptive constants are on the GET
+only.
+
+**This is not a capability (§20.2), and the difference is the default.** Every
+capability defaults to *on* and is something the user switches off. This defaults
+to **off**: a false positive here blocks a message the user is trying to send, so
+it has to be opted into rather than discovered by being interrupted.
+
+`enforced: "pattern_match"` is deliberately honest, exactly like
+`command_prefix_match`. The scan recognises vendor-prefixed keys (`sk-…`,
+`ghp_…`, `AIza…`), `Authorization`-style values, and `api_key=`/`password=`-shaped
+fields. It cannot recognise a secret that looks like ordinary text, and nothing
+should be built on the assumption that it does.
+
+**Only remote sends are checked.** A `local` or `colibri` provider is a model on
+this machine, so there is no exposure to warn about, and warning anyway would
+train the user to dismiss the prompt. `unknown` is not checked either — the gate
+only fires on a provider it can positively identify as remote.
+
+#### The refusal
+
+A flagged send is **`redaction_flagged`** (status 409), raised *before* the
+request leaves and before anything is written:
+
+```json
+{ "error": {
+    "code": "redaction_flagged",
+    "message": "This request appears to contain an API key with a recognisable vendor prefix, and the selected provider is remote. Review it, or resend with acknowledgeSensitive to send it anyway.",
+    "retryable": false,
+    "details": {
+      "kinds": ["vendor_prefixed_key"],
+      "providerClass": "remote",
+      "hits": [{ "messageIndex": 3, "role": "user", "kind": "vendor_prefixed_key",
+                 "index": 42, "length": 51 }]
+    } } }
+```
+
+**On `POST /api/chat/stream` the refusal arrives as an SSE `error` frame under
+HTTP 200, not as the envelope above** *(confirmed by HTTP smoke testing)*. The
+stream is opened before the orchestrator runs, so by the time the gate refuses
+the status line is already sent and cannot be changed. The frame carries only
+what `sendError` puts on the wire (§1.3):
+
+```
+event: error
+data: {"runId":null,"code":"redaction_flagged","message":"This request appears to contain an API key with a recognisable vendor prefix, and the selected provider is remote. Review it, or resend with acknowledgeSensitive to send it anyway.","retryable":false}
+```
+
+So **`details.kinds` and `details.hits` do not reach a streaming client** — only
+`code` and `message` do. A client that wants to highlight the offending span has
+to re-derive it, or branch on `code` alone and show the message. The envelope
+form is what non-streaming callers of the gate receive. This is a known
+limitation of the SSE frame shape rather than a property of the gate, and
+widening `sendError` is deliberately left out of 1.23: it changes the wire format
+for every existing event type.
+
+**A hit is offsets and a rule name — never the matched text.** `index` and
+`length` locate the span so the UI can highlight it in text the client already
+has; putting the secret in the error would leak it into logs, the error log
+(§13) and any crash reporter. There is a test asserting the serialized envelope
+does not contain the key.
+
+**409, not 403.** The request is not forbidden — it conflicts with the current
+state of the message, and the user can resolve it. It is deliberately **not
+retryable**: resending the identical body cannot succeed, so nothing should retry
+it automatically.
+
+#### Acknowledging
+
+Resend with `acknowledgeSensitive: true` (§4.3) and the same message goes through.
+The flag is **per request, not a stored preference** — consent to send one key is
+not consent to send the next one.
+
+**A refusal leaves the conversation exactly as it was.** The gate runs before the
+user turn is persisted, so the transcript shows no half-written message and the
+acknowledged resend stores the prompt **once**, not twice. This ordering is
+load-bearing and there is a test for it.
+
+One residual gap, stated rather than hidden: the scan classifies the provider the
+turn is *about to* be sent to. A mid-run failover can move the turn to a provider
+of a different egress class, and the gate does not re-run. The usage row records
+the type that actually served the turn (§9.1), so the exposure summary stays
+accurate even where the gate could not intervene.
 
 ---
 

@@ -27,6 +27,8 @@ import {
   testProviderConnection,
 } from '../providers/registry.ts';
 import { colibriAdvisory, probeColibri, requireSlowAcknowledgement } from '../providers/colibri.ts';
+import { redactionCheckEnabled } from '../db/settings.ts';
+import { classifyProviderType } from '../services/safety/outbound.ts';
 import { isProviderType, PROVIDER_TYPES } from '../types/core.ts';
 import { AppError } from '../util/errors.ts';
 import { wrap } from './errors.ts';
@@ -121,6 +123,34 @@ providersRouter.get(
   wrap(async (req, res) => {
     const { provider, models } = await getActiveModels({ force: queryBool(req, 'refresh') === true });
     res.json({ providerId: provider.id, providerName: provider.name, models });
+  }),
+);
+
+/**
+ * The active provider and whether talking to it leaves the machine.
+ *
+ * Declared above `/:id` deliberately. Express matches in registration order, so
+ * with this below the parameter route the literal segment would be read as a
+ * provider id and answered `not_found: No provider with id "active"` — which is
+ * exactly what a bare `/active` did before this route existed.
+ *
+ * `egress` is served here rather than computed in the frontend so there is one
+ * definition of which provider types are remote. A UI that hardcoded the list
+ * would keep saying "stays on this machine" after a new remote provider type
+ * shipped, and nothing would fail loudly enough to notice.
+ *
+ * 200 with `provider: null` when nothing is enabled: having no active provider
+ * is a legitimate state the settings screen has to render, not an error.
+ */
+providersRouter.get(
+  '/active',
+  wrap((_req, res) => {
+    const active = getActiveProvider();
+    res.json({
+      provider: active ? toPublic(active) : null,
+      egress: classifyProviderType(active?.type ?? null),
+      redactionCheckEnabled: redactionCheckEnabled(),
+    });
   }),
 );
 

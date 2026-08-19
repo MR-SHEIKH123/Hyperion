@@ -261,6 +261,7 @@ export const DAILY_SPEND_CAP_KEY = 'daily_spend_cap_usd';
 export const TASK_TOKEN_CEILING_KEY = 'task_token_ceiling';
 export const TASK_ITERATION_CEILING_KEY = 'task_iteration_ceiling';
 export const SUBAGENT_COUNT_LIMIT_KEY = 'subagent_count_limit';
+export const REDACTION_CHECK_KEY = 'redaction_check_enabled';
 
 
 // --- spending and runaway limits (Part 1.19) -------------------------------
@@ -309,6 +310,27 @@ export function taskIterationCeiling(): number {
 export function subagentCountLimit(): number {
   const raw = getNumberSetting(SUBAGENT_COUNT_LIMIT_KEY, 5);
   return raw > 0 ? raw : 5;
+}
+
+
+// --- outbound data safety (Part 1.23) --------------------------------------
+
+/**
+ * Whether outbound payloads bound for a **remote** provider are scanned for
+ * credential-shaped text before being sent.
+ *
+ * Off by default, and deliberately not a `Capability`. The capability list is a
+ * set of things the agent may *do*, all defaulting on; this is a check on what
+ * leaves the machine, and it defaults off because it is a regex heuristic. A
+ * false positive interrupts real work, and an interruption the user did not ask
+ * for is how a safety feature gets switched off for good.
+ *
+ * When on, a flagged send is refused with `redaction_flagged` rather than
+ * silently rewritten — see `services/safety/outbound.ts` for why masking a
+ * user's prompt is never the right answer.
+ */
+export function redactionCheckEnabled(): boolean {
+  return getBoolSetting(REDACTION_CHECK_KEY, false);
 }
 
 

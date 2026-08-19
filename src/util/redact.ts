@@ -57,9 +57,96 @@ export function redactSecrets(text: string): string {
 }
 
 /**
- * True when `text` still contains something that looks like a credential.
- * Intended for assertions and defensive checks rather than control flow.
+ * True when `text` contains **nothing** that this module recognises as a
+ * credential — i.e. redacting it would change nothing.
+ *
+ * Read the name as "this text already looks redacted", not as "this text
+ * contains a secret". The comment here previously said the opposite of what the
+ * code does, which is a live trap: the obvious instinct when writing an
+ * outbound check is to reach for this as "does this contain a secret", and that
+ * is exactly backwards — it would wave through every payload that *does* carry
+ * one. `test/secrets.test.ts` pins the true behaviour.
+ *
+ * For control flow, use `findSensitive` instead. It answers the question
+ * directly, and says what it found.
  */
 export function looksRedacted(text: string): boolean {
   return redactSecrets(text) === text;
+}
+
+// --- detection (Part 1.23) -------------------------------------------------
+
+/**
+ * Which rule recognised a credential. Named rather than numbered so the UI can
+ * word the warning usefully — "an Authorization header" reads very differently
+ * from "a field called `password`" — and so a false positive can be described
+ * precisely in a bug report.
+ */
+export type SecretKind =
+  | 'vendor_prefixed_key'
+  | 'bare_prefixed_key'
+  | 'auth_scheme'
+  | 'named_secret_field'
+  | 'named_secret_query';
+
+export interface SecretFinding {
+  kind: SecretKind;
+  /**
+   * Character offset of the match within the scanned text. Enough for the UI to
+   * point at the offending span; deliberately not the matched text itself.
+   */
+  index: number;
+  /** Length of the match, so a caller can highlight it without re-scanning. */
+  length: number;
+}
+
+/**
+ * Detection is a separate function from masking, on purpose.
+ *
+ * `redactSecrets` answers "make this safe to log" and throws the evidence away
+ * in the process — after masking, nothing knows what was hit or where. The
+ * outbound safety layer needs the opposite: leave the text alone and report
+ * precisely what was found, so the user can be shown the finding and decide.
+ * Collapsing the two would force a choice between mangling a user's prompt and
+ * telling them nothing.
+ */
+const DETECTORS: readonly { kind: SecretKind; pattern: RegExp }[] = [
+  { kind: 'named_secret_field', pattern: NAMED_SECRET_JSON },
+  { kind: 'named_secret_query', pattern: NAMED_SECRET_QUERY },
+  { kind: 'auth_scheme', pattern: AUTH_SCHEME },
+  { kind: 'vendor_prefixed_key', pattern: PREFIXED_KEY },
+  { kind: 'bare_prefixed_key', pattern: BARE_PREFIXED_KEY },
+];
+
+/**
+ * Every credential-shaped span in `text`, ordered by position.
+ *
+ * The matched text is **never** returned. A finding travels to the frontend so
+ * the user can act on it, and a payload describing the secret verbatim would
+ * publish the very thing being protected — the same reasoning that keeps
+ * upstream error bodies in `AppError.privateDetails`.
+ *
+ * Each pattern is matched with a fresh `RegExp`: the module-level ones carry the
+ * `g` flag, so `lastIndex` persists between calls and a shared instance would
+ * skip matches depending on what was scanned before it.
+ */
+export function findSensitive(text: string): SecretFinding[] {
+  if (text === '') return [];
+
+  const findings: SecretFinding[] = [];
+  for (const { kind, pattern } of DETECTORS) {
+    const scanner = new RegExp(pattern.source, pattern.flags);
+    for (let match = scanner.exec(text); match !== null; match = scanner.exec(text)) {
+      findings.push({ kind, index: match.index, length: match[0].length });
+      // A zero-length match cannot happen with these patterns, but guarding is
+      // cheaper than an infinite loop if one is ever relaxed.
+      if (match[0].length === 0) scanner.lastIndex += 1;
+    }
+  }
+  return findings.sort((a, b) => a.index - b.index);
+}
+
+/** True when `text` contains at least one credential-shaped span. */
+export function containsSensitive(text: string): boolean {
+  return findSensitive(text).length > 0;
 }

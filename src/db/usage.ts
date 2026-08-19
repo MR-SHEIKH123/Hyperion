@@ -14,9 +14,11 @@
 
 import { getDb } from './adapter.ts';
 import { isTemporaryChat } from './temporaryChats.ts';
+import { classifyProviderType } from '../services/safety/outbound.ts';
 import { createLogger } from '../util/logger.ts';
 
-import type { ToolName } from '../types/core.ts';
+import type { ProviderType, ToolName } from '../types/core.ts';
+import type { EgressClass } from '../services/safety/outbound.ts';
 
 const log = createLogger('usage');
 
@@ -27,6 +29,14 @@ export interface RecordUsageInput {
   modelId: string;
   providerId?: string | null;
   providerName?: string | null;
+  /**
+   * The provider's type at the time of the request (Part 1.23).
+   *
+   * Optional, and stored as NULL when absent. A caller that cannot say is not
+   * refused: `recordUsage` swallows its own errors, so a stricter contract here
+   * would trade a missing classification for a missing spend row.
+   */
+  providerType?: ProviderType | null;
   tokensIn: number;
   tokensOut: number;
   status?: 'ok' | 'error' | 'partial';
@@ -99,9 +109,9 @@ export function recordUsage(input: RecordUsageInput): void {
     getDb()
       .prepare(
         `INSERT INTO usage_log
-           (chat_id, message_id, tool, model_id, provider_id, provider_name,
+           (chat_id, message_id, tool, model_id, provider_id, provider_name, provider_type,
             tokens_in, tokens_out, cost_usd, status, duration_ms, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         temporary ? null : input.chatId ?? null,
@@ -110,6 +120,9 @@ export function recordUsage(input: RecordUsageInput): void {
         input.modelId,
         input.providerId ?? null,
         input.providerName ?? null,
+        // Stamped at write time rather than joined on read: a provider row can be
+        // retyped or deleted afterwards, and history must not change retroactively.
+        input.providerType ?? null,
         Math.max(0, Math.round(input.tokensIn)),
         Math.max(0, Math.round(input.tokensOut)),
         cost,
@@ -282,4 +295,105 @@ export function deletePrice(modelId: string, providerId: string | null): boolean
     )
     .run(modelId, providerId, providerId);
   return Number(result.changes ?? 0) > 0;
+}
+
+// --- outbound exposure (Part 1.23) -----------------------------------------
+
+export interface ExposureBucket extends UsageBucket {
+  /** `local`, `remote` or `unknown` — see `services/safety/outbound.ts`. */
+  key: EgressClass;
+  /** The raw provider types folded into this bucket, for the tooltip. */
+  providerTypes: string[];
+}
+
+export interface ExposureSummary {
+  range: { from: number | null; to: number | null };
+  /** Every row in range, regardless of where it went. */
+  totals: UsageBucket;
+  /** One entry per egress class present, ordered local, remote, unknown. */
+  byClass: ExposureBucket[];
+  /**
+   * True when at least one row could not be classified. Surfaced separately so
+   * the UI can say "and N requests we cannot account for" rather than quietly
+   * presenting an egress figure that is missing some of the traffic.
+   */
+  hasUnclassified: boolean;
+}
+
+interface ExposureRow extends AggRow {
+  provider_type: string | null;
+}
+
+const CLASS_ORDER: readonly EgressClass[] = ['local', 'remote', 'unknown'];
+
+/**
+ * How much of this machine's traffic actually left it, grouped by egress class.
+ *
+ * Grouped in TypeScript rather than in SQL on purpose. The provider-type →
+ * egress-class mapping is a product decision (`opencodex` is remote despite the
+ * name; `colibri` is local despite being slow), and encoding it in a CASE
+ * expression here would put a second copy of that judgement somewhere nobody
+ * would think to update. `classifyProviderType` stays the single definition, and
+ * this function only sums what it is told.
+ *
+ * Rows with no recorded type are reported as `unknown`, never merged into a
+ * neighbouring bucket: understating egress is a safety claim we cannot support,
+ * and overstating it trains the user to ignore the number.
+ */
+export function summarizeExposure(query: UsageQuery = {}): ExposureSummary {
+  const { sql, values } = where(query);
+
+  const rows = getDb()
+    .prepare<ExposureRow>(
+      `SELECT provider_type, provider_type AS key, ${AGG_COLUMNS}
+         FROM usage_log ${sql}
+        GROUP BY provider_type`,
+    )
+    .all(...values);
+
+  const merged = new Map<EgressClass, { bucket: UsageBucket; types: Set<string> }>();
+  for (const row of rows) {
+    const cls = classifyProviderType(row.provider_type as ProviderType | null);
+    const bucket = mapBucket(row, cls);
+    const existing = merged.get(cls);
+    if (existing) {
+      existing.bucket.requests += bucket.requests;
+      existing.bucket.tokensIn += bucket.tokensIn;
+      existing.bucket.tokensOut += bucket.tokensOut;
+      existing.bucket.costUsd += bucket.costUsd;
+      existing.bucket.unpricedRequests += bucket.unpricedRequests;
+      if (row.provider_type !== null) existing.types.add(row.provider_type);
+    } else {
+      merged.set(cls, {
+        bucket: { ...bucket, key: cls },
+        types: new Set(row.provider_type !== null ? [row.provider_type] : []),
+      });
+    }
+  }
+
+  const byClass: ExposureBucket[] = [];
+  for (const cls of CLASS_ORDER) {
+    const entry = merged.get(cls);
+    if (!entry) continue;
+    byClass.push({ ...entry.bucket, key: cls, providerTypes: [...entry.types].sort() });
+  }
+
+  const totals = byClass.reduce<UsageBucket>(
+    (accumulator, bucket) => ({
+      key: 'total',
+      requests: accumulator.requests + bucket.requests,
+      tokensIn: accumulator.tokensIn + bucket.tokensIn,
+      tokensOut: accumulator.tokensOut + bucket.tokensOut,
+      costUsd: accumulator.costUsd + bucket.costUsd,
+      unpricedRequests: accumulator.unpricedRequests + bucket.unpricedRequests,
+    }),
+    { key: 'total', requests: 0, tokensIn: 0, tokensOut: 0, costUsd: 0, unpricedRequests: 0 },
+  );
+
+  return {
+    range: { from: query.from ?? null, to: query.to ?? null },
+    totals,
+    byClass,
+    hasUnclassified: byClass.some((bucket) => bucket.key === 'unknown'),
+  };
 }

@@ -14,6 +14,8 @@ import {
   isCapabilityOn,
   publicSettings,
   pushEnabled,
+  REDACTION_CHECK_KEY,
+  redactionCheckEnabled,
   responsePreferences,
   RESPONSE_PREFERENCES_KEY,
   setCapability,
@@ -233,6 +235,38 @@ settingsRouter.put(
       enabled: capabilityToggles().network_egress,
       effective: isCapabilityOn('network_egress'),
     });
+  }),
+);
+
+/**
+ * The outbound data safety check (Part 1.23).
+ *
+ * Kept out of `capabilityToggles()` on purpose. A capability is something the
+ * agent may *do*, and every one of them defaults on; this is a check applied to
+ * what the agent *sends*, and it defaults **off** because it is a regex
+ * heuristic whose false positives interrupt real work. Filing it as a capability
+ * would flip that default the first time the toggles map was iterated.
+ */
+settingsRouter.get(
+  '/redaction-check',
+  wrap(async (_req, res) => {
+    res.json({
+      enabled: redactionCheckEnabled(),
+      appliesTo: 'remote',
+      enforced: 'pattern_match',
+    });
+  }),
+);
+
+settingsRouter.put(
+  '/redaction-check',
+  wrap(async (req, res) => {
+    const enabled = asBool(body(req).enabled, 'enabled');
+    if (enabled === undefined) {
+      throw new AppError('bad_request', 'enabled is required.', { details: { field: 'enabled' } });
+    }
+    setSetting(REDACTION_CHECK_KEY, enabled);
+    res.json({ enabled: redactionCheckEnabled(), appliesTo: 'remote' });
   }),
 );
 

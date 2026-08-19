@@ -34,9 +34,12 @@ import {
   updateMessage,
 } from '../db/chats.ts';
 import { computeCost, recordUsage } from '../db/usage.ts';
-import { autoResumeAfterFailover } from '../db/settings.ts';
+import { autoResumeAfterFailover, redactionCheckEnabled } from '../db/settings.ts';
+import { findProvider, getActiveProvider } from '../providers/repository.ts';
+import { assertOutboundSafe } from '../services/safety/outbound.ts';
 import { recallForTurn, rememberTurn } from '../services/memory/index.ts';
 import { AppError, toAppError } from '../util/errors.ts';
+
 import type {
   ChatMessage,
   MessageRecord,
@@ -67,6 +70,13 @@ export interface SendMessageInput {
   attachments?: { id: string; filename: string }[];
   /** Continue this paused run instead of starting a new one. */
   resumeRunId?: string;
+  /**
+   * The user has seen an outbound-safety finding for this exact text and asked
+   * to send it anyway (Part 1.23). Deliberately per-request rather than a stored
+   * preference: acknowledging one prompt must not silence the check for the next
+   * one, which is a different payload the user has not looked at.
+   */
+  acknowledgeSensitive?: boolean;
 }
 
 export interface SendResult {
@@ -123,17 +133,6 @@ export async function sendMessage(input: SendMessageInput, sse: SseStream): Prom
     if (target) router.clearFailureState(target);
   }
 
-  if (input.prompt !== undefined && input.prompt !== '') {
-    appendMessage({
-      chatId: chat.id,
-      role: 'user',
-      content: input.prompt,
-      tool: input.tool,
-      status: 'complete',
-    });
-    touchChat(chat.id, { modelId: input.modelId, opened: true });
-  }
-
   const history = listMessages(chat.id);
   const priorAssistant = resuming?.messageId
     ? history.find((message) => message.id === resuming.messageId) ?? null
@@ -145,6 +144,37 @@ export async function sendMessage(input: SendMessageInput, sse: SseStream): Prom
   const memoryBlock = input.prompt ? await recallForTurn(input.prompt, input.tool) : null;
 
   const requestMessages = buildRequest(input, history, priorAssistant, memoryBlock);
+
+  // Outbound safety (Part 1.23). Scanned here, on the assembled payload, because
+  // this is the last point at which nothing has been written and nothing has been
+  // sent: a refusal must leave the chat exactly as it was. The acknowledged retry
+  // is the same request with one flag added, so persisting the user turn first
+  // would store it once per attempt and show the prompt twice in the transcript.
+  //
+  // The provider is resolved from the same two sources the router consults —
+  // an explicit id for a manual switch, otherwise the active provider — rather
+  // than read off the result, because a check that ran after the stream could
+  // only report an exposure that had already happened. A mid-run failover can
+  // still land on a provider of a different class; that residual gap is recorded
+  // in docs/CONTRACTS.md rather than papered over here.
+  const intendedProvider = input.providerId ? findProvider(input.providerId) : getActiveProvider();
+  assertOutboundSafe({
+    messages: requestMessages,
+    providerType: intendedProvider?.type ?? null,
+    ...(input.acknowledgeSensitive === true ? { acknowledged: true } : {}),
+    enabled: redactionCheckEnabled(),
+  });
+
+  if (input.prompt !== undefined && input.prompt !== '') {
+    appendMessage({
+      chatId: chat.id,
+      role: 'user',
+      content: input.prompt,
+      tool: input.tool,
+      status: 'complete',
+    });
+    touchChat(chat.id, { modelId: input.modelId, opened: true });
+  }
 
   const assistant: MessageRecord =
     priorAssistant ??
@@ -215,6 +245,7 @@ export async function sendMessage(input: SendMessageInput, sse: SseStream): Prom
       modelId: input.modelId,
       providerId: run.providerId,
       providerName: run.providerName,
+      providerType: intendedProvider?.type ?? null,
       tokensIn: 0,
       tokensOut: 0,
       status: content.length > contentAtStart.length ? 'partial' : 'error',
@@ -263,6 +294,11 @@ export async function sendMessage(input: SendMessageInput, sse: SseStream): Prom
     modelId: input.modelId,
     providerId: outcome.provider.id,
     providerName: outcome.provider.name,
+    // Read off the provider that actually served the request, not the one
+    // selected up front: a mid-run failover can move the turn to a provider of a
+    // different egress class, and the exposure summary has to reflect where the
+    // bytes went rather than where they were aimed.
+    providerType: outcome.provider.type,
     tokensIn,
     tokensOut,
     status: 'ok',
@@ -479,6 +515,13 @@ function buildRequest(
     messages.push({ role: 'system', content: memoryBlock });
   }
   messages.push(...toProviderMessages(usable));
+
+  // Mirrors the `content.trim().length > 0` filter in `toProviderMessages`: a
+  // whitespace-only prompt is stored but never sent, and that has to stay true
+  // whether the turn comes from the database or from this argument.
+  if (input.prompt !== undefined && input.prompt.trim().length > 0) {
+    messages.push({ role: 'user', content: input.prompt });
+  }
 
   if (priorAssistant && priorAssistant.content.trim().length > 0) {
     messages.push({

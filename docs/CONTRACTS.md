@@ -2025,6 +2025,198 @@ re-approve the asset, which is precisely what a toggle would do on the second
 click — and a double-tap on a phone is not a rare event. Idempotent intent gets an
 idempotent endpoint.
 
+---
+
+## Outbound data safety (added by Prompt 1.23)
+
+### `looksRedacted` is not a "contains a secret" predicate
+
+The name reads as though it answers "does this text look like it has a secret in
+it". It answers the opposite question: it is `true` when the text contains
+**nothing** credential-shaped, and it exists so a *log line* can be asserted
+clean.
+
+Reaching for it as the outbound check would invert the gate — every payload
+carrying a key would return `false` and be waved through, and the feature would
+appear to work because clean payloads would still pass. The doc comment on it was
+itself inverted until this prompt, so the trap was documented backwards as well
+as named badly.
+
+The detector is `containsSensitive` / `findSensitive`. There is a test asserting
+both polarities side by side (`looksRedacted is not a "contains a secret"
+predicate`) specifically so the next person to reach for the wrong one has it in
+front of them.
+
+### Detection and masking are separate functions
+
+`redactSecrets` rewrites text. `findSensitive` only *locates* — it returns
+`{ kind, index, length }` and never the matched substring.
+
+They are deliberately not merged. Masking is for text that is about to be written
+somewhere we control (a log, `privateDetails`), where losing the original is the
+point. Detection is for text the user still owns and may want to send anyway, so
+it must not alter the payload — and a finding that carried the matched text would
+put the secret into the very error envelope the check exists to prevent leaking.
+
+Consequently **the gate never rewrites a message.** A rewritten prompt would
+change what the user asked without their knowing, and a partially masked key is
+still a leak if the mask is wrong. The only outcomes are "sent as written" and
+"refused".
+
+### The scan never quotes what it found
+
+`SensitiveHit` is offsets plus a rule name. The span locates the secret in text
+the client already has, so a UI can highlight it without the server echoing it
+back.
+
+This is the same rule as the upstream-provider bodies in `03-security.md`: an
+error travels much further than a response. It reaches the error log (§13 of
+`docs/API.md`), the process-level handlers, and any crash reporter. A hit
+carrying `text: "sk-…"` would persist the credential in the one table designed to
+survive restarts. `test/outbound.test.ts` asserts on
+`JSON.stringify(error.toJSON())` for exactly this.
+
+### The check is off by default, unlike every capability
+
+Capabilities (§20.2) default to **on** — they describe what the app may do, and
+the user switches them off. `redaction_check_enabled` defaults to **off**, and it
+is deliberately *not* in the `Capability` union.
+
+The asymmetry is the false-positive cost. A capability being on is invisible until
+something uses it; this check being on can refuse a message the user is actively
+trying to send, on a pattern match that may be wrong. That belongs behind an
+opt-in, not something discovered by being interrupted mid-sentence.
+
+`enforced: 'pattern_match'` is named in the same spirit as
+`command_prefix_match`: it recognises credential *shapes*, and a secret that
+looks like prose passes straight through. Nothing may be built on this as though
+it were a guarantee.
+
+### Only a positively-identified remote provider is gated
+
+`classifyProviderType` maps `local` and `colibri` to `local`, `remote` and
+`opencodex` to `remote`, and everything absent to `unknown`. The gate fires on
+`remote` only.
+
+Both surprising cases are surprising in a way that matters. **`opencodex` is
+remote**: it is a local *proxy* that routes to upstream vendors, so a payload
+handed to it leaves the machine (proven from `002_opencodex_provider_type.sql`
+and its adapter, which speaks the OpenAI Responses API to a gateway).
+**`colibri` is local**: it sounds like a hosted service but serves a model on
+this machine. A frontend inferring egress from the type string would get both
+backwards, which is why `GET /api/providers/active` serves `egress` rather than
+letting the client compute it.
+
+`unknown` is not gated, because warning about a provider we cannot classify would
+train the user to dismiss the prompt. But `unknown` is never reported *as* local
+either — see the exposure bucket below.
+
+### The gate runs before the user turn is persisted
+
+In `sendMessage` the order is: build the request → **gate** → append the user
+message → create the assistant message → create the run. The gate sits at the
+last point where nothing has been written and nothing has been sent.
+
+This ordering is load-bearing, not incidental. The acknowledged retry is the same
+request with one flag added, so persisting the user turn first would store it
+once per attempt and the transcript would show the prompt twice. A refusal has to
+leave the chat exactly as it was.
+
+**Moving the append below `buildRequest` had a consequence that typecheck cannot
+see**: `history` no longer contains the new turn, so the model would have received
+the conversation *without* the question. `buildRequest` therefore pushes the
+pending prompt itself, mirroring the `content.trim().length > 0` filter in
+`toProviderMessages` so that a whitespace-only prompt is still stored and still
+not sent, whether it comes from the database or from the argument. If either side
+of that mirror changes, both must.
+
+### The residual failover gap is recorded rather than hidden
+
+The gate classifies the provider the turn is *about to* be sent to. A mid-run
+failover can move the turn to a provider of a different egress class, and the
+gate does not re-run — by then the request is already in flight and there is no
+user present to acknowledge anything.
+
+This is a known limit, not an oversight. What compensates is the usage row: both
+`recordUsage` calls stamp the provider type that **actually served** the turn, so
+the exposure summary reflects where the bytes really went even in the case the
+gate could not intervene. A summary built from the *intended* provider would
+quietly under-report exactly the situation the user most wants to know about.
+
+### `usage_log.provider_type` is nullable on purpose
+
+Migration `013` adds the column without `NOT NULL` and without a `CHECK`.
+
+`recordUsage` swallows every error it hits — that is itself deliberate (a failed
+accounting write must never break a working chat turn). A `NOT NULL` column would
+therefore turn any path that omits the type into a **silently discarded spend
+row**, reopening precisely the cap-bypass hole that `test/temporarychats.test.ts`
+was written to close. Nullable is the safe direction: the row survives and lands
+in the `unknown` bucket where it is visible.
+
+No `CHECK` either, because provider types are a widening set — `002` and `005`
+each added one, and a constraint here would mean a third migration every time.
+
+### The type is stamped at write time, never joined
+
+The class comes from the column on the usage row, not from a join against
+`providers`. So deleting a provider does not erase the record of what it sent, and
+re-pointing one cannot rewrite history retroactively. There is a test that deletes
+the provider and asserts its spend is still attributed to `remote`.
+
+### `unknown` exposure is surfaced, never folded into `local`
+
+`summarizeExposure` reports `hasUnclassified` and keeps an `unknown` bucket
+rather than distributing those rows. Understating exposure is the one error this
+feature must not make: folding unclassifiable rows into `local` would tell the
+user nothing left the machine, which is the opposite of "we do not know". Rows
+written before `013` are exactly this case.
+
+### `redaction_flagged` is a 409, and is not retryable
+
+Not a 403: nothing is forbidden. The request conflicts with the current state of
+the message, and the user can resolve it — which is what 409 means everywhere
+else in this API.
+
+It is deliberately absent from `DEFAULT_RETRYABLE`. Resending the identical body
+cannot succeed, so an automatic retry would burn attempts on a refusal that will
+never change, and a retry loop would re-refuse forever.
+
+### On a stream the refusal loses its details (found by HTTP smoke testing)
+
+`AppError` carries `details.kinds` and `details.hits` so a UI can highlight the
+offending span. On `POST /api/chat/stream` **the client never receives them.**
+`SseSink.sendError` puts exactly four fields on the wire — `runId`, `code`,
+`message`, `retryable` — and the stream is opened before `sendMessage` runs, so
+the refusal arrives as an `error` frame under HTTP 200 rather than as a 409
+envelope.
+
+This was found by sending a real flagged prompt to a booted server, not by the
+32 module-level tests, which assert on the thrown `AppError` and so see fields
+the socket drops. It is recorded because the honest reading of the code is easy
+to get wrong in both directions: the gate *does* attach the hits, and the status
+*is* 409 in `STATUS` — neither fact reaches a streaming caller.
+
+Do not "fix" this by widening `sendError` to spread `details`. That changes the
+wire format of every existing event type, and one of the fields it would start
+forwarding is `privateDetails`' neighbour on the same object — the exact shape
+`03-security.md` keeps off the client. If a streaming client needs the spans, the
+right change is a purpose-built event, decided deliberately.
+
+### `acknowledgeSensitive` is per request, never stored
+
+Consent to send one key is not consent to send the next one. The flag lives on
+`SendMessageInput` and dies with the request; there is no setting that means
+"stop asking me". If there were, the check would decay into permanently off while
+still appearing enabled.
+
+### `GET /api/providers/active` must stay above `/:id`
+
+Express matches in registration order, so declared after `/:id` this route
+returns `404 not_found` — `No provider with id "active"`. The same trap as
+`/bulk-delete` and `/assets/approved`. There is an HTTP-level test asserting the
+200, because no module-level call can reach a route-ordering bug.
+
 
 
 

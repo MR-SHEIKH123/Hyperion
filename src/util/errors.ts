@@ -33,6 +33,12 @@ export type ErrorCode =
   | 'capability_disabled'
   | 'network_egress_disabled'
   | 'spending_cap_reached'
+  /**
+   * Credential-shaped text was found in a payload bound for a remote provider.
+   * Never raised silently: the caller is told what matched and where, and
+   * decides whether to send anyway.
+   */
+  | 'redaction_flagged'
   // security / storage
   | 'scope_violation'
   | 'encryption_failed'
@@ -70,6 +76,12 @@ const STATUS: Record<ErrorCode, number> = {
   // next daily boundary, which is what "too many requests" means and what
   // "forbidden" does not.
   spending_cap_reached: 429,
+  // 409 rather than 403: the request is not forbidden, it conflicts with the
+  // current state of the outbound safety check. Resending the same body
+  // unchanged will be flagged again, so it is not retryable — but the user can
+  // edit the text or acknowledge the finding, which is a state change, not a
+  // permission change.
+  redaction_flagged: 409,
 
   scope_violation: 403,
   encryption_failed: 500,
