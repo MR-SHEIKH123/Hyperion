@@ -11,10 +11,10 @@
  * describe themselves in front matter — so there is one scanner and one parser,
  * and each kind only declares which extra front-matter keys it cares about.
  *
- * Rules additionally follow a fallback chain, because a project that predates
- * this convention already carries its instructions somewhere:
+ * Rules additionally follow a fallback chain, because a project that keeps its
+ * instructions in one root file should not have to grow a directory to be read:
  *
- *     .hyperion/rules/  →  CLAUDE.md  →  .claude/rules/
+ *     .hyperion/rules/  →  HYPERION.md
  *
  * The first location that exists wins, and the winner is reported in `source` so
  * the UI can say *where* the active rules came from rather than implying an empty
@@ -35,7 +35,7 @@ import {
 } from '../../util/frontmatter.ts';
 
 /** Where a project's rules were actually found. */
-export type RulesSource = 'hyperion' | 'claude-md' | 'claude-dir' | 'none';
+export type RulesSource = 'hyperion' | 'hyperion-md' | 'none';
 
 export interface ContextEntry {
   /** Front-matter `name`, else the first Markdown heading, else the filename. */
@@ -79,13 +79,13 @@ export async function listProjectRules(projectDir: string): Promise<RulesListing
   const hyperion = await scanDirectory(join(root, '.hyperion', 'rules'), '.hyperion/rules');
   if (hyperion) return { source: 'hyperion', rules: hyperion.map(toRule) };
 
-  const claudeMd = await readIfPresent(join(root, 'CLAUDE.md'));
-  if (claudeMd !== null) {
-    return { source: 'claude-md', rules: [toRule(parseContextFile('CLAUDE.md', 'CLAUDE.md', claudeMd))] };
+  const rootFile = await readIfPresent(join(root, 'HYPERION.md'));
+  if (rootFile !== null) {
+    return {
+      source: 'hyperion-md',
+      rules: [toRule(parseContextFile('HYPERION.md', 'HYPERION.md', rootFile))],
+    };
   }
-
-  const claudeDir = await scanDirectory(join(root, '.claude', 'rules'), '.claude/rules');
-  if (claudeDir) return { source: 'claude-dir', rules: claudeDir.map(toRule) };
 
   return { source: 'none', rules: [] };
 }

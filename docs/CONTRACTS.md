@@ -774,17 +774,38 @@ that fetches a single named file, so the cost is paid deliberately.
 ### Rules follow a fallback chain; the others do not
 
 ```
-.hyperion/rules/  →  CLAUDE.md  →  .claude/rules/
+.hyperion/rules/  →  HYPERION.md
 ```
 
 First location that exists wins, and `source` reports which one did —
-`hyperion`, `claude-md`, `claude-dir`, or `none`. The distinction is the whole
-point of the field: a project whose rules arrive through the fallback path has
-**active rules**, and returning a bare empty list there would tell the user the
-exact opposite of the truth.
+`hyperion`, `hyperion-md`, or `none`. The distinction is the whole point of the
+field: a project whose rules arrive through the fallback path has **active
+rules**, and returning a bare empty list there would tell the user the exact
+opposite of the truth.
 
-Agents and commands have no fallback, because they have no predecessor
-convention to be compatible with.
+The fallback exists for shape, not for lineage: a project that keeps its
+instructions in one root file should not have to grow a directory to be read.
+
+Agents and commands have no fallback, because a single root file is not a
+sensible way to declare several of them.
+
+### Hyperion never reads another tool's instruction files (added by the rules-chain cleanup)
+
+The chain used to end `→ CLAUDE.md → .claude/rules/`. Those two locations were
+scaffolding left over from reverse-engineering a different agent tool for
+inspiration, and they were never a convention Hyperion asked anyone to adopt.
+They are now gone, and `RulesSource` no longer has values for them.
+
+This is a behaviour guarantee, not tidying. Reading `CLAUDE.md` means silently
+handing a *different* tool's instructions to an agent the user never pointed at
+that file — with no indicator distinguishing rules they wrote for Hyperion from
+rules they wrote for something else. A project carrying only those files
+therefore reports `source: 'none'`, and there is a test asserting exactly that,
+because the tempting "harmless compatibility shim" is precisely how the
+behaviour would come back.
+
+`HYPERION.md` is the supported root file. Anything else a repository happens to
+contain is that repository's business.
 
 ### An absent directory is an answer, not a failure
 
@@ -801,10 +822,10 @@ This one is load-bearing and easy to undo. The scan treats **only** `ENOENT` and
 `ENOTDIR` as a missing directory; every other error propagates.
 
 Catching all errors would be shorter and would be wrong: a `.hyperion/rules/`
-that exists but cannot be read would fall silently through to `CLAUDE.md`, and
-the response would confidently report `source: 'claude-md'`. The user would then
-be looking at a UI insisting their real rules are somewhere they are not, with
-no error anywhere to explain it.
+that exists but cannot be read would fall silently through to `HYPERION.md`, and
+the response would confidently report `source: 'hyperion-md'` — or `'none'` when
+that file does not exist either. The user would then be looking at a UI insisting
+their real rules are somewhere they are not, with no error anywhere to explain it.
 
 ### One scanner, not three
 

@@ -82,11 +82,11 @@ scope: "*.ts"
     assert.equal(json.rules[0]?.path, '.hyperion/rules/no-console.md');
   });
 
-  test('CLAUDE.md fallback when .hyperion/rules is absent', async () => {
+  test('a root HYPERION.md supplies the rules when .hyperion/rules is absent', async () => {
     const projectRoot = join(testHome, 'projects', 'fallback');
     await mkdir(projectRoot, { recursive: true });
     await writeFile(
-      join(projectRoot, 'CLAUDE.md'),
+      join(projectRoot, 'HYPERION.md'),
       `---
 name: Project rules
 description: Instructions for this project.
@@ -103,14 +103,37 @@ Body content.
       count: number;
       rules: Array<{ name: string; description: string; path: string }>;
     };
-    assert.equal(json.source, 'claude-md');
+    assert.equal(json.source, 'hyperion-md');
     assert.equal(json.count, 1);
     assert.equal(json.rules[0]?.name, 'Project rules');
     assert.equal(json.rules[0]?.description, 'Instructions for this project.');
-    assert.equal(json.rules[0]?.path, 'CLAUDE.md');
+    assert.equal(json.rules[0]?.path, 'HYPERION.md');
   });
 
-  test('.claude/rules fallback when CLAUDE.md is also absent', async () => {
+  test('.hyperion/rules wins over a root HYPERION.md', async () => {
+    const projectRoot = join(testHome, 'projects', 'both');
+    const rulesDir = join(projectRoot, '.hyperion', 'rules');
+    await mkdir(rulesDir, { recursive: true });
+    await writeFile(join(rulesDir, 'directory-rule.md'), '# From the directory\n\nThis one wins.\n');
+    await writeFile(join(projectRoot, 'HYPERION.md'), '# From the root file\n\nThis one loses.\n');
+
+    const res = await fetch(`${base}/api/code/rules?project=both`);
+    assert.equal(res.status, 200);
+    const json = (await res.json()) as {
+      source: string;
+      count: number;
+      rules: Array<{ path: string }>;
+    };
+    assert.equal(json.source, 'hyperion');
+    assert.equal(json.count, 1);
+    assert.equal(json.rules[0]?.path, '.hyperion/rules/directory-rule.md');
+  });
+
+  // CLAUDE.md and .claude/rules/ were scaffolding from reverse-engineering another
+  // tool, never a convention Hyperion asked users to adopt. Reading them would
+  // silently apply a different tool's instructions to an agent that never agreed
+  // to them, so a project carrying only those files has no rules at all.
+  test('legacy CLAUDE.md and .claude/rules are not read as rules', async () => {
     const projectRoot = join(testHome, 'projects', 'legacy');
     const claudeRules = join(projectRoot, '.claude', 'rules');
     await mkdir(claudeRules, { recursive: true });
@@ -121,19 +144,14 @@ Body content.
 Prefer composition over inheritance.
 `,
     );
+    await writeFile(join(projectRoot, 'CLAUDE.md'), '# Another tool\n\nNot ours to obey.\n');
 
     const res = await fetch(`${base}/api/code/rules?project=legacy`);
     assert.equal(res.status, 200);
-    const json = (await res.json()) as {
-      source: string;
-      count: number;
-      rules: Array<{ name: string; description: string; path: string }>;
-    };
-    assert.equal(json.source, 'claude-dir');
-    assert.equal(json.count, 1);
-    assert.equal(json.rules[0]?.name, 'Code style');
-    assert.equal(json.rules[0]?.description, 'Prefer composition over inheritance.');
-    assert.equal(json.rules[0]?.path, '.claude/rules/style.md');
+    const json = (await res.json()) as { source: string; count: number; rules: unknown[] };
+    assert.equal(json.source, 'none');
+    assert.equal(json.count, 0);
+    assert.deepEqual(json.rules, []);
   });
 
   test('scope violation for a path outside projects root', async () => {

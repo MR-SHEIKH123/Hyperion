@@ -1014,13 +1014,13 @@ is `null` when the file gives neither.
 }
 ```
 
-**Rules follow a fallback chain**, because a project that predates this convention
-already carries its instructions somewhere:
+**Rules follow a fallback chain**, because a project that keeps its instructions
+in one root file should not have to grow a directory to be read:
 
-    .hyperion/rules/  →  CLAUDE.md  →  .claude/rules/
+    .hyperion/rules/  →  HYPERION.md
 
 The first location that **exists** wins, and `source` reports which one it was —
-`hyperion`, `claude-md`, `claude-dir`, or `none` when no location exists at all.
+`hyperion`, `hyperion-md`, or `none` when no location exists at all.
 The UI needs that distinction: rules arriving through the fallback path are still
 active, and showing an empty list there would tell the user the opposite of the
 truth. A directory that exists but holds no Markdown still reports its own

@@ -443,10 +443,10 @@ function projectQuery(req: Request): string {
 /**
  * Rules active for a project, for `GET /api/code/rules`.
  *
- * `source` names which location supplied them — `.hyperion/rules`, a root
- * `CLAUDE.md`, or `.claude/rules` — because a project whose rules arrive through
- * the fallback path is not the same as one with no rules, and the UI has to be
- * able to say which it is looking at.
+ * `source` names which location supplied them — `.hyperion/rules` or a root
+ * `HYPERION.md` — because a project whose rules arrive through the fallback path
+ * is not the same as one with no rules, and the UI has to be able to say which it
+ * is looking at.
  */
 agentsRouter.get('/code/rules', wrap(async (req, res) => {
   const listing = await listProjectRules(projectQuery(req));
