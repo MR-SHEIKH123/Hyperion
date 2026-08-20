@@ -615,6 +615,99 @@ nothing about what broke.
 
 ---
 
+## Task step history (added by Prompt 6c)
+
+**Who depends on this:** the agent loop, which records a row per decision, and
+anything that later explains what a run did — a run summary, the debug console,
+a post-mortem on a run that stopped at a ceiling.
+
+`task_runs` (007) is deliberately coarse and its own comment defends that: one
+row per run, because "a reconnecting client learns whether to wait, retry, or
+show a result — which is the question it actually has". `task_steps` (014) exists
+because that is not the only question. Once a run ends, the user wants to know
+what it *did*, and the stream that carried those details is gone. The table sits
+between "one row per run" and "persist every token", which 007 rejected and this
+does not attempt either.
+
+### A step is a decision, not a delta
+
+One row per tool call, plan, compression, or note the loop chose to record. Not
+individual tokens, not prompt text, not tool payloads. `detail` is a summary
+line capped at 2000 characters, and truncation is marked with
+`… (truncated)` — a reader who cannot tell a clipped line from a complete one
+reads the clipped one as the whole story.
+
+`note` exists so a retry, a refusal or an approaching ceiling can be recorded
+without inventing a fake `tool_call` with a made-up name, which would corrupt
+any count of what the run actually invoked.
+
+### Recording never breaks the run
+
+`recordStep` swallows every failure to a warning. That is the opposite of this
+project's usual "errors are values with meaning" stance, so the reason has to be
+explicit: it is called mid-run to describe work that has *already happened*. A
+duplicate ordinal from a loop bug, a `run_id` that a restart reconciled away, a
+full disk — none is a reason to abort work the user is waiting on, and none is
+recoverable by the caller. The write is a side effect and fails like one.
+
+It still logs, because a silently absent history looks exactly like a run that
+did nothing.
+
+### Null means "not applicable", never "unknown"
+
+`ok` is `null` for a step that had no outcome to report — a plan, a note. The
+mapper is `row.ok === null ? null : row.ok === 1` and specifically **not**
+`Boolean(row.ok)`, which would fold "no outcome" into `false` and draw a failure
+marker on a plan that never failed.
+
+`tokens_in`/`tokens_out` are `null` when the provider reported no count, which
+is why `summarizeSteps` returns `complete`. A partial sum that presents itself as
+authoritative silently understates what the run cost, so the flag says the total
+is a floor. A run with no steps at all is vacuously `complete: true` — the flag
+is about unreported counts, not emptiness.
+
+### The ordinal is the sequence, and the clock is not
+
+`listSteps` orders by `step`, never `created_at`. Two steps can land inside one
+millisecond, and a clock can move backwards under a running process; either way
+a timestamp ordering hands back a sequence the run never took.
+
+The primary key is `(run_id, step)` rather than a surrogate id: the ordinal *is*
+the identity, nothing will ever reference a global step id, duplicate ordinals
+become impossible instead of merely unlikely, and the key's own index already
+serves the only read pattern there is. `nextStepNumber` uses `MAX(step) + 1`
+rather than `COUNT(*) + 1` so a gap left by a refused insert cannot hand out an
+ordinal that is already taken.
+
+**This one nearly shipped untested.** The first version of the ordering test
+wrote three steps out of order in the same millisecond and asserted they came
+back sorted — and it passed just as happily with `ORDER BY created_at`, because
+the tie resolved in insert order anyway. Negative verification caught it. The
+test now writes `created_at` values deliberately inverted against the ordinal,
+which is the only way the assertion means anything.
+
+### Restarting a run discards the attempt it supersedes
+
+`task_steps.run_id` is `ON DELETE CASCADE`. The obvious half is that no step
+outlives its run. The load-bearing half is `startTaskRun`, which is
+`INSERT OR REPLACE` because "a retried run id is the same run being restarted" —
+and with foreign keys on, the delete that REPLACE performs fires the cascade, so
+retrying a run clears the previous attempt's steps.
+
+That is the wanted behaviour: the steps of a superseded attempt must not read
+back as though the current attempt had taken them. It is also a property of two
+separate pieces of code agreeing, with nothing in `startTaskRun` mentioning it,
+so it is asserted by a test rather than assumed. Verified directly against
+node:sqlite before being relied on.
+
+### Steps outlive the end of the run
+
+`finishTaskRun` does not touch them. The history exists to be read *after* a run
+ends; dropping it at completion would delete the only remaining explanation of
+what the run did.
+
+---
+
 ## Resource link detection (added by Prompt 1.10)
 
 **Who depends on this:** the frontend paste-a-link flow, and the agentic layer if
