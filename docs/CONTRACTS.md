@@ -2740,3 +2740,166 @@ requested. A loop that only checks the signal around the LLM call keeps executin
 tools after the user has clicked stop, which is the visible-but-wrong behaviour:
 the UI says stopped and the filesystem keeps changing.
 
+---
+
+## Context compaction  *(added by Slice 2, step 3)*
+
+A long-running agent will eventually build a conversation larger than the model's
+context window. The provider's answer to that is a hard error partway through a
+run — usually after tools have already changed files. `src/services/agent/compaction.ts`
+shortens the conversation before that happens, and every rule below exists because
+the obvious implementation of "just drop old messages" produces a subtly broken
+agent rather than a working one.
+
+### Compaction is visible, never silent
+
+Every compaction records a `compression` step against the run and emits a
+`context_compacted` event carrying `droppedMessages`, `tokensBefore`,
+`tokensAfter`, `windowTokens` and `windowAssumed`.
+
+A silent compaction is indistinguishable from a model that forgot. The user asks
+why the agent lost the plot halfway through a task, and without a step row there
+is no answer — not in the logs, not in the run history, nowhere. The step row is
+what makes "it dropped 14 messages here" a fact the UI can show rather than a
+guess.
+
+The step is written **before** the event fires, for the same reason parking a run
+writes its state before announcing it: a client that reacts to the event by
+fetching the run's steps must not find the history it was told about missing.
+`writes the step before it announces it` pins the ordering.
+
+Nothing is emitted when nothing was compacted. An event the user has to interpret
+as "no change" is worse than silence.
+
+### The digest is built from what was dropped, not written by a model
+
+`describeDropped` counts roles and collects tool names — "3 user message(s),
+4 assistant message(s), 2 tool result(s). Tools used in that span: grep_files,
+read_file." That is a **receipt, not a substitute**.
+
+The tempting alternative is to ask a model to summarise the dropped span. It was
+rejected deliberately, and the reasons are all operational rather than aesthetic:
+
+- It needs an extra provider request at exactly the moment the run is already in
+  trouble, so the recovery path acquires its own failure mode.
+- It can fail, and then compaction fails, and then the run dies for a reason that
+  has nothing to do with what the user asked for.
+- It can hallucinate. A summary that invents a file edit that never happened is
+  worse than no summary, because the agent will act on it.
+
+A deterministic digest cannot do any of those three things. It is a weaker summary
+that is always correct and always cheap, which is the right trade for a mechanism
+that only runs when things are going badly.
+
+### The digest never quotes what it dropped
+
+`describeDropped` emits counts and tool names and nothing else. Quoting content
+would defeat the purpose twice over: it costs the tokens compaction just
+reclaimed, and the dropped span may contain anything the user pasted — an API
+key, a customer record, a private file. `describes what it dropped without
+quoting any of it` asserts on a planted secret specifically.
+
+### The digest is a `system` message
+
+Not `assistant`. Attributing "4 messages were dropped here" to the assistant puts
+words in the model's mouth that it never produced, and on the next turn the model
+reads its own alleged statement as something it decided. A `system` message is
+what it actually is: a note from the harness about the state of the conversation.
+
+`attributes the digest to the system, never to the assistant` exists because this
+is a one-word change that nothing else would catch.
+
+The digest is inserted **in place** where the dropped block was, not prepended, so
+the conversation still reads in chronological order rather than opening with a
+note about its own middle.
+
+### A tool result is never separated from the call that asked for it
+
+Messages are grouped before anything is dropped: a `tool` message joins the
+preceding group when that group has an unanswered `toolCalls` entry with the
+matching id. Groups are then dropped whole.
+
+This is not tidiness. Providers validate that every `tool` message answers a
+call present in the same request, and they reject **the entire conversation** when
+one does not — so an orphan produced to save 200 tokens fails the whole run with
+an error that points nowhere near compaction. Grouping is the only reason
+`never leaves a tool result without the call that asked for it` can hold.
+
+### What is pinned, and why each pin is load-bearing
+
+Three things survive regardless of size:
+
+- **Every `system` message.** Dropping the system prompt produces an agent that
+  forgets its own instructions mid-task, with no visible cause and no way for the
+  user to diagnose it.
+- **The most recent tool result.** It is what the model is currently reasoning
+  about; removing it to save space loses the agent's train of thought at exactly
+  the moment the work got interesting.
+- **The last `DEFAULT_KEEP_RECENT_GROUPS` (2) groups.** The recent exchange is the
+  live part of the conversation.
+
+The tool-result pin and the recency pin overlap in the common case, which makes
+this easy to test wrongly: a fixture whose newest tool exchange sits inside the
+recent window passes even with the tool-result pin deleted. Negative verification
+caught exactly that — the test was rewritten to place the newest tool exchange
+*outside* the recent window so the pin it names is the thing keeping it green.
+
+### The trigger and the target are different numbers on purpose
+
+Compaction fires at **80%** of the window (`COMPACTION_TRIGGER_RATIO`) and
+compacts down to **50%** (`COMPACTION_TARGET_RATIO`).
+
+If it compacted only until it cleared the trigger, the very next turn would push
+it back over and compact again — the agent would spend a slice of every iteration
+rewriting its own history, and the digest would accumulate digests. Overshooting
+buys enough headroom that a normal run compacts once, not continuously.
+
+The test asserts `tokensAfter <= target`, not merely that the trigger is clear.
+Asserting the trigger passes at 64% too, which is exactly the bug the gap is meant
+to prevent; that weakness was found by mutation, not by reading.
+
+### Refusing to compact is a valid outcome
+
+When everything remaining is pinned, `compactConversation` returns
+`compacted: false` with `skippedBecause: 'nothing_droppable'` and the conversation
+**unmodified**.
+
+It does not buy space by dropping something it said it would keep. The caller —
+the agent loop — parks the run instead, which is a state the user can see and act
+on. Quietly dropping the system prompt to hit a number would produce an agent that
+misbehaves for a reason nobody can trace, and the whole point of the pins is that
+they are promises.
+
+`not_needed` and `nothing_droppable` are distinct for this reason: one means "no
+work required", the other means "work required and refused". A caller that treated
+them alike would park healthy runs or, worse, ignore a real refusal.
+
+### The context window is a ladder, and an assumed number says so
+
+`resolveContextWindow` prefers an explicit override, then the model's reported
+`contextLength`, then `DEFAULT_CONTEXT_TOKENS` (8192) with `assumed: true`.
+
+A reported `0`, a negative number, or `NaN` all count as **no answer** rather than
+as a window of that size. Gateways do report `context_length: 0` for models they
+know nothing about, and taking it literally would mean every conversation is
+instantly over its limit and compaction runs on every single turn.
+
+The default is deliberately small. Guessing high and being wrong means the
+provider rejects the request; guessing low and being wrong means some unnecessary
+compaction. Only one of those is recoverable, so the conservative number wins —
+and `assumed` travels into the step detail and the event so the UI can say the
+number was a guess instead of presenting it as fact.
+
+### Token counts are estimates, and the estimator matches the one already shipped
+
+`estimateTokens` uses 4 characters per token, the same ratio
+`src/providers/adapters.ts` already falls back to when a gateway reports no usage.
+Two different estimates for the same conversation would make the usage figures and
+the compaction figures disagree in the UI for no reason a user could understand.
+
+`estimateMessageTokens` charges per-message overhead and counts `toolCalls`
+arguments, `toolCallId` and `name` — not just `content`. Tool arguments are sent to
+the provider and can be far larger than the message text around them; a count that
+ignored them would under-read the conversation and compact too late, which is the
+one failure mode compaction exists to prevent.
+
