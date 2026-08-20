@@ -2616,3 +2616,127 @@ token does. A provider that has already decided to call a tool cannot be swapped
 out mid-decision: retrying on another provider would re-issue the call and
 duplicate whatever side effect it has.
 
+---
+
+## The shared agent loop  *(added by Slice 2, step 2)*
+
+**Who depends on this:** the Code, Cowork and Design agents. All three run the
+same cycle — ask the model what to do, do it, feed the outcome back — so the
+cycle lives in `src/services/agent/loop.ts` and the agents differ only in their
+prompts and their tool sets. An agent that writes its own loop also writes its
+own version of the mode gate, the iteration ceiling and the parked-state
+bookkeeping, and the second copy is where they drift apart.
+
+Worth recording plainly, because the plan for this step assumed otherwise:
+**there was no tool dispatch point in the codebase before this.** Tool calls were
+parsed and transported only — `src/orchestrator/chat.ts` drops `tool_call`
+chunks, and no `callTool` existed anywhere in `src/`. So the mode gate was not
+added to an existing dispatcher; the dispatcher is new, and the gate is the
+reason it exists.
+
+### The mode gate sits at exactly one place
+
+`dispatchToolCall` is the only function in the module that invokes anything, and
+the Ask/Plan/Act decision is made inside it. Checking the mode where the loop
+*builds* a request would leave every future call site free to skip the check, and
+the entire value of a read-only mode is that it cannot be bypassed by a path
+nobody remembered to guard.
+
+The corollary for anything added later: a new agent must reach its tools
+*through* `dispatchToolCall`. Calling a tool runner directly compiles, runs, and
+silently ignores the mode the user selected.
+
+### An unclassified tool is treated as mutating
+
+`ToolPolicy.effect` returns `ToolEffect | undefined`, and `undefined` means "not
+classified" — never "harmless". The loop folds it into `mutate`.
+
+Defaulting the other way would mean any tool added without a matching policy
+entry becomes runnable in Plan mode, which is precisely the failure Plan mode
+exists to prevent. The safe default is the inconvenient one: a newly added tool
+is refused in Plan mode until somebody classifies it, and that refusal is
+visible, whereas the opposite mistake is silent.
+
+### A refusal is output, not an exception
+
+A gated call returns `{ ran: false, output }` with the refusal written as ordinary
+tool output. The model is mid-conversation and needs to hear *why* it cannot act
+so it can answer in prose or add the action to a plan; throwing would abort the
+run and lose the turn the user was waiting on.
+
+For the same reason a refusal records `ok: true` in the step history. It is not a
+failure — the gate did exactly what it was asked to do. A refused mutating call
+in Plan mode is recorded with `kind: 'plan'`, so the plan can be reconstructed
+from the step rows alone; Ask mode records `kind: 'note'`, because nothing about
+an Ask-mode run is a proposal.
+
+### A parked run is written before it is announced
+
+`updateTaskRunState` runs before `ctx.emit`. Reversed, a client that acted on the
+event and then reloaded would find a run still marked `running`, because nothing
+guarantees this process survives from one statement to the next. The database is
+the record; SSE is a notification about it. There is a test that reads the run
+state from inside the `emit` callback for exactly this ordering.
+
+### A parked run is not a finished run
+
+Parking goes through `updateTaskRunState`, **not** `finishTaskRun`. This is not a
+stylistic preference: `finishTaskRun` always rewrites the pause and error
+columns, so routing a park through it would overwrite the provider failure a run
+may already be carrying and replace it with a park reason — destroying the
+diagnosis the user needs to understand what happened. `updateTaskRunState`
+touches the state column alone and leaves `completed_at` unset, which is the
+truth: the run is waiting on the user and will continue.
+
+The reason for parking therefore lives in the step history instead of in a run
+column, recorded as a `note` step with `ok: false` and a `reason: detail` body.
+
+Only `plan_ready` maps to `ready_for_review`. `loop_detected`,
+`iteration_ceiling` and `redaction_blocked` all map to `blocked`, because
+`ready_for_review` is an invitation to look at finished work and the other three
+are requests for help.
+
+### The repeat guard counts identical calls, not iterations
+
+An iteration ceiling alone does not catch the common failure, which is a model
+making what it believes is progress: calling the same tool with the same
+arguments, getting the same answer, and doing it again until the budget runs out
+and the run dies with a confusing ceiling error rather than the true reason.
+
+The signature is the tool name plus the **verbatim** argument string. Comparing
+parsed arguments semantically would be more thorough and is not worth it — a
+model stuck in a loop re-emits a byte-identical call, because it is regenerating
+from the same context. Keying on the name alone would be wrong in the other
+direction: reading ten different files is ten pieces of real work, not a loop.
+
+The limit is 3 by default: two identical calls is a legitimate retry, three is a
+pattern.
+
+### An unattended redaction finding parks the run instead of failing it
+
+`assertOutboundSafe` throws `redaction_flagged` on the assumption that a user is
+present to read the finding and decide. A scheduled task, or a queued task the
+user has navigated away from, has nobody to ask — and both obvious answers are
+worse than parking. Sending anyway defeats the check. Failing the run as an error
+tells the user their task broke, when in fact it is waiting on them.
+
+So `parkOnRedaction` parks the run as `blocked` and throws a **fresh**
+`AppError`, deliberately not quoting the original. The original message describes
+what was found in the outbound text, and that description can contain the
+credential itself; the replacement says a credential-shaped string was found and
+where to go to review it. A test asserts the secret appears in neither
+`error.message` nor `toJSON()`.
+
+When a user *is* present the error is re-thrown untouched, so the 409 reaches the
+UI that knows how to offer acknowledgement. Anything that is not a
+`redaction_flagged` `AppError` is re-thrown untouched in both cases — this
+function must never become a general-purpose catch that turns unrelated bugs into
+parked runs.
+
+### Cancellation is checked between iterations, not only around the model call
+
+`ctx.signal.aborted` is tested at the top of every iteration, before the turn is
+requested. A loop that only checks the signal around the LLM call keeps executing
+tools after the user has clicked stop, which is the visible-but-wrong behaviour:
+the UI says stopped and the filesystem keeps changing.
+
