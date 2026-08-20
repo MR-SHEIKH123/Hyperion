@@ -512,6 +512,109 @@ If you later want PDF or Office ingestion, add that specific extra. Do not
 
 ---
 
+## The MCP supervisor (found by auditing what boot actually starts)
+
+**Who depends on this:** every tool call that routes through an MCP server, and
+`GET /api/mcp/status` / `GET /api/health/summary`, which report whether anything
+is being supervised at all.
+
+Slice 1 built the whole process manager — `ProcessManager` in
+`src/services/mcp/processManager.ts`, config sync, `mcp_config.json` rewriting,
+per-server test connections — and then **nothing ever instantiated it**.
+`registerMcpProcessManager()` existed and was never called, so
+`getMcpProcessManager()` returned `null` on every boot and `mcpStatus()`
+answered `managed: false` forever. The config was read, the servers were
+listed, and not one of them was ever spawned. `src/services/mcp/supervisor.ts`
+is the missing owner; these are the properties it must keep.
+
+### Registration is synchronous; spawning is not
+
+`startMcpSupervisor()` calls `registerMcpProcessManager()` **before** awaiting
+`startAll()`, and deliberately does not await it at all — boot continues while
+servers come up.
+
+The reason is that a cold `npx` download can take tens of seconds. If
+registration waited for spawning, then for that whole window
+`/api/mcp/status` would answer `managed: false` — indistinguishable from "no
+supervisor exists", which is exactly the bug this file is about. Registering
+first means the honest answer during a slow start is `managed: true` with
+servers in `starting`, and a tool call arriving mid-spawn finds a manager to
+ask rather than a null.
+
+So `managed: true` is **not** a promise that any server is running. Read
+`servers[].state` for that. Do not "fix" a `managed: true` with zero running
+servers by moving the registration after `startAll()`.
+
+### The stop budget is bounded, and shutdown continues regardless
+
+`stopMcpSupervisor()` races `stopAll()` against a 3-second timer and logs a
+warning if the timer wins, rather than awaiting `stopAll()` indefinitely.
+
+It has to, because of what runs after it: `reconcileOrphanedRuns()` and
+`closeDb()`. A wedged child process must not be able to prevent the database
+from closing — that leaves a hot WAL behind, and on Windows an open handle
+also blocks the next boot from cleaning up. A leaked child is recoverable; a
+database that never closed is the worse failure. The timer is cleared in a
+`finally` on every path so a fast, clean stop does not hold the event loop
+open for the remainder of the budget.
+
+It also runs **after** `stopTaskScheduler()`: stopping the servers first would
+pull tools out from under a task the scheduler is still willing to start.
+
+### Disabled means honestly unmanaged
+
+`HYPERION_MCP_DISABLED=1` makes `startMcpSupervisor()` return without creating
+a manager, so `mcpStatus()` reports `managed: false` and nothing is registered.
+It does **not** register a manager that refuses to spawn — a status endpoint
+that claimed supervision while supervising nothing would be a lie, and the
+health summary keys its wording off exactly this flag.
+
+`test/helpers.ts` sets it for the whole suite. Without it, importing anything
+that boots the supervisor would have unit tests reaching the network through
+`npx` and leaving child processes behind after the run.
+
+`mcpComponent()` in `src/services/health/summary.ts` therefore treats
+`!managed` as `ok`, not `degraded`: a deliberately MCP-less install is a
+supported configuration, and reporting `degraded` would paint every test run
+and every such install as broken.
+
+### The registration does not outlive the servers
+
+`stopMcpSupervisor()` calls `unregisterMcpProcessManager()` in its `finally`,
+so `mcpStatus()` goes back to `managed: false` as the servers go away.
+
+This was missing at first, and a real shutdown found it. The probe reaped all
+five processes of the filesystem server — `cmd.exe` → `node` (npx) →
+`cmd.exe` → `node` (the server itself), plus a `conhost` — and then
+`mcpStatus()` still answered `managed: true`. Registration is a pointer, not
+a lease: nothing was clearing it, so status kept advertising a manager whose
+every transport was closed, and a tool call arriving late would have failed
+inside a dead client instead of getting the honest "nothing is supervised".
+
+It runs on the timeout path too, and that is the deliberate part. A wedged
+server is the *least* able to serve a call, so it is the worst possible thing
+to keep advertising.
+
+Note what this is not: it is not an `unref`-style teardown of the manager
+object, and `stopAll()` is still what closes the clients. The unregister only
+governs what `/api/mcp/status` and `/api/health/summary` are willing to claim.
+
+### A test that parks a fake mid-spawn must release it in `finally`
+
+The tests that assert "registered before spawning finished" hold `startAll()`
+open on a promise the test resolves by hand. That release **must** happen in a
+`finally`, not after the assertions.
+
+`afterEach` calls `stopMcpSupervisor()`, which waits for the in-flight
+`startAll()` before stopping. A failing assertion that skipped the release
+would therefore strand the fake mid-spawn and **hang the entire test file**
+instead of reporting the one failure. This was found by deliberately deleting
+the `registerMcpProcessManager()` call to confirm the tests catch it: they
+caught it, and then hung. A test whose failure mode is a hang tells you
+nothing about what broke.
+
+---
+
 ## Resource link detection (added by Prompt 1.10)
 
 **Who depends on this:** the frontend paste-a-link flow, and the agentic layer if

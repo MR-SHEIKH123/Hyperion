@@ -19,6 +19,7 @@ import { reconcileOrphanedRuns } from './orchestrator/runState.ts';
 import { startBackupScheduler, stopBackupScheduler } from './services/backup/schedule.ts';
 import { startTaskScheduler, stopTaskScheduler } from './services/cowork/scheduler.ts';
 import { seedDefaultServers } from './services/mcp/defaults.ts';
+import { startMcpSupervisor, stopMcpSupervisor } from './services/mcp/supervisor.ts';
 import { restoreActiveProject } from './services/projects/active.ts';
 import { ensureSkillDirs } from './services/skills/intake.ts';
 
@@ -132,7 +133,7 @@ function installShutdownHandlers(server: Server): void {
     }, 6000);
     forceExit.unref();
 
-    server.close(() => {
+    server.close(async () => {
       try {
         stopCleanupScheduler();
       } catch (error) {
@@ -147,6 +148,17 @@ function installShutdownHandlers(server: Server): void {
         stopTaskScheduler();
       } catch (error) {
         log.error('failed to stop task scheduler', error);
+      }
+      // After the timers, before the database closes. The schedulers are
+      // stopped first so nothing new starts during teardown; the MCP servers
+      // are child processes and reaping them is the one step here that waits
+      // on something outside this process, so it must finish before the
+      // database handle goes away. `stopMcpSupervisor` is internally bounded
+      // well under the force-exit budget above.
+      try {
+        await stopMcpSupervisor();
+      } catch (error) {
+        log.error('failed to stop the MCP supervisor', error);
       }
       try {
         reconcileOrphanedRuns();
@@ -231,6 +243,13 @@ function main(): void {
   startCleanupScheduler();
   startBackupScheduler();
   startTaskScheduler();
+
+  // Last, and deliberately not awaited. Registration is synchronous, so
+  // /api/mcp/status reports `managed: true` immediately; the spawning behind
+  // it can take tens of seconds on a cold npx cache and no request should
+  // wait for it. Until Slice 1 this was never called at all, which is why
+  // every install reported no supervisor and every agent saw zero tools.
+  startMcpSupervisor();
 }
 
 main();

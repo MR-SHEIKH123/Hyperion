@@ -185,14 +185,15 @@ function providerComponent(): ProviderComponent {
 
 function mcpComponent(): McpComponent {
   const { managed, servers } = mcpStatus();
-
   const running = servers.filter((server) => server.state === 'running').length;
-
   const errored = servers.filter((server) => server.state === 'error').length;
   const shape = { managed, total: servers.length, running, errored };
 
-  // No supervisor registered is a supported configuration, not a fault: the
-  // process manager is Kimi's and this backend runs perfectly well without it.
+  // Boot registers the supervisor on every start, so an unmanaged answer now
+  // means `HYPERION_MCP_DISABLED=1` was set (the test suite does exactly this)
+  // or the request beat boot to it. Either way it is a supported configuration
+  // rather than a fault, so this stays `ok` — reporting `degraded` would make
+  // every test run and every deliberately MCP-less install look broken.
   if (!managed) {
     return {
       status: 'ok',

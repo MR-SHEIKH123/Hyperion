@@ -179,6 +179,20 @@ export function getMcpProcessManager(): McpProcessManager | null {
 }
 
 /**
+ * Dropped on shutdown, so status stops claiming supervision the moment the
+ * servers are gone.
+ *
+ * Registration is a pointer, not a lease: without this, `mcpStatus()` keeps
+ * answering `managed: true` after every client has been closed, and a late
+ * tool call finds a manager whose transports are already dead and fails on it
+ * confusingly instead of getting the honest "nothing is supervised".
+ */
+export function unregisterMcpProcessManager(): void {
+  mcpManager = null;
+  log.info('unregistered the MCP process manager');
+}
+
+/**
  * Status for `GET /api/mcp/status`.
  *
  * With no manager registered this returns an empty list rather than throwing:

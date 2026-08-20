@@ -164,10 +164,10 @@ not a failure to answer it.
     },
     "mcp": {
       "status": "ok",
-      "detail": "No MCP supervisor is registered, so no servers are being managed.",
-      "managed": false,
-      "total": 0,
-      "running": 0,
+      "detail": "1 of 1 MCP server(s) running.",
+      "managed": true,
+      "total": 1,
+      "running": 1,
       "errored": 0
     },
     "errors": {
@@ -565,9 +565,15 @@ The stored token is never returned — only `hasToken` / `tokenHint`.
 same fields, all optional. Editing updates the existing entry in place — never
 delete-and-recreate — and rewrites `mcp_config.json` in the standard format.
 
-`managed: false` means Kimi's process manager hasn't registered yet, so
-`servers` reflects config only. `POST .../test` is **informational, not a gate**:
-saving succeeds regardless of the result. `static: true` means the config was
+`managed: true` is the normal answer: the supervisor registers the process
+manager during boot, before any server has finished connecting, so a server may
+still be `starting` while `managed` is already true. `managed: false` means no
+process manager is registered — because `HYPERION_MCP_DISABLED=1` was set, boot
+has not reached the supervisor yet, or shutdown has already stopped the servers
+— and `servers` then reflects config only, with nothing actually supervised.
+
+`POST .../test` is **informational, not a gate**: saving succeeds
+regardless of the result. `static: true` means the config was
 only inspected, nothing was connected to. The outcome is also persisted onto
 `lastTestStatus` / `lastTestMessage` / `lastTestAt`.
 
@@ -2180,8 +2186,9 @@ deltas:
    `confirm`) rather than a single POST, because the spec requires a parsed
    preview, a credential recommendation and a risk report *before* registration.
 5. **`/api/mcp/servers` PUT and PATCH share one handler** and update by entry
-   rather than delete-and-recreate. `/status` reports `managed: false` until
-   Kimi's process manager registers.
+   rather than delete-and-recreate. `/status` reports `managed: true` once boot
+   has started the supervisor, which happens before any server has connected;
+   `managed: false` means `HYPERION_MCP_DISABLED=1` or boot has not got there yet.
 6. **`/api/storage` adds `/stats`, `/cleanup` and `/cleanup/log`** so the sweep
    is inspectable and rehearsable instead of being an invisible cron.
 7. **`/api/usage` adds a price table** (`/prices`, CRUD). Without it every cost

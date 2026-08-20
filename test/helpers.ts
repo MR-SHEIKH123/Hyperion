@@ -36,6 +36,12 @@ process.env.HYPERION_CLEANUP_DISABLED = '1';
 // archives and firing Cowork runs against a registered agent, on a timer no
 // assertion is waiting for.
 process.env.HYPERION_SCHEDULER_DISABLED = '1';
+// The supervisor spawns the default filesystem server with `npx -y`, which
+// downloads a package. A unit suite must not reach the network, and an
+// abandoned child process would outlive the test run that started it. Tests
+// that want a live manager construct one directly, as mcpprocesses.test.ts
+// does, rather than relying on boot.
+process.env.HYPERION_MCP_DISABLED = '1';
 
 export const testHome = root;
 

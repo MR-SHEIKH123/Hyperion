@@ -171,6 +171,18 @@ export const env = {
   schedulerDisabled: bool('HYPERION_SCHEDULER_DISABLED', false),
 
   /**
+   * Disables the MCP supervisor: no manager is registered and no server is
+   * spawned. `GET /api/mcp/status` then keeps reporting `managed: false`,
+   * which is the honest answer rather than a lie about a supervisor that
+   * was never started.
+   *
+   * The test helper sets this. A suite that boots the app would otherwise
+   * spawn the default filesystem server through `npx -y`, reaching the
+   * network from a unit test and leaving child processes behind.
+   */
+  mcpDisabled: bool('HYPERION_MCP_DISABLED', false),
+
+  /**
    * How many automatic backups to keep. Unbounded retention turns a safety
    * feature into the thing that fills the disk, and an automatic backup is only
    * worth keeping until the next few have proved themselves.
