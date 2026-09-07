@@ -20,6 +20,11 @@
  */
 
 import { getDb } from './adapter.ts';
+import { closeApprovals } from './approvals.ts';
+import { clearConversation } from './taskMessages.ts';
+import { createLogger } from '../util/logger.ts';
+
+const log = createLogger('taskruns');
 
 /**
  * The states a task run can hold. `idle` never reaches the table.
@@ -134,6 +139,8 @@ export function finishTaskRun(
 ): void {
   const now = Date.now();
   const terminal = state === 'complete' || state === 'error' || state === 'stopped';
+  const run = terminal ? getTaskRun(runId) : null;
+
   getDb()
     .prepare(
       `UPDATE task_runs
@@ -154,6 +161,52 @@ export function finishTaskRun(
       terminal ? now : null,
       runId,
     );
+
+  if (run !== null) releaseTaskState(run.tool, run.taskId);
+}
+
+/**
+ * Drop what a task was only keeping in order to be continued.
+ *
+ * Called on the terminal transition, inline, and **not** left to the cleanup timer.
+ * Both halves are load-bearing:
+ *
+ * The conversation snapshot is stored verbatim and unredacted, because continuation
+ * has to replay exactly what the agent saw. Tool results in it carry full file
+ * contents and raw command output, so a live snapshot is effectively a partial copy
+ * of the user's source tree. What bounds that exposure is not the content but the
+ * *window* — "while parked" — and this delete is what closes it. A timer-based sweep
+ * would leave the window open for up to a day, which is a different guarantee from
+ * the one `docs/CONTRACTS.md` states.
+ *
+ * Session allowances are cleared for a different reason: 1.27 requires them to be
+ * cleared when the task ends, and an allowance outliving its task would silently
+ * pre-approve a *later* run that happened to reuse the id.
+ *
+ * Skipped when another attempt of the same task is still live. A task id is reused
+ * across attempts, so a superseded run reaching a terminal state must not delete the
+ * snapshot its successor is about to continue from.
+ *
+ * Failures are logged and swallowed: this is called from the tail of a run that has
+ * already ended, and turning bookkeeping into an exception there would report a
+ * finished task as broken. A missed delete is caught by the cleanup backstop.
+ */
+function releaseTaskState(tool: TaskRunTool, taskId: string): void {
+  try {
+    const live = getDb()
+      .prepare<{ n: number }>(
+        `SELECT COUNT(*) AS n FROM task_runs
+          WHERE task_id = ? AND tool = ?
+            AND state NOT IN ('complete', 'error', 'stopped')`,
+      )
+      .get(taskId, tool);
+    if ((live?.n ?? 0) > 0) return;
+
+    clearConversation(taskId);
+    closeApprovals(taskId);
+  } catch (error) {
+    log.warn(`task ${taskId}: could not release its continuation state: ${String(error)}`);
+  }
 }
 
 /**
@@ -173,6 +226,36 @@ export function updateTaskRunState(runId: string, state: TaskRunState): void {
   getDb()
     .prepare('UPDATE task_runs SET state = ?, updated_at = ? WHERE run_id = ?')
     .run(state, Date.now(), runId);
+}
+
+/** The two states a parked run can be in, both non-terminal and both continuable. */
+export const PARKED_STATES: readonly TaskRunState[] = ['blocked', 'ready_for_review'];
+
+/**
+ * Claim a parked run for continuation, atomically.
+ *
+ * **This transition is the mutex**, and it is the only thing standing between two
+ * concurrent `POST /continue` calls and two agents running against one worktree.
+ * The condition is in the SQL rather than in a read-then-write, because a read
+ * followed by a write is exactly the race being prevented — both callers would see
+ * `ready_for_review` and both would proceed.
+ *
+ * Zero rows changed means somebody else already claimed it, or the run was never
+ * parked. The caller distinguishes those by reading the row afterwards; either way
+ * it must not start an agent.
+ *
+ * A run resolving an *approval* is additionally guarded by the `pending_approvals`
+ * state transition, but a bare continue of `plan_ready` has no second guard, so
+ * this one has to be sufficient on its own.
+ */
+export function claimParkedRun(runId: string): boolean {
+  const changed = getDb()
+    .prepare(
+      `UPDATE task_runs SET state = 'running', updated_at = ?
+        WHERE run_id = ? AND state IN ('blocked', 'ready_for_review')`,
+    )
+    .run(Date.now(), runId).changes;
+  return changed !== 0;
 }
 
 export function getTaskRun(runId: string): TaskRun | null {
