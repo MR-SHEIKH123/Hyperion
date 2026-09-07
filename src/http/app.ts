@@ -8,6 +8,7 @@ import express from 'express';
 
 import { activityRouter } from './activity.ts';
 import { agentsRouter } from './agents.ts';
+import { continuationRouter } from './continuation.ts';
 import { artifactsRouter } from './artifacts.ts';
 import { backupRouter } from './backup.ts';
 import { chatRouter } from './chat.ts';
@@ -76,6 +77,14 @@ export function createApp(): Express {
   // not collide with either, letting the specific mount decide keeps a future
   // /design/:something in agents.ts from swallowing these.
   app.use('/api/design', designRouter);
+
+  // Continuation and approvals, mounted before `agentsRouter` because they share
+  // its `/{tool}/tasks/:taskId/...` shape and the specific mount should win. They
+  // live in their own module rather than in agents.ts because the lifecycle they
+  // implement — claim a park, apply a decision, resume — is a different thing from
+  // starting a run, and merging them would put the mutex next to code that has no
+  // reason to know about it.
+  app.use('/api', continuationRouter);
 
   // Agent routes own their own sub-paths (/code/..., /cowork/..., /design/...).
   app.use('/api', agentsRouter);

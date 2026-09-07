@@ -16,6 +16,7 @@ import {
   getActiveProvider,
   listProviders,
   requireProvider,
+  setProviderZdr,
   toPublic,
   updateProvider,
 } from '../providers/repository.ts';
@@ -27,12 +28,15 @@ import {
   testProviderConnection,
 } from '../providers/registry.ts';
 import { colibriAdvisory, probeColibri, requireSlowAcknowledgement } from '../providers/colibri.ts';
-import { redactionCheckEnabled } from '../db/settings.ts';
+import { redactionCheckEnabled, zdrRequirement } from '../db/settings.ts';
 import { classifyProviderType } from '../services/safety/outbound.ts';
-import { isProviderType, PROVIDER_TYPES } from '../types/core.ts';
+import { zdrStatusFor } from '../services/safety/zdr.ts';
+import { isProviderType, PROVIDER_TYPES, ZDR_FLAG_LOCATIONS, ZDR_SUPPORTS } from '../types/core.ts';
 import { AppError } from '../util/errors.ts';
 import { wrap } from './errors.ts';
-import { asBool, asNumber, asString, body, pathParam, queryBool } from './params.ts';
+import { asBool, asEnum, asNumber, asString, body, pathParam, queryBool } from './params.ts';
+
+import type { ZdrRequestFlag } from '../types/core.ts';
 
 export const providersRouter: Router = Router();
 
@@ -127,17 +131,20 @@ providersRouter.get(
 );
 
 /**
- * The active provider and whether talking to it leaves the machine.
+ * The active provider, whether talking to it leaves the machine, and what its
+ * retention story is.
  *
  * Declared above `/:id` deliberately. Express matches in registration order, so
  * with this below the parameter route the literal segment would be read as a
  * provider id and answered `not_found: No provider with id "active"` — which is
  * exactly what a bare `/active` did before this route existed.
  *
- * `egress` is served here rather than computed in the frontend so there is one
- * definition of which provider types are remote. A UI that hardcoded the list
- * would keep saying "stays on this machine" after a new remote provider type
- * shipped, and nothing would fail loudly enough to notice.
+ * `egress` and `zdr` are both served here rather than computed in the frontend so
+ * there is one definition of which provider types are remote and one of what a
+ * given set of recorded facts amounts to. A UI that hardcoded either would keep
+ * saying "stays on this machine" after a new remote provider type shipped, or keep
+ * calling a status "confirmed" after the rules changed, and nothing would fail
+ * loudly enough to notice.
  *
  * 200 with `provider: null` when nothing is enabled: having no active provider
  * is a legitimate state the settings screen has to render, not an error.
@@ -150,6 +157,13 @@ providersRouter.get(
       provider: active ? toPublic(active) : null,
       egress: classifyProviderType(active?.type ?? null),
       redactionCheckEnabled: redactionCheckEnabled(),
+      zdr: {
+        // Null rather than a status when nothing is enabled: there is no request
+        // this would describe, and inventing `zdr_unknown` would read as a fact
+        // about a provider that does not exist.
+        status: active ? zdrStatusFor(active) : null,
+        requirement: zdrRequirement(),
+      },
     });
   }),
 );
@@ -171,6 +185,74 @@ providersRouter.patch(
       priority: asNumber(input.priority, 'priority'),
       apiKey: input.apiKey === undefined ? undefined : (input.apiKey === null ? null : asString(input.apiKey, 'apiKey')),
     });
+    res.json({ provider: toPublic(provider) });
+  }),
+);
+
+/**
+ * Record what is known about this provider's zero-data-retention behaviour.
+ *
+ * Its own subroute rather than a nested field on `PATCH /:id`, for two reasons.
+ * The generic patch is a "leave undefined alone" partial update, and ZDR needs
+ * tri-state semantics of its own on `requestFlag` plus a `confirmed` flag whose
+ * `false` clears two columns — expressing that through a nested optional object
+ * makes "not sent" and "sent as cleared" indistinguishable. And `confirmed: true`
+ * is a user attestation, not a settings edit; it deserves a request the user
+ * cannot make by accident while renaming a provider.
+ *
+ * `requestFlag` is tri-state: absent leaves the stored flag alone, `null` removes
+ * it, an object replaces it. `confirmed` is deliberately not defaulted — omitting
+ * it preserves an existing attestation, so recording a new support value does not
+ * silently discard one.
+ */
+providersRouter.put(
+  '/:id/zdr',
+  wrap((req, res) => {
+    const input = body(req);
+
+    const support = asEnum(input.support, 'support', ZDR_SUPPORTS);
+    if (support === undefined) {
+      throw new AppError('bad_request', 'support is required.', {
+        details: { field: 'support', allowed: ZDR_SUPPORTS },
+      });
+    }
+
+    let requestFlag: ZdrRequestFlag | null | undefined;
+    if (input.requestFlag === null) {
+      requestFlag = null;
+    } else if (input.requestFlag !== undefined) {
+      const raw = input.requestFlag;
+      if (typeof raw !== 'object' || Array.isArray(raw)) {
+        throw new AppError('bad_request', 'requestFlag must be an object or null.', {
+          details: { field: 'requestFlag' },
+        });
+      }
+      const flag = raw as Record<string, unknown>;
+      const location = asEnum(flag.location, 'requestFlag.location', ZDR_FLAG_LOCATIONS);
+      if (location === undefined) {
+        throw new AppError('bad_request', 'requestFlag.location is required.', {
+          details: { field: 'requestFlag.location', allowed: ZDR_FLAG_LOCATIONS },
+        });
+      }
+      requestFlag = {
+        location,
+        key: asString(flag.key, 'requestFlag.key'),
+        // Not `asOptionalString`: a flag with no value sends nothing, and storing
+        // one would make `zdrStatusFor` report a request that was never made.
+        // The credential check on this value lives in `setProviderZdr`.
+        value: asString(flag.value, 'requestFlag.value'),
+      };
+    }
+
+    const provider = setProviderZdr(pathParam(req, 'id'), {
+      support,
+      ...(requestFlag !== undefined ? { requestFlag } : {}),
+      ...(input.confirmed === undefined
+        ? {}
+        : { confirmed: asBool(input.confirmed, 'confirmed') === true }),
+      ...(input.note === undefined ? {} : { note: input.note === null ? null : asString(input.note, 'note') }),
+    });
+
     res.json({ provider: toPublic(provider) });
   }),
 );

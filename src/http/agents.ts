@@ -1,10 +1,9 @@
 /**
  * Agent routes: `code`, `cowork`, `design` task runs plus terminal execution.
  *
- * The agent loops themselves live outside this backend spine, so every route
- * here resolves a registered module first. When nothing is registered the
- * request fails fast with `agent_not_registered` / `terminal_not_registered`
- * (both HTTP 501) as plain JSON, before any SSE headers are written.
+ * Each route resolves its in-process module first. Cowork and terminal are
+ * registered during production composition; Code is production-ready while
+ * Design remains optional and fails fast with the coded 501 response below.
  *
  * Code is the one tool that does not take the app-wide job lock. It runs in a
  * counting lane instead (`HYPERION_CODE_LANE_LIMIT`, default 2), with each task
@@ -54,14 +53,26 @@ import { openStream } from '../orchestrator/sse.ts';
 import {
   listProjectAgents,
   listProjectCommands,
-  listProjectRules,
+  loadAgentProfile,
+  loadProjectPermissions,
+  loadProjectProfiles,
+  matchProjectRules,
 } from '../services/code/projectContext.ts';
-import { getWorktree, provisionWorktree, releaseWorktree } from '../services/code/worktree.ts';
+import { permissionLayers, resolveProfile } from '../services/agent/profiles.ts';
+import { sessionPermissionRules } from '../db/approvals.ts';
+import {
+  getWorktree,
+  heldWorktrees,
+  holdWorktree,
+  provisionWorktree,
+  releaseWorktree,
+} from '../services/code/worktree.ts';
 import { exportCodeTask } from '../services/export/index.ts';
 import { findChat } from '../db/chats.ts';
 import { concurrencyMode } from '../db/settings.ts';
 import {
   finishTaskRun,
+  getTaskRun,
   latestRunForTask,
   startTaskRun,
   type TaskRunTool,
@@ -72,22 +83,25 @@ import { createLogger } from '../util/logger.ts';
 import { attachDownloadHeaders } from './download.ts';
 import { wrap } from './errors.ts';
 import {
-  asNumber,
+  asEnum,
+  asPositiveInteger,
   asString,
   asOptionalString,
   body,
   pathParam,
   queryString,
+  queryStrings,
 } from './params.ts';
 
 
 import type { Request, Response } from 'express';
-import type { AgentModule, TaskInput, TaskResult } from '../types/core.ts';
+import type { AgentMode, AgentModule, TaskInput, TaskResult } from '../types/core.ts';
 import type { Worktree } from '../services/code/worktree.ts';
 
 export const agentsRouter: Router = Router();
 
 const log = createLogger('agents:http');
+const AGENT_MODES: readonly AgentMode[] = ['ask', 'plan', 'act'];
 
 function assertNotBusy(): void {
   if (concurrencyMode() !== 'reject' || !isBusy()) return;
@@ -143,7 +157,16 @@ function parseTaskInput(tool: AgentTool, payload: Record<string, unknown>): Task
     chatId: asString(payload.chatId, 'chatId'),
     modelId: asString(payload.modelId, 'modelId'),
     prompt: asString(payload.prompt, 'prompt'),
+    // Older clients sent no mode. Act preserves their established behaviour;
+    // once parsed, agents always receive a definite permission level.
+    mode: asEnum(payload.mode, 'mode', AGENT_MODES) ?? 'act',
   };
+  // `unattended` is deliberately not read from the request body. It is a fact
+  // about who is watching, not a client preference, and this route exists because
+  // somebody is: they opened an SSE stream and are waiting on it. A body flag
+  // would let a client silently opt out of the refusals that exist to be answered
+  // — a `redaction_flagged` send would park instead of asking, which defeats the
+  // check. Only `scheduler.ts` sets it, because only it knows nobody is there.
   const cwd = asOptionalString(payload.cwd, 'cwd');
   if (cwd !== undefined) input.cwd = cwd;
   const attachments = parseAttachments(payload.attachments);
@@ -193,6 +216,39 @@ function markTaskRun(
   } catch (error) {
     log.warn(`task run ${runId}: recording ${state} failed: ${String(error)}`);
   }
+}
+
+/**
+ * Release a Code task's worktree, or hold it because the run parked.
+ *
+ * The gate is the run's **final state**, not the shape of the promise chain. Both
+ * the success and failure tails reach here, and a parked run arrives through the
+ * success tail: `runAgentLoop` returns a result for a park rather than throwing,
+ * so "the promise resolved" says nothing about whether the task is finished.
+ *
+ * Releasing a parked task's worktree is what made every pre-existing park a dead
+ * end — see `Worktree.heldSince`. Terminal states still release, because a finished
+ * task has no continuation to protect.
+ *
+ * A run with no row at all (cancelled while queued, or provisioning failed) is
+ * released: there is nothing to continue.
+ */
+function settleWorktree(runId: string, taskId: string): void {
+  const state = latestRunForTask('code', taskId)?.runId === runId
+    ? latestRunForTask('code', taskId)?.state
+    : getTaskRun(runId)?.state;
+
+  if (state === 'blocked' || state === 'ready_for_review') {
+    const held = holdWorktree(taskId);
+    if (held !== null) {
+      log.info(`code task ${taskId}: worktree held while the run is ${state}`);
+      return;
+    }
+  }
+
+  void releaseWorktree(taskId).catch((error: unknown) => {
+    log.warn(`code task ${taskId}: worktree release failed: ${String(error)}`);
+  });
 }
 
 /**
@@ -270,6 +326,8 @@ function runTaskRoute(tool: AgentTool) {
           chatId: input.chatId,
           modelId: input.modelId,
           sse,
+          taskId,
+          runId,
           cancelSignal: cancellable.signal,
           ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
         });
@@ -394,6 +452,7 @@ function runCodeTaskRoute() {
           modelId: input.modelId,
           sse,
           taskId,
+          runId,
           cancelSignal: cancellable.signal,
           ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
         });
@@ -405,9 +464,7 @@ function runCodeTaskRoute() {
       .then(() => {
         if (cancellable.cancelled) finishCancelled();
         else if (provisioned) markTaskRun(runId, 'complete');
-        void releaseWorktree(taskId).catch((error: unknown) => {
-          log.warn(`code task ${taskId}: worktree release failed: ${String(error)}`);
-        });
+        settleWorktree(runId, taskId);
       })
       .catch((error: unknown) => {
         if (cancellable.cancelled) {
@@ -416,9 +473,7 @@ function runCodeTaskRoute() {
           if (provisioned) markTaskRun(runId, 'error', failureReason(error));
           sse.sendError(error);
         }
-        void releaseWorktree(taskId).catch((error: unknown) => {
-          log.warn(`code task ${taskId}: worktree release failed: ${String(error)}`);
-        });
+        settleWorktree(runId, taskId);
       })
       .finally(() => {
         cancellable.dispose();
@@ -452,6 +507,17 @@ agentsRouter.get('/code/tasks', wrap(async (_req, res) => {
       label: slot.label ?? null,
       startedAt: slot.startedAt,
       worktree: slot.taskId === undefined ? null : getWorktree(slot.taskId)?.dir ?? null,
+    })),
+    // Reported separately from `active`, and that distinction is the point. A
+    // parked task holds disk but not a lane slot, so counting it as running would
+    // misreport capacity — and omitting it entirely would make a deliberately
+    // retained directory indistinguishable from a leaked one.
+    held: heldWorktrees().map((worktree) => ({
+      taskId: worktree.taskId,
+      worktree: worktree.dir,
+      branch: worktree.branch,
+      heldSince: worktree.heldSince,
+      state: latestRunForTask('code', worktree.taskId)?.state ?? null,
     })),
   });
 }));
@@ -584,8 +650,14 @@ function projectQuery(req: Request): string {
  * is looking at.
  */
 agentsRouter.get('/code/rules', wrap(async (req, res) => {
-  const listing = await listProjectRules(projectQuery(req));
-  res.json({ source: listing.source, count: listing.rules.length, rules: listing.rules });
+  const listing = await matchProjectRules(projectQuery(req), queryStrings(req, 'path'));
+  res.json({
+    source: listing.source,
+    scopeEnforced: listing.scopeEnforced,
+    count: listing.rules.length,
+    matchedCount: listing.rules.filter((rule) => rule.matched).length,
+    rules: listing.rules,
+  });
 }));
 
 /** Sub-agents declared for a project, for `GET /api/code/agents`. */
@@ -600,6 +672,52 @@ agentsRouter.get('/code/commands', wrap(async (req, res) => {
   res.json({ count: commands.length, commands });
 }));
 
+/**
+ * The permission rules that would apply to a run, for `GET /api/code/permissions`.
+ *
+ * Returns the layers separately rather than a merged map, and that is the point:
+ * a merged answer tells the user *what* is allowed but not *who said so*, and the
+ * one question this endpoint exists to answer is "why is this refused?". The
+ * layers come back in evaluation order, so reading them top to bottom is exactly
+ * how the engine reaches its verdict.
+ *
+ * `?profile=` picks a profile the same way a run does, and `?mode=` supplies the
+ * base mode when no profile is named — because Ask, Plan and Act resolve to
+ * different baselines and showing one of them as "the" answer would be wrong for
+ * the other two.
+ */
+agentsRouter.get('/code/permissions', wrap(async (req, res) => {
+  const project = projectQuery(req);
+  const mode = asEnum(queryString(req, 'mode'), 'mode', AGENT_MODES) ?? 'act';
+  const selector = queryString(req, 'profile');
+  const taskId = queryString(req, 'taskId');
+
+  const profile = await resolveProfile({
+    mode,
+    ...(selector === undefined ? {} : { selector }),
+    source: {
+      load: (name) => loadAgentProfile(project, name),
+      list: () => loadProjectProfiles(project),
+    },
+  });
+  const projectRules = await loadProjectPermissions(project);
+  const session = taskId === undefined ? {} : sessionPermissionRules(taskId);
+
+  const layers = permissionLayers({
+    profile,
+    ...(Object.keys(projectRules).length === 0 ? {} : { project: projectRules }),
+    ...(Object.keys(session).length === 0 ? {} : { session }),
+  });
+
+  res.json({
+    project,
+    mode,
+    profile: { name: profile.name, builtin: profile.builtin, mode: profile.mode },
+    // Evaluation order, and named so a client does not have to know it.
+    layers: layers.map((layer) => ({ layer: layer.layer, rules: layer.rules })),
+  });
+}));
+
 /** Terminal execution, owned by the terminal module. Plain JSON, not SSE. */
 agentsRouter.post(
   '/code/execute-command',
@@ -607,7 +725,7 @@ agentsRouter.post(
     const payload = body(req);
     const command = asString(payload.command, 'command');
     const cwd = asOptionalString(payload.cwd, 'cwd') ?? '.';
-    const timeoutMs = asNumber(payload.timeoutMs, 'timeoutMs');
+    const timeoutMs = asPositiveInteger(payload.timeoutMs, 'timeoutMs');
 
     requireTerminal();
     const result = await runCommand(cwd, command, {

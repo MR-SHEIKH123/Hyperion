@@ -94,6 +94,16 @@ export function asNumber(value: unknown, field: string): number | undefined {
   return parsed;
 }
 
+/** An optional positive integer, used for client-controlled durations. */
+export function asPositiveInteger(value: unknown, field: string): number | undefined {
+  const parsed = asNumber(value, field);
+  if (parsed === undefined) return undefined;
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    fail(`${field} must be a positive integer.`, field);
+  }
+  return parsed;
+}
+
 /** A required finite number. */
 export function requireNumber(value: unknown, field: string): number {
   const parsed = asNumber(value, field);
@@ -182,6 +192,14 @@ export function queryString(req: Request, name: string): string | undefined {
   const value = Array.isArray(raw) ? raw[0] : raw;
   if (typeof value !== 'string' || value.trim() === '') return undefined;
   return value.trim();
+}
+
+/** Query-string values preserving repeated keys, with boundary validation. */
+export function queryStrings(req: Request, name: string): string[] {
+  const raw: unknown = req.query[name];
+  if (raw === undefined) return [];
+  const values = Array.isArray(raw) ? raw : [raw];
+  return values.map((value, index) => asString(value, `${name}[${index}]`));
 }
 
 /** A query-string value parsed as a number. */

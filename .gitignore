@@ -42,6 +42,9 @@ secret.key
 # directory that happened to share the name.
 /.clinerules/
 
+# Kilo agent tooling state — contains local MCP config with secrets
+/.kilo/
+
 .DS_Store
 Thumbs.db
 

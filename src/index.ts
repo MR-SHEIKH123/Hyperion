@@ -23,7 +23,12 @@ import { startMcpSupervisor, stopMcpSupervisor } from './services/mcp/supervisor
 import { restoreActiveProject } from './services/projects/active.ts';
 import { ensureSkillDirs } from './services/skills/intake.ts';
 
-import { startCleanupScheduler, stopCleanupScheduler } from './services/storage/cleanup.ts';
+import {
+  reapParkedWorktrees,
+  startCleanupScheduler,
+  stopCleanupScheduler,
+} from './services/storage/cleanup.ts';
+import { registerProductionModules } from './services/agent/composition.ts';
 import { createApp } from './http/app.ts';
 import { createLogger } from './util/logger.ts';
 
@@ -66,6 +71,15 @@ function bootstrap(): void {
   if (orphanedTaskRuns > 0) {
     log.warn('reconciled orphaned task runs from a previous process', { count: orphanedTaskRuns });
   }
+
+  // Beside the reconciliation above because it answers the same question for the
+  // filesystem: what did a previous process leave behind? The worktree registry is
+  // in-memory, so a park from a dead process has no entry here and this pass finds
+  // nothing — it exists for a park that outlived its TTL while the cleanup timer
+  // was idle, and it is cheap when there is nothing held.
+  void reapParkedWorktrees().catch((error: unknown) => {
+    log.warn('boot worktree reap failed', { error: String(error) });
+  });
 
 
   ensureSkillDirs();
@@ -231,6 +245,7 @@ function main(): void {
     process.exit(1);
   }
 
+  registerProductionModules();
   const server = startServer();
   installShutdownHandlers(server);
 

@@ -1,7 +1,16 @@
 import { Router } from 'express';
 
 import { wrap } from './errors.ts';
-import { asBool, asClearableString, asEnum, asNumber, body, pathParam } from './params.ts';
+import {
+  asBool,
+  asClearableString,
+  asEnum,
+  asNumber,
+  asOptionalString,
+  body,
+  pathParam,
+  queryString,
+} from './params.ts';
 // `publicSettings` rather than `allSettings`: the table holds the VAPID private
 // key and the push subscription list, neither of which may cross this boundary.
 import {
@@ -26,10 +35,29 @@ import {
   TOOL_ACCESS_MODE_KEY,
   TOOL_ACCESS_MODES,
   toolAccessMode,
+  ZDR_REQUIREMENT_KEY,
+  zdrRequirement,
   type Capability,
 } from '../db/settings.ts';
+import { ZDR_REQUIREMENTS } from '../types/core.ts';
+import {
+  BUILTIN_PROFILES,
+  builtinProfile,
+  DEFAULT_AGENT_PROFILE_KEY,
+  defaultAgentProfileName,
+  listProfiles,
+  type ProfileSource,
+} from '../services/agent/profiles.ts';
+import {
+  loadAgentProfile,
+  loadProjectPermissions,
+  loadProjectProfiles,
+} from '../services/code/projectContext.ts';
 import { ceilingLimits, spendStatus } from '../services/limits/budget.ts';
 import { AppError } from '../util/errors.ts';
+
+import type { Request } from 'express';
+import type { AgentProfile } from '../types/core.ts';
 
 
 type SettingValue = string | number | boolean | null;
@@ -270,6 +298,49 @@ settingsRouter.put(
   }),
 );
 
+/**
+ * The standing zero-data-retention policy (Part 1.26).
+ *
+ * Modelled on `/redaction-check` and kept out of the generic `/:key` handler for
+ * the same reason: this value changes what the router will dispatch, so a typo in
+ * the key must be a 400 rather than a settings row nobody reads. `enforced` names
+ * where the enforcement lives, so a reader does not go looking for a network-level
+ * control: it is provider candidate selection, in `providers/router.ts`.
+ *
+ * `appliesTo: 'remote'` is not decoration. A local provider is always eligible,
+ * so turning `require` on never affects local work — which is the fact that makes
+ * the setting safe to switch on before every provider has been assessed.
+ */
+settingsRouter.get(
+  '/zdr',
+  wrap(async (_req, res) => {
+    res.json({
+      requirement: zdrRequirement(),
+      allowed: ZDR_REQUIREMENTS,
+      appliesTo: 'remote',
+      enforced: 'provider_selection',
+    });
+  }),
+);
+
+settingsRouter.put(
+  '/zdr',
+  wrap(async (req, res) => {
+    // `asEnum` rejects an unrecognised value with a 400 naming the field, rather
+    // than storing it. A stored value the reader does not recognise falls back to
+    // `off` — so accepting one here would silently switch the policy *off* while
+    // the settings screen showed whatever was typed.
+    const requirement = asEnum(body(req).requirement, 'requirement', ZDR_REQUIREMENTS);
+    if (requirement === undefined) {
+      throw new AppError('bad_request', 'requirement is required.', {
+        details: { field: 'requirement', allowed: ZDR_REQUIREMENTS },
+      });
+    }
+    setSetting(ZDR_REQUIREMENT_KEY, requirement);
+    res.json({ requirement: zdrRequirement(), appliesTo: 'remote' });
+  }),
+);
+
 /** A ceiling of 0 is rejected rather than stored — see the note on the route. */
 function positiveLimit(value: unknown, field: string): number | undefined {
   const parsed = asNumber(value, field);
@@ -348,6 +419,154 @@ settingsRouter.put(
   }),
 );
 
+// --- agent profiles (Part 1.27 §6, Part 1.28 §3) ---------------------------
+
+/**
+ * The project directory a profile listing applies to.
+ *
+ * Defaults to `.` — the projects-scope root — matching `/api/code/*`'s own
+ * `projectQuery`, so the frontend can ask what a fresh session has available.
+ * Only ever resolved inside the projects scope, so `?project=../../etc` is a
+ * `scope_violation` rather than a traversal.
+ */
+function profileSource(req: Request): ProfileSource {
+  const project = queryString(req, 'project') ?? '.';
+  return {
+    load: (selector) => loadAgentProfile(project, selector),
+    list: () => loadProjectProfiles(project),
+  };
+}
+
+/**
+ * Every selectable profile, for `GET /api/settings/agent-profiles`.
+ *
+ * `?includeHidden=true` is how the settings panel shows a profile the user chose
+ * to keep out of the run picker. Hidden is a listing concern only — a hidden
+ * profile stays resolvable by name — so an editor that could not see one would
+ * have no way to un-hide it.
+ */
+settingsRouter.get(
+  '/agent-profiles',
+  wrap(async (req, res) => {
+    const includeHidden = asBool(queryString(req, 'includeHidden'), 'includeHidden') === true;
+    const profiles = await listProfiles(profileSource(req), { includeHidden });
+    res.json({
+      count: profiles.length,
+      defaultProfile: defaultAgentProfileName(),
+      profiles: profiles.map(publicProfile),
+    });
+  }),
+);
+
+/**
+ * The stored default, for `GET|PUT /api/settings/agents`.
+ *
+ * `resolvedFor` spells out what each mode actually resolves to, because the
+ * answer is not "the stored default" for two of the three: Ask and Plan outrank
+ * it deliberately (see `services/agent/profiles.ts`), and a settings panel that
+ * implied otherwise would be showing the user a control that does not do what it
+ * says.
+ */
+settingsRouter.get(
+  '/agents',
+  wrap(async (_req, res) => {
+    const stored = defaultAgentProfileName();
+    res.json({
+      defaultAgentProfile: stored,
+      resolvedFor: { ask: 'ask', plan: 'plan', act: stored ?? 'act' },
+      builtin: BUILTIN_PROFILES.map(publicProfile),
+    });
+  }),
+);
+
+settingsRouter.put(
+  '/agents',
+  wrap(async (req, res) => {
+    const value = asClearableString(body(req).defaultAgentProfile, 'defaultAgentProfile');
+    if (value === undefined) {
+      throw new AppError('bad_request', 'defaultAgentProfile is required.', {
+        details: { field: 'defaultAgentProfile' },
+      });
+    }
+    // Validated against the built-ins only. A *project* profile cannot be checked
+    // here without knowing which project the next run will use, and rejecting a
+    // name this endpoint cannot see would make it impossible to set a default that
+    // is perfectly valid — so resolution rechecks it per run, and a name that
+    // never resolves falls back to `act` rather than breaking every task.
+    if (value !== null && builtinProfile(value) === null && !isPlausibleProfileName(value)) {
+      throw new AppError('bad_request', 'defaultAgentProfile must be a profile name.', {
+        details: { field: 'defaultAgentProfile', value },
+      });
+    }
+    setSetting(DEFAULT_AGENT_PROFILE_KEY, value);
+    res.json({ defaultAgentProfile: defaultAgentProfileName() });
+  }),
+);
+
+/**
+ * Re-read and validate the on-disk configuration, for
+ * `POST /api/settings/reload-config`.
+ *
+ * Adds no cache, and that is the whole design. `db/settings.ts` keeps settings
+ * deliberately un-cached and project files are read per task, so there is nothing
+ * stale for a reload to clear. Its real value is that a malformed
+ * `.hyperion/permissions.json` or a profile with a broken front-matter block is
+ * reported *here*, on demand, instead of surfacing halfway through the next run.
+ */
+settingsRouter.post(
+  '/reload-config',
+  wrap(async (req, res) => {
+    const project = queryString(req, 'project') ?? asOptionalString(body(req).project, 'project') ?? '.';
+    const [permissions, profiles] = await Promise.all([
+      loadProjectPermissions(project),
+      loadProjectProfiles(project),
+    ]);
+    res.json({
+      project,
+      settings: publicSettings(),
+      defaultAgentProfile: defaultAgentProfileName(),
+      permissions,
+      profiles: profiles.map(publicProfile),
+      validated: true,
+    });
+  }),
+);
+
+/**
+ * A profile as the frontend sees it.
+ *
+ * `body` is omitted: it is a system-prompt fragment that can run to hundreds of
+ * lines, and nothing in a listing renders it. A profile editor reads the file
+ * itself.
+ */
+function publicProfile(profile: AgentProfile): Record<string, unknown> {
+  return {
+    name: profile.name,
+    description: profile.description,
+    path: profile.path === '' ? null : profile.path,
+    builtin: profile.builtin,
+    mode: profile.mode,
+    visibility: profile.visibility,
+    hidden: profile.hidden,
+    variant: profile.variant,
+    model: profile.model,
+    tools: profile.tools,
+    permissions: profile.permissions,
+  };
+}
+
+/** A name that could resolve to a project file: no path parts, nothing exotic. */
+function isPlausibleProfileName(value: string): boolean {
+  return value.length <= 80 && /^[A-Za-z0-9][A-Za-z0-9 ._-]*$/.test(value);
+}
+
+/**
+ * The catch-all key writer, and deliberately the last route declared.
+ *
+ * `/:key` matches `agent-profiles` and `agents` too, so anything more specific
+ * has to be registered above it or Express would route those PUTs here and store
+ * a literal settings row named after the endpoint.
+ */
 settingsRouter.put(
   '/:key',
   wrap(async (req, res) => {
