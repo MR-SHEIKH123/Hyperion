@@ -24,9 +24,9 @@
  * and they show up in the existing MCP status list with no special casing.
  *
  * Nothing here spawns a process. `npx -y <pkg>` resolves and caches the package
- * on first launch, which is Kimi's process manager's problem, not ours; wigolo
- * may additionally want a one-time `init`, and graphify needs its venv created,
- * which is why both are seeded **disabled** — see below.
+ * when the MCP supervisor first launches it; wigolo may additionally want a
+ * one-time `init`, and graphify needs its venv created, which is why both are
+ * seeded **disabled** — see below.
  */
 import path from 'node:path';
 

@@ -208,7 +208,7 @@ export function activityFeed(query: ActivityQuery = {}): ActivityPage {
     )
     .all(before, limit);
 
-  const merged = [...taskRows.map(mapTaskRun), ...scheduledRows.map(mapScheduledRun)]
+  const merged = [...visibleTaskRuns(taskRows).map(mapTaskRun), ...scheduledRows.map(mapScheduledRun)]
     .sort((a, b) => b.timestamp - a.timestamp)
     .slice(0, limit);
 
@@ -217,4 +217,33 @@ export function activityFeed(query: ActivityQuery = {}): ActivityPage {
   const last = merged.length === limit ? merged[merged.length - 1] : undefined;
 
   return { entries: merged, nextBefore: last?.timestamp ?? null };
+}
+
+/**
+ * One entry per scheduled execution, not two.
+ *
+ * Since 1.27 a scheduled run writes to **both** tables: `scheduled_task_runs` for
+ * the scheduling outcome and `task_runs` for the execution state (see
+ * `cowork/scheduler.ts`). They are different facts and both are worth keeping, but
+ * they describe one thing that did not happen twice, and a feed showing it twice
+ * reads as the scheduler having fired twice.
+ *
+ * The scheduled entry wins because it carries what the user recognises: the task's
+ * *name*, its artifact link, and the human summary the scheduler writes for a skip.
+ *
+ * Filtering against `scheduled_tasks` rather than against the rows in this page
+ * keeps the answer page-independent: a `task_runs` row whose partner happened to
+ * fall outside the current window would otherwise reappear as a second entry on
+ * one page and not on the next. An interactive run cannot be caught by this,
+ * because its `task_id` is a chat or Code task id and never a scheduled-task id.
+ */
+function visibleTaskRuns(rows: TaskRunFeedRow[]): TaskRunFeedRow[] {
+  if (rows.length === 0) return rows;
+  const scheduled = new Set(
+    getDb()
+      .prepare<{ id: string }>('SELECT id FROM scheduled_tasks')
+      .all()
+      .map((row) => row.id),
+  );
+  return scheduled.size === 0 ? rows : rows.filter((row) => !scheduled.has(row.task_id));
 }

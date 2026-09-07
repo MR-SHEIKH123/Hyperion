@@ -6,8 +6,8 @@
  * short list goes into the running model's system prompt, and the model itself
  * decides whether a skill is relevant to the current task. That is why no
  * separate classification call is needed: the decision happens inside the request
- * that is already being made, by whichever model is driving the tool (Kimi's or
- * Sol's layer). Our only job is to supply an accurate list cheaply.
+ * already being made by whichever model drives the tool. This module's job is to
+ * supply an accurate list cheaply.
  */
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';

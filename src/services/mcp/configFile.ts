@@ -24,7 +24,7 @@
  *
  * 1. **Writes are atomic.** The file is written to a sibling temp file and then
  *    renamed over the target. A crash mid-write can therefore never leave a
- *    truncated config behind — Kimi's process manager reads this file, and half a
+ *    truncated config behind — the process manager reads this file, and half a
  *    JSON document would take down every server at once.
  *
  * 2. **Unknown fields survive.** Other tools may add keys we don't model (e.g.

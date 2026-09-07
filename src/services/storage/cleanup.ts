@@ -52,8 +52,11 @@ import path from 'node:path';
 
 import { env } from '../../config/env.ts';
 import { getDb } from '../../db/adapter.ts';
+import { parkedWorktreeTtlHours } from '../../db/settings.ts';
+import { clearConversation, orphanedSnapshotTaskIds } from '../../db/taskMessages.ts';
 import { getRoot } from '../../security/fsScope.ts';
 import { createLogger } from '../../util/logger.ts';
+import { reapHeldWorktrees } from '../code/worktree.ts';
 import { pruneStaging } from '../skills/intake.ts';
 
 import { deleteAsset, type AssetRow } from './gallery.ts';
@@ -85,6 +88,14 @@ export interface CleanupResult {
   bytesFreed: number;
   emptyDirsRemoved: number;
   stagingPruned: number;
+  /**
+   * Conversation snapshots removed for tasks whose every run had already ended.
+   *
+   * Expected to be **zero** in normal operation: the snapshot is deleted inline on
+   * the terminal transition. A non-zero count means a process died between those
+   * two points, which is worth being able to see rather than silently tidying.
+   */
+  snapshotsCleared: number;
   /** Names/ids kept for the log row so a deletion is explainable afterwards. */
   detail: {
     chats: { id: string; title: string | null; lastOpenedAt: number }[];
@@ -187,6 +198,26 @@ export function runCleanup(options: CleanupOptions = {}): CleanupResult {
     deleteChats();
   }
 
+  // --- orphaned conversation snapshots ------------------------------------
+  // A **backstop**, not the mechanism. `task_messages` holds a parked run's
+  // conversation verbatim, and what bounds that at-rest window is the inline
+  // delete on the terminal transition — a tested security property, see
+  // `db/taskMessages.ts`. This sweeps only what a crash left behind, between the
+  // run reaching a terminal state and the delete that should have followed it.
+  //
+  // Deliberately conservative: a task with no `task_runs` row at all is left
+  // alone, because a headless park may legitimately have none and its snapshot is
+  // the only thing it could continue from.
+  const orphanedSnapshots = orphanedSnapshotTaskIds();
+  let snapshotsCleared = 0;
+  if (!dryRun) {
+    for (const taskId of orphanedSnapshots) {
+      if (clearConversation(taskId) > 0) snapshotsCleared += 1;
+    }
+  } else {
+    snapshotsCleared = orphanedSnapshots.length;
+  }
+
   // --- housekeeping -------------------------------------------------------
   const emptyDirsRemoved = dryRun ? 0 : removeEmptyMonthDirs();
   const stagingPruned = dryRun ? 0 : pruneStaging();
@@ -201,6 +232,7 @@ export function runCleanup(options: CleanupOptions = {}): CleanupResult {
     bytesFreed,
     emptyDirsRemoved,
     stagingPruned,
+    snapshotsCleared,
     detail,
   };
 
@@ -315,6 +347,35 @@ export function listCleanupLog(limit = 50): CleanupLogEntry[] {
   });
 }
 
+/**
+ * Release Code worktrees held for parks that nobody came back to.
+ *
+ * The counterweight to holding a worktree across a park: without a reaper, a task
+ * the user abandoned keeps a checkout forever, and a held directory is
+ * indistinguishable on disk from a leaked one.
+ *
+ * `reapHeldWorktrees` still runs `releaseWorktree`'s safety checks, so a held tree
+ * with uncommitted work is kept on disk and merely deregistered. The reaper reclaims
+ * tracking, never a diff.
+ *
+ * Exported so boot can run one pass beside `reconcileOrphanedTaskRuns` — a park
+ * from a previous process has no live registry entry, but a park from *this* one
+ * that outlived its TTL while the timer was idle does.
+ */
+export async function reapParkedWorktrees(now = Date.now()): Promise<number> {
+  const released = await reapHeldWorktrees({
+    ttlMs: parkedWorktreeTtlHours() * 60 * 60 * 1000,
+    now,
+  });
+  if (released.length > 0) {
+    log.info('released worktrees held by abandoned parks', {
+      count: released.length,
+      removed: released.filter((entry) => entry.removed).length,
+    });
+  }
+  return released.length;
+}
+
 // --- scheduler -------------------------------------------------------------
 
 let bootTimer: NodeJS.Timeout | null = null;
@@ -340,6 +401,13 @@ export function startCleanupScheduler(): void {
       // tomorrow.
       log.error('cleanup run failed', { error: String(error) });
     }
+    // Separate from `runCleanup` because it is genuinely asynchronous — it shells
+    // out to git — and `runCleanup` is deliberately synchronous and single-pass so
+    // it can never interleave with a live request. Awaiting git inside it would
+    // give up that property for an unrelated sweep.
+    void reapParkedWorktrees().catch((error: unknown) => {
+      log.error('parked worktree reap failed', { error: String(error) });
+    });
   };
 
   bootTimer = setTimeout(() => {

@@ -13,8 +13,8 @@
  *
  *   - **remote**: we can genuinely reach out — an HTTP probe with a short timeout
  *     tells us whether the URL resolves and whether the token is accepted.
- *   - **local (stdio)**: a real test means spawning the process, which is Kimi's
- *     `McpProcessManager`, not ours. If a manager has been registered we delegate
+ *   - **local (stdio)**: a real test means spawning the process, which belongs to
+ *     the registered `McpProcessManager`. If a manager is available we delegate
  *     to its `testConnection()`. If not, we fall back to *static* checks (is the
  *     executable plausible, do the args point inside the scoped root) and say so
  *     plainly, so the UI never shows a green tick we didn't earn.

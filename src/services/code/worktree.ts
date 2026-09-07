@@ -67,6 +67,22 @@ export interface Worktree {
   createdAt: number;
   /** Why isolation was not possible. Null when `mode` is `worktree`. */
   reason: string | null;
+  /**
+   * When this worktree stopped belonging to a running task and started being
+   * kept for a parked one. Null while the task is active.
+   *
+   * A held worktree is the whole point of `holdWorktree`: before 1.27 a park
+   * released the directory unconditionally, and re-submitting the parked task id
+   * then got a *new* directory — `freePath` suffixes past what is already there,
+   * and `worktree add -b` fails because the branch exists, so the retry fell back
+   * to `--detach` and restarted from `baseCommit` with the prior edits orphaned.
+   * That silently broke `plan_ready` and `redaction_blocked` before approvals
+   * existed at all.
+   *
+   * Holding costs disk, not a lane slot: `withCodeLane` completes when the agent
+   * returns, so the slot is already free.
+   */
+  heldSince: number | null;
 }
 
 export interface WorktreeRelease {
@@ -116,7 +132,18 @@ export async function provisionWorktree(taskId: string, repoDir: string): Promis
   const id = safeTaskId(taskId);
 
   const existing = worktrees.get(id);
-  if (existing) return existing;
+  if (existing) {
+    // A continuation lands here, and this is what makes it a *continuation*: the
+    // same directory, the same branch, the prior edits still on disk. The hold is
+    // cleared because the task is running again.
+    if (existing.heldSince !== null) {
+      const resumed: Worktree = { ...existing, heldSince: null };
+      worktrees.set(id, resumed);
+      log.info(`task ${id}: resuming the held worktree at ${resumed.dir}`);
+      return resumed;
+    }
+    return existing;
+  }
 
   // Validated before anything else runs: everything downstream is a git command
   // with this path in it, and the scope check is what makes that safe.
@@ -143,6 +170,7 @@ async function create(taskId: string, project: string): Promise<Worktree> {
     baseCommit: null,
     createdAt: Date.now(),
     reason,
+    heldSince: null,
   });
 
   const top = await git(['rev-parse', '--show-toplevel'], { cwd: project });
@@ -214,6 +242,7 @@ async function create(taskId: string, project: string): Promise<Worktree> {
     baseCommit,
     createdAt: Date.now(),
     reason: null,
+    heldSince: null,
   };
 }
 
@@ -330,6 +359,68 @@ async function workAtRisk(worktree: Worktree): Promise<string | null> {
   }
 
   return null;
+}
+
+// --- holding for a parked task ----------------------------------------------
+
+/**
+ * Keep a parked task's worktree instead of releasing it.
+ *
+ * The task stays registered, so `containAgentCwd` still resolves its subtree and a
+ * continuation gets the identical directory back from `provisionWorktree`. Only the
+ * clock starts: `heldSince` is what the reaper measures against.
+ *
+ * Called for the non-terminal states — `blocked` and `ready_for_review`. Terminal
+ * states still release, because a finished task has no continuation to protect and
+ * a directory nobody will return to is a leak.
+ */
+export function holdWorktree(taskId: string): Worktree | null {
+  const id = safeTaskId(taskId);
+  const worktree = worktrees.get(id);
+  if (!worktree) return null;
+  if (worktree.mode === 'direct') return worktree; // owns no directory to hold
+  if (worktree.heldSince !== null) return worktree;
+
+  const held: Worktree = { ...worktree, heldSince: Date.now() };
+  worktrees.set(id, held);
+  log.info(`task ${id}: holding ${held.dir} for a parked run`);
+  return held;
+}
+
+/** Worktrees currently held for a parked task, oldest hold first. */
+export function heldWorktrees(): Worktree[] {
+  return [...worktrees.values()]
+    .filter((worktree) => worktree.heldSince !== null)
+    .sort((a, b) => (a.heldSince ?? 0) - (b.heldSince ?? 0));
+}
+
+/**
+ * Release worktrees held past their TTL.
+ *
+ * The counterweight to D12: holding indefinitely turns a safety feature into a
+ * disk leak, and the failure is invisible because a held directory looks exactly
+ * like a leaked one. Run on boot beside `reconcileOrphanedTaskRuns` and on the
+ * cleanup timer.
+ *
+ * `releaseWorktree`'s own safety checks still apply, so a held tree with
+ * uncommitted work is *kept on disk* and merely deregistered — the reaper cannot
+ * destroy a diff, only stop tracking it. That is the same asymmetry the module
+ * header describes: a leftover directory costs disk, a deleted diff costs work.
+ */
+export async function reapHeldWorktrees(options: { ttlMs: number; now?: number } = { ttlMs: 0 }): Promise<
+  WorktreeRelease[]
+> {
+  const now = options.now ?? Date.now();
+  const expired = heldWorktrees().filter(
+    (worktree) => now - (worktree.heldSince ?? now) >= options.ttlMs,
+  );
+
+  const released: WorktreeRelease[] = [];
+  for (const worktree of expired) {
+    released.push(await releaseWorktree(worktree.taskId));
+    log.info(`task ${worktree.taskId}: releasing a worktree held since ${new Date(worktree.heldSince ?? now).toISOString()}`);
+  }
+  return released;
 }
 
 // --- containment ------------------------------------------------------------

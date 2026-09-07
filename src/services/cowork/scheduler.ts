@@ -22,6 +22,25 @@
  * — and `last_run_at` is still stamped so it waits for its next slot instead of
  * retrying on every tick for the rest of the day.
  *
+ * ## Two history tables, two different questions
+ *
+ * `scheduled_task_runs` records the **scheduling** outcome: did the cron fire,
+ * was it skipped because the app was busy or the cap was reached. `task_runs`
+ * records the **execution** state: running, parked, complete, error.
+ *
+ * This path wrote only the first until 1.27, and the omission was not harmless.
+ * `createAgentContext` was called with no `runId`, so `parkRun` skipped both the
+ * state write and the step row — a scheduled park was invisible and had nothing to
+ * continue from. Worse, `parkOnBlockedSend` guards on a per-*module* `unattended`
+ * flag that production never set, so `redaction_blocked` and `zdr_blocked` were
+ * unreachable outside tests. Both are fixed by allocating a `task_runs` row here
+ * and putting `unattended` on `TaskInput` where a per-run property belongs.
+ *
+ * The consequence is a visible behaviour change for existing scheduled tasks: they
+ * now appear in `GET /api/cowork/tasks/:taskId/state`, write step history, and can
+ * *park* where they previously errored. All three are improvements; the last one
+ * changes what users see, so it belongs in a release note.
+ *
  * ## Why this fires with no browser open
  *
  * PM2 keeps the backend alive independently of any tab, which is the entire
@@ -39,6 +58,8 @@
 
 
 import { env } from '../../config/env.ts';
+import { findChat } from '../../db/chats.ts';
+import { finishTaskRun, getTaskRun, startTaskRun } from '../../db/taskRuns.ts';
 import { requireAgent } from '../../orchestrator/agents.ts';
 import { createAgentContext } from '../../orchestrator/agentContext.ts';
 import { registerCancellable } from '../../orchestrator/cancel.ts';
@@ -102,6 +123,17 @@ function chatIdFor(task: ScheduledTask, runId: string): string {
   return task.chatId ?? `sched_${task.id}_${runId}`;
 }
 
+/**
+ * `task_runs.chat_id` is a real foreign key and a scheduled run's chat id is
+ * usually synthetic, so it names no row. Stored as NULL rather than allowed to
+ * fail the insert: the link is a convenience, and losing the whole execution
+ * record over it would be the wrong trade — the same reasoning `http/agents.ts`
+ * gives for its own `linkedChatId`.
+ */
+function linkedChatId(chatId: string): string | undefined {
+  return findChat(chatId) === null ? undefined : chatId;
+}
+
 async function notify(task: ScheduledTask, result: TaskResult): Promise<void> {
   await sendPush({
     reason: 'scheduled-task',
@@ -129,13 +161,48 @@ export async function runScheduledTask(id: string): Promise<void> {
    * handle the user has for it in the UI, and a run nobody is watching is
    * exactly the kind that most needs an off switch.
    *
-   * There is no `task_runs` row here (this path keeps its history in
-   * `scheduled_task_runs`), so the cancel endpoint reaches this run through the
-   * live registry or not at all. That is why registration happens before the
-   * lock: a task queued behind the user's own work must not be uncancellable
-   * for however long that work takes.
+   * Registered before the lock so a task queued behind the user's own work is
+   * cancellable as well: a run that could not be stopped for however long that
+   * work takes would look to the cancel endpoint like a task never heard of.
    */
   const cancellable = registerCancellable(runId, 'cowork', task.id);
+
+  /**
+   * Whether a `task_runs` row exists yet.
+   *
+   * Allocated inside the lock, so a task cancelled while queued has none — and a
+   * terminal update against an id with no row would silently match nothing.
+   */
+  let allocated = false;
+
+  /**
+   * Stamp the execution state, never at the cost of the run.
+   *
+   * Separate from `finishRun`, because the two record different things and D17
+   * turns on that distinction: `scheduled_task_runs` records the *scheduling*
+   * outcome (did the cron fire, was it skipped), and `task_runs` records the
+   * *execution* state (running, parked, complete). A scheduled execution
+   * genuinely has execution state, and before 1.27 it had nowhere to put it.
+   *
+   * A parked run has already written its own non-terminal state and must keep it:
+   * `finishTaskRun` rewrites the pause and error columns, so overwriting a park
+   * would erase the thing the user has to answer.
+   */
+  const markExecution = (
+    state: 'complete' | 'error' | 'stopped',
+    error?: { code: string; message: string },
+  ): void => {
+    if (!allocated) return;
+    const current = getTaskRun(runId)?.state;
+    if (current !== 'running') return;
+    try {
+      finishTaskRun(runId, state, {
+        ...(error === undefined ? {} : { code: error.code, message: error.message }),
+      });
+    } catch (failure) {
+      log.warn(`scheduled run ${runId}: recording ${state} failed: ${String(failure)}`);
+    }
+  };
 
   /**
    * Record a stopped scheduled run.
@@ -151,6 +218,7 @@ export async function runScheduledTask(id: string): Promise<void> {
       status: 'skipped',
       summary: 'Stopped before it finished.',
     });
+    markExecution('stopped');
     log.info('scheduled task stopped', { id: task.id });
   };
 
@@ -160,6 +228,11 @@ export async function runScheduledTask(id: string): Promise<void> {
     chatId: chatIdFor(task, runId),
     modelId: task.modelId,
     prompt: task.prompt,
+    mode: 'act',
+    // The defining property of this path. Nobody is watching, so a refused send
+    // or a call needing approval must park and be continuable rather than fail —
+    // see `TaskInput.unattended` for why this is per-run and not per-module.
+    unattended: true,
     ...(task.cwd === null ? {} : { cwd: task.cwd }),
   };
 
@@ -186,11 +259,28 @@ export async function runScheduledTask(id: string): Promise<void> {
         signal: cancellable.signal,
       },
       async () => {
+        // Inside the lock, for the same reason `http/agents.ts` records inside
+        // its lock: a task waiting its turn has not started yet, and a row
+        // claiming otherwise would have the UI watching for progress that cannot
+        // begin.
+        startTaskRun({
+          runId,
+          taskId: task.id,
+          tool: 'cowork',
+          chatId: linkedChatId(input.chatId),
+        });
+        allocated = true;
+
         const ctx = createAgentContext({
           tool: 'cowork',
           chatId: input.chatId,
           modelId: input.modelId,
           sse,
+          taskId: task.id,
+          // Passed now, where before it was omitted. Without it `parkRun` skipped
+          // both the state write and the step row, so a scheduled park was
+          // invisible and had nothing to continue from.
+          runId,
           cancelSignal: cancellable.signal,
           ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
         });
@@ -216,6 +306,10 @@ export async function runScheduledTask(id: string): Promise<void> {
       ...(artifact ? { artifact } : {}),
       ...(result.error ? { error: result.error } : {}),
     });
+    // A parked run has already written its own non-terminal state, and must not
+    // have it overwritten: `finishTaskRun` rewrites the pause and error columns,
+    // so stamping `complete` here would erase the park the user has to answer.
+    markExecution(result.ok ? 'complete' : 'error', result.error);
 
     log.info('scheduled task finished', { id: task.id, ok: result.ok });
     await notify(task, result);
@@ -250,6 +344,12 @@ export async function runScheduledTask(id: string): Promise<void> {
           ? { code: error.code, message: error.message }
           : { code: 'internal_error', message: String(error) },
     });
+    markExecution(
+      skipped ? 'stopped' : 'error',
+      error instanceof AppError
+        ? { code: error.code, message: error.message }
+        : { code: 'internal_error', message: String(error) },
+    );
 
     if (busy) {
       log.warn('scheduled task skipped; app busy', { id: task.id });

@@ -35,7 +35,13 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { env } from '../../config/env.ts';
-import type { McpProcessManager, McpServerStatus } from '../../types/core.ts';
+import type {
+  McpProcessManager,
+  McpServerStatus,
+  McpToolCallResult,
+  McpToolDefinition,
+} from '../../types/core.ts';
+import { AppError } from '../../util/errors.ts';
 import { createLogger } from '../../util/logger.ts';
 import { listServers, serverToken } from './registry.ts';
 import type { McpServerRecord } from './registry.ts';
@@ -52,6 +58,10 @@ const MAX_RESTARTS = 5;
 
 /** How long a test-connection probe waits before declaring the server dead. */
 const PROBE_TIMEOUT_MS = 8_000;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 interface RunningServer {
   record: McpServerRecord;
@@ -112,8 +122,56 @@ export class ProcessManager implements McpProcessManager {
   /** Start one server by name (from the registry). */
   async start(name: string): Promise<void> {
     const record = listServers().find((entry) => entry.name === name);
-    if (!record) throw new Error(`No MCP server named "${name}".`);
+    if (!record) {
+      throw new AppError('not_found', `No MCP server named "${name}".`, {
+        details: { server: name },
+      });
+    }
     await this.spawn(record);
+  }
+
+  /** Return the live server's tools in project-owned shapes. */
+  async listTools(name: string): Promise<McpToolDefinition[]> {
+    const server = this.requireRunning(name);
+    try {
+      const result = await server.client!.listTools();
+      return result.tools.map((tool) => ({
+        name: tool.name,
+        inputSchema: tool.inputSchema,
+        ...(tool.annotations?.title === undefined ? {} : { title: tool.annotations.title }),
+        ...(tool.description === undefined ? {} : { description: tool.description }),
+        ...(tool.outputSchema === undefined ? {} : { outputSchema: tool.outputSchema }),
+      }));
+    } catch (error) {
+      throw this.mcpFailure('list tools', name, error);
+    }
+  }
+
+  /** Invoke a live server tool while exposing its in-flight label to status consumers. */
+  async callTool(
+    name: string,
+    toolName: string,
+    args: Record<string, unknown>,
+  ): Promise<McpToolCallResult> {
+    const server = this.requireRunning(name);
+    server.activeTool = toolName;
+    try {
+      const result = await server.client!.callTool({ name: toolName, arguments: args });
+      if (!('content' in result) || !Array.isArray(result.content)) {
+        throw new Error('MCP tool returned an unsupported task result.');
+      }
+      return {
+        content: result.content,
+        ...(isRecord(result.structuredContent)
+          ? { structuredContent: result.structuredContent }
+          : {}),
+        isError: result.isError === true,
+      };
+    } catch (error) {
+      throw this.mcpFailure(`call tool "${toolName}"`, name, error);
+    } finally {
+      server.activeTool = undefined;
+    }
   }
 
   /** Stop one server. Intentional, so no auto-restart. */
@@ -162,6 +220,31 @@ export class ProcessManager implements McpProcessManager {
   }
 
   // --- internals -----------------------------------------------------------
+
+  private requireRunning(name: string): RunningServer {
+    const server = this.servers.get(name);
+    if (!server) {
+      throw new AppError('not_found', `No MCP server named "${name}".`, {
+        details: { server: name },
+      });
+    }
+    if (server.state !== 'running' || server.client === null) {
+      throw new AppError('conflict', `MCP server "${name}" is not running.`, {
+        details: { server: name, state: server.state },
+        retryable: true,
+      });
+    }
+    return server;
+  }
+
+  private mcpFailure(operation: string, name: string, error: unknown): AppError {
+    const message = error instanceof Error ? error.message : String(error);
+    return new AppError('internal_error', `Failed to ${operation} on MCP server "${name}".`, {
+      details: { server: name },
+      privateDetails: { mcpMessage: message },
+      cause: error,
+    });
+  }
 
   private async spawnDefaultFilesystem(): Promise<void> {
     const record: McpServerRecord = {

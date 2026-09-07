@@ -37,7 +37,7 @@ import path from 'node:path';
 import AdmZip from 'adm-zip';
 
 import { env } from '../../config/env.ts';
-import { getDb } from '../../db/adapter.ts';
+import { getDb, openDatabase, type Db } from '../../db/adapter.ts';
 import { getRoot, resolveInScope } from '../../security/fsScope.ts';
 import { AppError } from '../../util/errors.ts';
 import { createLogger } from '../../util/logger.ts';
@@ -148,6 +148,42 @@ function snapshotDatabase(): string {
   return target;
 }
 
+/**
+ * Remove `task_messages` from the temp copy, before it is archived.
+ *
+ * That table holds a parked run's conversation verbatim, and a conversation's tool
+ * results carry **full file contents the agent read and raw command output**. A
+ * backup today contains *no* project source at all — only the database, the MCP
+ * config, the skills tree and (optionally) attachments — so carrying snapshots
+ * would introduce a new *category* of content to an off-machine artifact rather
+ * than more of an existing one. `mirrorBackup` copies each automatic archive to
+ * `HYPERION_BACKUP_DEST`, so "off-machine" is the normal case.
+ *
+ * Nothing real is lost, and that is an argument rather than an assumption:
+ * continuation across a restore is impossible regardless. This archive has never
+ * included the projects directory or any worktree, so a restored backup has no
+ * worktree for a parked Code task to continue *into*. Carrying the conversation
+ * would buy a capability the restore cannot deliver.
+ *
+ * Operates on the copy `snapshotDatabase()` produced, never on the live database —
+ * a backup must not be able to destroy the thing it backs up. A failure is logged
+ * and swallowed, because an archive missing one strip is still worth writing, and
+ * the caller records whether the strip succeeded.
+ */
+function stripConversationSnapshots(snapshot: string): boolean {
+  let db: Db | null = null;
+  try {
+    db = openDatabase(snapshot);
+    db.exec('DELETE FROM task_messages');
+    return true;
+  } catch (error) {
+    log.warn(`could not strip conversation snapshots from the backup copy: ${String(error)}`);
+    return false;
+  } finally {
+    db?.close();
+  }
+}
+
 /** Add a directory tree to the zip under `prefix`, skipping symlinks. */
 function addTree(zip: AdmZip, root: string, prefix: string): number {
   let files = 0;
@@ -194,6 +230,7 @@ export function exportBackup(options: ExportOptions = {}): ExportResult {
   const snapshot = snapshotDatabase();
 
   try {
+    stripConversationSnapshots(snapshot);
     zip.addFile(DB_ENTRY, fs.readFileSync(snapshot));
 
     let mcpConfig = false;

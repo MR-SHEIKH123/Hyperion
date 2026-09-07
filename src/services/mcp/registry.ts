@@ -5,16 +5,16 @@
  *
  *   - the `mcp_servers` table, which is the authority (it holds the encrypted
  *     token and the last test result), and
- *   - `mcp_config.json`, which is the *interchange* format Kimi's process
- *     manager and other MCP hosts read.
+ *   - `mcp_config.json`, the portable *interchange* format used by the process
+ *     manager and other MCP hosts.
  *
  * Every mutation writes the table first and then re-materialises the file. If the
  * file write fails, the transaction is rolled back, so the two can't silently
  * diverge.
  *
- * Note what this module does NOT do: it never spawns a process. Starting,
- * stopping and supervising servers is Kimi's `McpProcessManager`; we only own
- * persistence and the API surface around it.
+ * Note what this module does NOT do: it never spawns a process. The supervised
+ * `McpProcessManager` owns server lifecycle; this module owns persistence and
+ * the API surface around it.
  */
 import { randomUUID } from 'node:crypto';
 import { getDb } from '../../db/adapter.ts';
