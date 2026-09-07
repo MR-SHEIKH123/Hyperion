@@ -5,11 +5,9 @@
 > nearly lost; keep it here so scope is reviewable and diffable next to the code.
 
 **Target model: Claude Opus 5** (Anthropic's current flagship, released July 24, 2026, replacing Opus 4.8 — assigned here for its verified self-verification and error-recovery behavior and strong coding/knowledge-task results, which matter most on correctness-critical infrastructure)
-
 ---
 
 ## Project Overview (read this even though it's not all your scope)
-
 We're building **Hyperion** — a personal, web-based AI workbench, similar in spirit to Cline but running in a browser instead of VS Code. It's for one user (the owner), runs entirely on their own desktop, has no usage caps, and can talk to any LLM provider through a swappable gateway system rather than being locked to one vendor.
 
 The app has a sidebar with these tools: **Chat, Code, Cowork, Design, Playground, Plugins, Skills, Settings**. Each tool has its own independent model selection (Chat could run GPT while Code runs Claude, simultaneously configured though only one runs a request at a time). The whole app is dark-mode-only, styled in a clean, card-based "serious engineering tool" aesthetic inspired by arize.com — but the actual visual build is not your job (see Prompt 2).
@@ -20,6 +18,13 @@ The app has a sidebar with these tools: **Chat, Code, Cowork, Design, Playground
 - **Kimi K3** — the Code tool's multi-file agentic editing loop, the Cowork tool's full agentic loop, and MCP process lifecycle management.
 
 You are building **the backbone all three depend on**: the API server, the database, the provider system, and every piece of logic where correctness matters more than visual polish. Sol's frontend and Kimi's agentic modules both call into the API surface you build — treat this as the contract other people's code depends on, and design it to be stable and predictable.
+
+> **Implementation note — current Phase 1/2 composition.** The ownership split
+> above is retained as the historical allocation from the original prompt. The
+> shipped backend now composes Cowork and a local terminal executor itself before
+> HTTP and schedulers start, and MCP process lifecycle is already implemented by
+> the backend supervisor. Code and Design remain genuinely unregistered agents;
+> the shared agent-loop infrastructure is not a Code-agent implementation.
 
 **Tech stack**: Node.js backend (Express or Fastify — your choice), SQLite via `better-sqlite3`, runs as a plain local web server (no Electron/Tauri — just a browser tab). No authentication (single trusted user) — this is intentional and must not change; remote access is handled separately via Tailscale (a private mesh VPN the user installs on their own devices), not by adding public auth to the app itself.
 

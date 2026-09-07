@@ -2339,6 +2339,13 @@ the exposure summary reflects where the bytes really went even in the case the
 gate could not intervene. A summary built from the *intended* provider would
 quietly under-report exactly the situation the user most wants to know about.
 
+**Narrowed, not closed, by 1.26.** Zero data retention set to `require` removes
+ineligible providers from the candidate list before anything is probed, so for that
+policy there is no ineligible provider available to fail over *to*. The gap remains
+open for `prefer`, which sorts rather than filters, and remains open in full for the
+credential scan above, which is about payload content and has no candidate-list
+equivalent. See "Zero data retention" below.
+
 ### `usage_log.provider_type` is nullable on purpose
 
 Migration `013` adds the column without `NOT NULL` and without a `CHECK`.
@@ -2412,6 +2419,208 @@ Express matches in registration order, so declared after `/:id` this route
 returns `404 not_found` — `No provider with id "active"`. The same trap as
 `/bulk-delete` and `/assets/approved`. There is an HTTP-level test asserting the
 200, because no module-level call can reach a route-ordering bug.
+
+## Zero data retention (added by Prompt 1.26)
+
+1.23 answered "where did the bytes go". This answers "and does whoever received
+them keep it". The two are deliberately separate features: one is a check on
+payload *content*, the other a standing policy about the *recipient*.
+
+### Enforcement is candidate selection, not a gate before dispatch
+
+`isZdrEligible` is consulted while the router decides **which providers are
+candidates at all**, mirroring how `cachedSupportsModel` already excludes a provider
+that lacks the model. It is not a check run once against the provider chosen up
+front.
+
+The difference is the failover case, and it is the whole reason for the design. A
+gate is silent about the provider a request is moved to after it has started: by then
+the payload is in flight and there is nothing left to refuse. Removing an ineligible
+provider from the candidate list means it is never a failover target in the first
+place — a structural guarantee rather than a check that has to be remembered at every
+future dispatch site.
+
+Three paths carry it, and all three must, or the guarantee has a hole:
+`selectProvider`, `findProviderWithModel`, and `pickHealthyAlternative`.
+
+### `require` filters, `prefer` sorts
+
+`orderByZdr` removes ineligible candidates under `require` and moves them to the back
+under `prefer`, keeping the incoming order within each group.
+
+The sort follows the rule already written into `listFailoverCandidates`, where an
+unhealthy provider is ordered last rather than excluded because "it beats having no
+option at all". A preference that silently became a prohibition the moment nothing
+eligible was configured would be a different feature from the one the user switched
+on. The stable partition matters for the same reason: the incoming order already
+encodes health and priority, and a comparator-based sort would discard both.
+
+Under `off` the list is returned unchanged, so nothing about routing on a default
+install can shift because this code exists.
+
+### `prefer` keeps the residual failover gap, and the record is the compensation
+
+Sorting cannot prevent a mid-run failover from landing on an ineligible provider once
+output has started. **Only `require` is structurally safe.** This is stated here
+rather than implied because the compensating control is indirect: the usage row
+stamps the `zdr_status` that actually applied plus the `zdr_requirement` in force, and
+`zdrPreferenceUnmet` derives the shortfall from that pair. A user on `prefer` can see
+every request that fell short; they cannot prevent it.
+
+### `zdr_confirmed_at` is never machine-set
+
+Only an explicit `confirmed: true` from the user writes it. Nothing observable about a
+request may: a request that succeeded proves the flag was *accepted*, never that
+anything was discarded — that is unobservable from this side of the wire.
+
+So `zdr_requested` is the ceiling for anything Hyperion determines itself, and the
+word "confirmed" appears in exactly one situation: the user said so. `confirmed:
+false` clears the timestamp **and** the note together, because a note with no date
+behind it is an unbacked claim that would still be displayed.
+
+### `unknown` and `egress_unknown` fail closed
+
+Both kinds of not-knowing are ineligible under `require`: a provider with nothing
+recorded (`zdr_unknown`), and a provider type this build cannot classify at all
+(`egress_unknown`) — the latter even when its recorded support is
+`supported_default`, because a build that cannot say whether the bytes leave cannot
+be trusted about what happens to them afterwards.
+
+This follows the invariant already stated for 1.23: understating exposure is the one
+error this layer must never make, and "we do not know" is not evidence of safety.
+
+The consequence is stated plainly rather than smoothed over: with every provider
+defaulting to `unknown`, switching `require` on blocks every remote provider until
+support is recorded per provider. That is correct, and the
+`zdr_requirement_unmet` message says so, because otherwise it reads as a bug.
+
+### `requestFlag.value` is plaintext, and must never hold a credential
+
+`toPublic()` returns it verbatim — the one exception to that function's no-secrets
+rule. The reason is that the field is a *policy declaration* (`"none"`, `"true"`,
+`"strict"`) maintained by hand, and a hand-maintained field the user cannot read back
+is unverifiable: they would have no way to check what was saved.
+
+The write path therefore refuses a value that `findSensitive()` flags, and the refusal
+**does not echo the value** — only the rule names that matched, the same discipline
+that keeps matched spans out of `redaction_flagged.details`. Without that check the
+plaintext round-trip would be a credential leak waiting for one paste.
+
+### The flag is gated on egress class, not on the adapter
+
+`openAiAdapter` serves both the remote `remote` type and the local `colibri` type, so
+keying the flag off the adapter would send a retention header to a local runtime that
+has no retention policy. `zdrFlagFor` asks `classifyProviderType` instead, which keeps
+one definition of what leaves the machine.
+
+Merge order is also load-bearing: the flag is spread **before** `Authorization`,
+`Content-Type` and `Accept`, and before `model`/`messages`/`stream` in the body, so a
+user-supplied key can never displace them. A flag named `Authorization` would
+otherwise replace the credential with the string `"none"` and present as an auth
+failure with no visible cause. Silently prevented rather than rejected on write,
+because a header name is only knowably harmful in the context it is used.
+
+### `usage_log.zdr_status` and `zdr_requirement` are nullable with no `CHECK`
+
+Same reasoning as `provider_type` in `013`, and it applies with equal force.
+`recordUsage` swallows every error it hits, so `NOT NULL` would convert a missing
+value into a silently discarded spend row — the cap-bypass hole
+`test/temporarychats.test.ts` exists to close. No `CHECK`, because the status enum will
+widen the way provider types did in `002` and `005`, and a constraint would mean a
+table rebuild each time. The TypeScript union is the definition.
+
+**Nothing is backfilled.** Pre-1.26 rows keep NULL and report as their own
+`unrecorded` bucket. No policy was in force when they were written, and inventing one
+retroactively would put a claim in the log that nobody ever made. `?zdrStatus=
+unrecorded` keeps them reachable, so an audit sees how much history predates the
+policy instead of a suspiciously clean record.
+
+### Facts are stored; conclusions are derived
+
+The row keeps the status that applied *and* the requirement in force, not a verdict.
+"Was that acceptable?" can only be answered later if both halves are present, and a
+stored verdict would silently preserve today's definition of acceptable forever.
+`zdrPreferenceUnmet` computes it on read.
+
+### The type guards classify a stored value; they never discard it
+
+`summarizeZdr` passes `zdr_status` and `zdr_requirement` through as they are, and
+only a genuine NULL becomes `unrecorded`. This is a correction, and the failure it
+replaces is worth recording because the instinct that produced it looks like
+diligence.
+
+The first revision used `isZdrStatus` / `isZdrRequirement` to decide whether to
+*keep* a stored value. Since migration `016` deliberately omits a `CHECK` so the
+status enum can widen, a downgrade leaves rows carrying a status this build cannot
+name — and those rows were then reinterpreted as "nothing was stamped". One guard,
+four untruths:
+
+- the `unrecorded` bucket counted rows that *had* recorded a policy, asserting the
+  opposite of what the row said;
+- that bucket disagreed with its own `?zdrStatus=unrecorded` filter over the same
+  rows — two views of one dataset contradicting each other, which is worse than
+  either being wrong alone, because afterwards neither can be trusted;
+- the rows were unreachable: absent from the `unrecorded` filter, and rejected by
+  their own value, which the route validated against the compiled-in enum only;
+- worst, `preferenceUnmet` **failed open**. The unrecognised status reached
+  `zdrPreferenceUnmet` as `null`, which returns `false`, so a `prefer` shortfall
+  reported the policy as satisfied.
+
+`zdrPreferenceUnmet` therefore takes a plain `string`, not `ZdrStatus`, and treats
+anything outside `SATISFYING` as unmet. This build cannot know that a status it
+cannot name met the user's requirement, and "I do not recognise this" must never
+resolve to "this was fine" — the same rule that makes `egress_unknown` fail closed.
+
+Found by an independent aggregation pass over a seeded dataset, not by the feature's
+own tests, which only ever wrote statuses the build already knew.
+
+### `?zdrStatus=` validates against the enum and against the log
+
+Two requirements pulling opposite ways. A typo must be a 400, because an empty
+summary reads exactly like "you have no remote traffic". But a status a newer build
+stamped is real history, and rejecting it would leave those rows visible in the
+summary yet impossible to select. So the route checks the compiled-in enum first and
+`recordedZdrStatuses()` second: unknown *and* absent is a mistake, unknown but
+*present* is data.
+
+### `zdr_requirement_unmet` is a 403, and is not retryable
+
+Not 409, which is what `redaction_flagged` uses. That code is a conflict because the
+user can resolve it by editing the body or acknowledging the finding; here they
+cannot — no edit to the payload makes an ineligible provider eligible, and only a
+settings change alters the answer. Same reasoning as `capability_disabled`.
+
+Not 503 either. When failover finds candidates and the policy bars all of them, the
+failure stays `zdr_requirement_unmet` rather than becoming `no_healthy_provider`:
+both stop the run, but an outage lifts on its own and is worth waiting for, while a
+privacy refusal never will. Reporting a hard privacy decision as an outage teaches
+the user to wait for a recovery that cannot happen.
+
+Absent from `DEFAULT_RETRYABLE`, because a retry loop would re-refuse forever.
+
+### The pre-dispatch check in `chat.ts` is not redundant with the router
+
+The router enforces the policy on every candidate it considers, which is what makes
+`require` safe. But a refusal raised from inside `router.stream()` arrives *after* the
+user turn and the assistant placeholder have been persisted, and this module's
+contract is that a refusal leaves the transcript exactly as it was.
+
+So `assertZdrDispatchable` answers the same question early, beside
+`assertOutboundSafe`, before `appendMessage`. It reads only cached state — no model
+list fetch, no network — because a decision to refuse must not depend on whether a
+fetch happened to succeed.
+
+Any future send path needs both halves, or it will pause mid-transcript.
+
+### `parkOnRedaction` became `parkOnBlockedSend`
+
+Two refusals now assume a user is present to answer them: `redaction_flagged` and
+`zdr_requirement_unmet`. A name that enumerates its causes starts to lie the moment
+the second one arrives, so the function is named for the condition instead.
+
+The wording differs per reason and that is deliberate: `redaction_blocked` invites the
+user to review and approve, while `zdr_blocked` must not — there is nothing to
+approve, and the block lifts only when a setting or a recorded provider fact changes.
 
 ## Stopping a run is not the same as losing the client (groundwork for Prompt 1.24)
 
@@ -2742,6 +2951,84 @@ the UI says stopped and the filesystem keeps changing.
 
 ---
 
+## Production module composition (added by Phase 1/2 production composition)
+
+Production module registration is one synchronous boundary after database
+bootstrap and before either the HTTP listener or any scheduler starts. The exact
+production set is **Cowork plus the local terminal executor**. Code and Design
+remain unregistered agents; shared loop infrastructure is not itself a Code
+agent, so the two claims must not be collapsed into one.
+
+This ordering prevents partial-production states. A status request, an immediate
+Cowork request and the first scheduled Cowork tick must all observe the same
+registry. Registration only makes a module callable: request handlers and
+schedulers still own agent runs, while the MCP supervisor owns the manager and
+transport lifecycle it registers separately.
+
+Every shell command enters through the orchestrator in this order: capability
+gate, terminal lookup, cwd containment, execution. Keeping the sequence at the
+shared entry point means neither an HTTP route nor a future agent can bypass a
+policy by calling the executor directly.
+
+The executor uses the platform shell (`cmd.exe` on Windows, the configured POSIX
+shell or `/bin/sh` elsewhere), bounds stdout and stderr independently, and kills
+the command's process tree on timeout or cancellation. A timeout is an ordinary
+result (`exitCode: 124`, `timedOut: true`) because the command did run; an abort is
+the coded `aborted` error because the caller cancelled the operation. Process
+launch failures expose only a safe `internal_error`; the OS diagnostic remains
+private so paths or command text are not reflected to a client.
+
+---
+
+## Cowork evidence and optional research boundary (added by Cowork Slice 4)
+
+**Who depends on this:** Cowork's agent loop and any caller that presents its
+knowledge or research state to a user. The loop is allowed to use the reference
+library and a supervised Wigolo process, but neither source is trusted merely
+because a database row or MCP entry exists.
+
+### Invalid knowledge is status-only
+
+Cowork resolves each source through the scoped knowledge path before reading it.
+Only a bounded, supported, valid UTF-8 file whose hash still matches the stored
+metadata becomes evidence. Missing, unreadable, binary, unsupported and
+hash-mismatched sources remain diagnostics in the prompt and never contribute
+bytes to the model's evidence.
+
+This distinction matters because "the row exists" and "the file is safe to use"
+are different facts. Treating a truncated, binary or changed file as evidence
+would let stale or unvalidated bytes silently influence an answer. A containment
+failure is preserved as the typed `scope_violation` error rather than being
+flattened into `missing`: the latter would hide a boundary bug as an ordinary
+library gap.
+
+### Wigolo is callable only when it is live and supervised
+
+Wigolo is optional. Cowork reports the exact setup command
+`npx -y wigolo init` when it is unavailable, disabled or not running, and never
+initializes, enables, starts or spawns it. The MCP registry and process manager
+are consulted for tool schemas and calls only when configuration is present,
+the entry is enabled, and its status is exactly `running`. An MCP response with
+`isError: true` is still a tool result, not evidence that Cowork may start a
+replacement process.
+
+The live-state gate is deliberately stricter than "configured": configuration
+describes intent, while `running` is the only state that proves a supervised
+transport exists. Keeping that distinction prevents a research request from
+turning into an implicit install or process launch.
+
+### Completed output is retained through later failure
+
+Cowork saves Markdown and CSV only through shared artifact versioning, and
+returns every saved `{ key, version }` in `TaskResult.artifacts`. If a later
+provider turn reaches cancellation, a spending cap or another failure, the
+failure is reported without discarding the partial text or saved artifact
+references already produced. Memory recall is allowed before the turn, but
+remembering happens only after the shared loop completes, so a failed partial
+attempt is not stored as completed knowledge.
+
+---
+
 ## Context compaction  *(added by Slice 2, step 3)*
 
 A long-running agent will eventually build a conversation larger than the model's
@@ -2903,3 +3190,662 @@ the provider and can be far larger than the message text around them; a count th
 ignored them would under-read the conversation and compact too late, which is the
 one failure mode compaction exists to prevent.
 
+## Wiring compaction into the agent loop  *(added by Slice 2, step 4)*
+
+The algorithm above shipped with tests and **no production call site** — nothing
+under `src/` imported `agent/compaction.ts`, so every run still went to the
+provider at full length and the sentence above about the agent loop parking the run
+described behaviour no code implemented. The entries here are about the wiring, and
+they exist because a documented promise with no caller is worse than a missing
+feature: it reads as done.
+
+### Compaction runs before the request, never in response to its rejection
+
+`runAgentLoop` compacts at the **top of each iteration**, ahead of `input.turn`.
+
+Handling it the other way — catch the provider's context-length error, shorten,
+retry — looks more economical because it only compacts when strictly necessary.
+It is wrong here for a reason that is not about efficiency: by the time a turn is
+refused, the previous iterations have already run tools, and those have changed
+files on disk. A retry cannot undo them, so the run has already half-happened.
+Shrinking the request while it can still be sent is the only version where the
+failure never occurs.
+
+It also keeps the mechanism provider-independent. Gateways disagree about the
+status, code and wording they use for an oversized request, so a reactive design
+would need a matcher per provider and would silently stop working the day one of
+them rephrased its error.
+
+### The loop borrows access to the conversation; it does not own it
+
+`runAgentLoop` advances through `turn(feedback)` and never sees a message array —
+the agent assembles its own prompt, because only the agent knows what goes into
+it. `LoopContextAccess` is the seam: `messages()` to read, `replace()` to write,
+plus the resolved `window`.
+
+**Accessors rather than an array.** Handing the loop a snapshot would let the two
+copies drift: the loop would compact its copy, the agent would build the next
+request from the one it still holds, and compaction would appear to run — step
+recorded, event emitted — while changing nothing that was actually sent. That
+failure is invisible in tests that only assert the event fired, which is exactly
+why the shape is a getter.
+
+**The seam is optional, and omitting it means no compaction rather than a
+guess.** An agent that rebuilds its prompt from a database each turn, or manages
+its own window, is a legitimate caller; rewriting a conversation whose structure
+the loop cannot see would corrupt it. `input.context === undefined` therefore
+skips the whole path, and there is a test asserting a loop with no seam behaves
+exactly as before.
+
+### `context_exhausted` is `blocked`, not `ready_for_review`
+
+`nothing_droppable` means the conversation is over the window and everything left
+is pinned. The run stops, and `PARK_STATE` maps the reason to **`blocked`**.
+
+`ready_for_review` is an invitation: it says work is finished and wants the user's
+eyes, and the UI offers approval next to it. There is nothing to approve here —
+the run cannot proceed until something outside it changes, such as a model with a
+larger window or a fresh task with less history. Routing it to review would put an
+approve button on a run that cannot continue however the user answers.
+
+This also means it survives a restart as an error rather than as a result: boot
+demotes `blocked` to `error` because the thing it waits on cannot be delivered
+into a loop that no longer exists, whereas `ready_for_review` is left alone. That
+is the correct outcome for a run that never produced one.
+
+### Parking beats throwing, for the same reason it does elsewhere
+
+An over-long conversation could raise an `AppError` and let the route report a
+502. Parking is chosen instead, consistent with `loop_detected` and
+`iteration_ceiling`: the run has real work behind it — steps recorded, files
+changed — and an exception discards the context that explains what happened. A
+parked row keeps the history and names the reason in the step log, so the user
+sees why it stopped rather than a provider error they cannot act on.
+
+### A shortened memory is never silent
+
+Every compaction writes a `compression` step **and** emits `context_compacted`,
+and `compactIfNeeded` is only called where one of the two would be wrong to omit.
+
+An agent that quietly forgets the middle of its conversation produces behaviour
+nobody can explain later: it contradicts something the user said twenty turns ago,
+and the transcript still shows the user saying it. The step is the durable record
+for a client that was not connected at the time; the event is for one that is. The
+step also lands before the event, matching the park ordering — the database is the
+record, SSE is a notification about it.
+
+`recordCompaction` returns early on an uncompacted result, so a conversation that
+fits emits nothing at all. Silence means no compaction happened, not that
+compaction is disabled.
+
+
+## The permission engine (added by Prompt 1.27)
+
+Ask, Plan and Act stopped being modes and became **profiles**. The three names still
+work and still mean what they meant; what changed is that they are now the first
+three entries in an open list rather than three hardcoded branches in the
+dispatcher.
+
+The reason is that a mode could not express anything. "Read anywhere, write only
+under `src/`, ask before `bash`" had nowhere to live: `dispatchToolCall` asked
+whether the mode was `ask`, whether it was `plan` and the tool mutated, and
+otherwise ran the call. Every rule a user might want was a rule they could not
+write.
+
+### The gate did not move
+
+`dispatchToolCall` is still the only function in the loop that invokes anything,
+and the decision is still made inside it. One `evaluate()` call replaced the three
+`if`s. A gate reachable from more than one place is a gate somebody eventually
+forgets, and that has not changed.
+
+### A caller with no resolver gets the original gate, byte for byte
+
+`ModeGateInput.permissions` is optional. Omit it and the pre-1.27 mode branches
+run unchanged, including the `ask_mode` / `plan_mode` refusal wording and the step
+rows they write.
+
+This is not backward-compatibility debt. It is what makes "the reframe is
+behaviour-preserving" a checkable claim rather than an assertion:
+`test/agentloop.test.ts` drives `dispatchToolCall` with nothing but a mode and
+passes unedited, so the old semantics are pinned by a test that has no knowledge
+of profiles at all.
+
+### Four layers, later overriding earlier, with one that only tightens
+
+```
+builtin  ->  profile  ->  project  ->  session        (then: inherited)
+```
+
+* **`builtin`** — the baseline of the profile's *base mode*. Always present.
+* **`profile`** — a project-authored `.hyperion/agents/*.md` front-matter block.
+* **`project`** — `.hyperion/permissions.json`, applying to every profile there.
+* **`session`** — what the user decided during this task, from an `allow_session`
+  approval. It wins because it is the most recent and most specific statement of
+  intent available.
+* **`inherited`** — a subagent ceiling, evaluated last. Its denials **cannot** be
+  overridden downward; an `allow` in this layer is ignored outright.
+
+Any layer may omit a key and fall through. Silence is not an answer: a layer that
+says nothing about `write` leaves the previous verdict standing, because otherwise
+every narrow layer added later would erase the one before it.
+
+There are deliberately **no hard floors** below `inherited`. Hyperion is a
+single-user tool on the user's own machine, and a permission the user granted in
+their own project file is not something this code should second-guess.
+
+### The `builtin` layer is the base mode's baseline, not the profile's own
+
+A project profile declaring `mode: plan` starts from Plan's read-only baseline and
+opens exactly one hole in it. That is what makes a profile a *specialization*
+rather than a fresh start — a profile that had to re-derive what Plan meant would
+drift from it the first time Plan changed.
+
+A built-in contributes nothing to the `profile` layer, because its rules *are* the
+`builtin` layer. Contributing them twice would make every verdict's provenance
+read `profile` when nothing but a built-in was in force.
+
+### `*:read` and `*:mutate` exist because a built-in cannot name tools
+
+Which tools only read is a fact about the *agent*: Code has `read`, Cowork has
+`wigolo.search`, and an MCP server the user adds tomorrow has whatever it has. The
+`plan` built-in therefore says `{"*:read": "allow", "*:mutate": "deny"}` and defers
+to the agent's own `ToolPolicy.effect()`.
+
+Enumerating names instead would have silently denied `wigolo.search` in Plan mode
+the moment Cowork joined the engine — a behaviour regression disguised as a config
+default. `ToolPolicy` is retained for exactly this reason and agents needed no
+change to their policy objects.
+
+Key precedence inside one layer is exact name, then the effect catch-all, then
+`*`. Precedence is per-layer rather than global on purpose: a project file saying
+`{"*": "deny"}` must be able to shut off a tool the profile allowed by name,
+because the project layer is the later statement.
+
+### The built-ins reproduce the old gate exactly, including where that is unhelpful
+
+`ask` denies everything — **including reads**. `plan` allows reads and refuses
+changes. `act` allows everything, still subject to the project and session layers.
+
+Two places where the obvious improvement was rejected:
+
+**`ask` does not grant a "read-only" `bash` allowlist.** A glob over a shell
+command line is not a security boundary: `git status*` matches
+`git status; rm -rf /`, and every `;`, `&&`, backtick and `$( )` is another way
+through. Granting shell access from a profile whose entire promise is "runs
+nothing" needs a command parser, not a pattern.
+
+**`ask` does not grant `read` either.** Widening it is a defensible product change
+and it is not a *refactor*; making it here would mean every user who never opens
+this feature gets different behaviour from the same UI control. A user who wants a
+question-answering profile that can read is now able to author one, which is the
+capability being added.
+
+### A verdict carries its provenance, and the provenance is persisted
+
+`PermissionVerdict` names the `action`, the `layer`, the `pattern` that matched
+(or `null` for a scalar rule) and the derived `key`. `describeVerdict()` renders
+that as one line — `allow (project:src/**) for write` — which is written into
+`task_steps.provenance`.
+
+A refusal a user cannot locate is a refusal they route around by widening the
+broadest rule they can find. Persisting it means "why was this refused?" stays
+answerable from the database after the run, without re-running anything.
+
+### An unknown tool is denied
+
+The policy answers `undefined` for a name it has never heard of, and the loop
+already folds that into `mutate`. This layer goes further and denies outright,
+against the *running agent's* registered tool set rather than a global list. The
+argument is the one the loop's header makes, with more force: this layer can grant
+more than Plan mode ever could.
+
+### MCP permission keys are derived, never renamed
+
+Wire names stay dotted — `wigolo.search` is what the server answers to and what
+`cowork/agent.ts` dispatches on. The permission *key* is `wigolo_search`, derived
+by replacing dots. A key lives in a JSON object key and a front-matter scalar, so
+it gets a spelling that survives both; renaming the wire name to match would break
+dispatch for no benefit.
+
+### A write that looks like a credential is downgraded to `ask`
+
+Before returning `allow` for `write` or `restore`, the target path and the content
+go through `findSensitive()`. A hit downgrades to `ask` regardless of the glob that
+matched, and the verdict keeps that glob — the user's rule was honoured and then
+overridden by a finding, and reporting the rule as the failure would send them to
+edit the wrong line.
+
+This is deliberately **not** gated on `redaction_check_enabled`. That toggle
+governs outbound egress, where the risk is a key leaving the machine and a false
+positive interrupts a send, so it defaults off. Here the risk is a key being
+written *into the user's source tree*, where a false positive costs one
+confirmation and a false negative gets committed. Different trade-off, different
+default.
+
+`restore` counts as write-capable: it puts a previous snapshot back on disk, so a
+credential captured in a snapshot can be re-materialised by it.
+
+### `ask` parks the run; it is not a nicer denial
+
+An `ask` verdict records the call verbatim in `pending_approvals`, parks the run as
+`approval_required` -> `ready_for_review`, and emits an `approval_required` agent
+frame. The model is told, in tool output, that the task is waiting and not to work
+around it.
+
+The loop stops the **whole run**, not just that call. Continuing through the rest
+of the batch would run work the user has not agreed to, and would leave the
+conversation in a state a continuation cannot reproduce — the approved call has to
+be the next thing that happens.
+
+`arguments` are stored exactly as the model emitted them. Continuation replays this
+call, and a re-serialized approximation is a different call: the user approved a
+specific write to a specific path, and anything else is a question they were never
+asked. A call whose arguments exceed the cap is refused rather than stored
+truncated, because truncated JSON is unreplayable and an approval that cannot be
+replayed is worse than none.
+
+### `allow_session` lives in the table, not in memory
+
+1.27 requires a session allowance to be "cleared on task end", which means it must
+outlive a park — and a park can outlive the process. An in-memory set would forget
+every allowance on restart and re-ask for something already granted, which is how
+a confirmation prompt becomes noise people click through.
+
+An allowance is scoped to the pattern that matched, so approving a write to
+`src/a.ts` under a `src/**` rule grants that rule rather than the whole tool.
+`allow_once` is deliberately **not** projected into the session layer: it
+authorises exactly the replay that follows it, and turning it into a rule would
+make "just this time" mean "from now on".
+
+### `pending_approvals` has no foreign key
+
+Same reasoning as `015_subagent_runs.sql`. An unattended run may park with no
+`task_runs` row, and `startTaskRun` is `INSERT OR REPLACE`, so a cascading relation
+would delete the approval during exactly the retry it needs to survive. `run_id` is
+correlation metadata.
+
+### Reasoning effort is advisory, per profile, and degrades silently
+
+`CompletionRequest.reasoningEffort` maps to `reasoning_effort` on
+OpenAI-compatible gateways and `reasoning: { effort }` on the Responses API.
+Ollama and Colibri omit it.
+
+A profile is authored once and used against whichever provider is active, so "this
+provider ignores it" has to be a silent no-op — the alternative is a profile that
+fails on three providers out of four. Colibri shares `openAiAdapter` only because
+it speaks the same protocol; it serves one local quantised model with no reasoning
+control, and a strict server rejecting unknown body fields would turn an advisory
+preference into a failed request.
+
+It is carried per profile, so switching profiles mid-task switches the level with
+it rather than leaving the previous one in force.
+
+### `AgentProfile.tools` widened to `string[]`, and the check moved
+
+The profile type moved from `services/code/projectContext.ts` to `types/core.ts`
+and its `tools` widened from `CodeToolName[]`. That loses a compile-time check, and
+the replacement is strictly better placed: `assertKnownTools` validates against the
+tool set the running agent actually registered, which is the only check that could
+ever have covered an MCP tool whose name is unknown until a server is configured.
+
+A declared tool list is itself a permission statement — naming three tools means
+the other tools are not for this profile — so it is expanded into rules. The
+refusal then names the `profile` layer instead of surfacing as a bare "unknown
+tool" from the runner.
+
+### `visibility` and `hidden` are independent
+
+`visibility` says who may select a profile (`primary`, `subagent`, `all`).
+`hidden` says whether to put it in a menu. Neither implies the other: a personal
+shortcut is a real reason to want a working profile that does not clutter the
+picker, and a documented worker a parent delegates to is worth listing even though
+nobody drives it directly.
+
+`hidden` affects listings only and **never** resolution — a hidden profile stays
+resolvable by name, or an editor could not see one in order to un-hide it.
+`visibility: subagent` is rejected as a primary selection.
+
+### Ask and Plan outrank the stored default
+
+Resolution is: `input.options.profile`, then the mode's built-in for `ask`/`plan`,
+then the `default_agent_profile` setting, then the `act` built-in.
+
+Ask and Plan are explicit, per-run choices to restrict what happens. A stored
+setting able to widen them would make a safety control advisory, so the setting
+customizes what **Act** means — the case where the user has already said "go
+ahead" and a stricter house default is useful rather than surprising.
+`GET /api/settings/agents` returns `resolvedFor` spelling this out, because a panel
+that implied otherwise would be showing a control that does not do what it says.
+
+The setting reads back as `null` when unset rather than `'act'`, so "the user has
+chosen nothing" stays distinguishable from "the user has chosen Act".
+
+A named selector resolves against the project first and the built-ins second, so a
+project can shadow `act` with its own house rules by naming a file `act.md`. An
+unresolvable name is a `not_found`, never a silent fallback: running a task under
+different permissions from the ones the caller asked for is the one outcome nobody
+wants. A *malformed* profile is a `bad_request` for the same reason — swallowing it
+would run the task under `act` because the user's profile did not parse.
+
+### A profile's permission block is JSON in one front-matter scalar
+
+`permissions: {"bash":"ask","write":{"src/**":"allow","*":"deny"}}`.
+
+`parseSimpleYaml` handles flat scalars, inline `[a, b]` and `- item` blocks — no
+nested maps — and a permission rule is a nested map. A `- tool:glob:action` list
+form was rejected because globs and Windows paths contain `:`. JSON needs no parser
+change, round-trips through an import endpoint, and is the same syntax
+`.hyperion/permissions.json` already uses, so a user learns one thing rather than
+two.
+
+A malformed block is rejected rather than dropped. A silently dropped rule presents
+as a permission the user believes they granted and did not.
+
+### Two new error codes
+
+* **`approval_required`** (409) — a call is waiting on a decision. 409 for the same
+  reason `redaction_flagged` is: the request is not forbidden, it conflicts with
+  current state, and the user resolves it by answering, which is a state change.
+* **`permission_denied`** (403) — the engine refused outright. 403 for the reason
+  `capability_disabled` gives: the request is well-formed, resending it unchanged
+  is refused identically, and only editing a permission layer changes the answer.
+
+### `Reload Config` adds no cache
+
+`POST /api/settings/reload-config` re-reads, validates and returns the resolved
+configuration. It caches nothing, because `db/settings.ts` keeps settings
+deliberately un-cached and project files are read per task — there is nothing stale
+for a reload to clear.
+
+Its value is that a malformed `.hyperion/permissions.json`, or a profile with a
+broken front-matter block, is reported on demand instead of surfacing halfway
+through the next run.
+
+### One glob engine, shared
+
+`compileGlob` / `normalizeGlob` moved out of `services/code/projectContext.ts` into
+`util/glob.ts`, and both a rule's `scope:` and a permission rule's path pattern now
+compile through it.
+
+A user who has learned that `src/**` covers `src/a/b.ts` in one place and finds it
+does not in the other has been handed a security surprise, not a syntax quirk. The
+supported syntax is unchanged and deliberately small: `*`, `**`, `**/`, `?`. No
+brace expansion, no character classes, no negation — each is a place where a
+pattern can mean something other than what its author read, and none is needed to
+say "these files".
+
+### `task_steps` lost its `kind` CHECK
+
+017 rebuilt the table and dropped the constraint rather than widening it. Two kinds
+arrived in that one migration (`approval`, `turn`) and more will follow; 016's
+header already made the argument for a descriptive column — a CHECK "would mean a
+table rebuild every time it does" widen. The `TaskStepKind` union is the definition
+now, and `test/tasksteps.test.ts` asserts the *absence* so re-adding the constraint
+fails there rather than in a migration six months later.
+
+The `mode` CHECK stays. `mode` is not descriptive: a UI control maps onto its three
+values, so a profile name gets its own `profile` column instead of being smuggled
+in as free text.
+
+That rebuild is also the one migration shape that can pass every automatic check
+while losing a guarantee. `PRAGMA foreign_key_check` catches a dangling reference;
+it cannot catch a *missing* `ON DELETE CASCADE`, because a table without one is
+valid schema — and per `014`'s header that clause is what makes `startTaskRun`'s
+`INSERT OR REPLACE` clear a superseded attempt's steps. `test/migration017.test.ts`
+is the only guard, and it asserts both the clause and the end-to-end property.
+
+## Task-run continuation (added by Prompt 1.27)
+
+Before this, a parked task run was a dead end. `db/taskRuns.ts` said so outright —
+*"unlike a chat run there is no resume path"* — and yet three park reasons already
+existed and were shown to the user as pauses. `plan_ready` invited an approval that
+could only be acted on by re-running the task from scratch. `redaction_blocked` and
+`zdr_blocked` were unreachable in production for an unrelated reason, and would have
+been dead ends if they had fired.
+
+Continuation needs three things true at once, which is why they shipped together
+rather than as separate features:
+
+1. **The conversation is durable** (`task_messages`). Without it there is nothing to
+   resume *from*.
+2. **The worktree survives the park** (`holdWorktree`). Without it a Code
+   continuation resumes into an empty checkout and silently redoes work.
+3. **The decision becomes a rule** (the `session` permission layer). Without it the
+   continuation re-parks on the same call, forever.
+
+### Snapshots are taken at stopping points, never per turn
+
+`snapshotConversation` is called immediately before each `parkRun`, and at a ceiling
+warning. On the hot path it costs nothing.
+
+**This moves a boundary `014_task_steps.sql` drew, deliberately.** That header said
+"not deltas, not prompt text", and `007` rejected "persist every token". Both were
+about *step history* — what did this run do, readable afterwards — and run
+continuation did not exist as a requirement then. One row set replacing another at a
+moment the run has already stopped is a different thing from streaming every token
+into the database.
+
+The call site is the **loop**, not `parkRun`. `parkRun` takes
+`Pick<AgentContext, 'emit' | 'log'>`, is deliberately narrow, and is called from
+agents directly; the conversation lives behind `AgentLoopInput.context`. Widening its
+signature would hand every caller write access to something most of them have no
+business touching.
+
+Two absences produce no snapshot and both are legitimate: an agent that supplies no
+`LoopContextAccess` (it rebuilds its prompt each turn), and a run with no `taskId`.
+The continue route detects that and returns a coded 409 naming the reason, rather
+than continuing from an empty conversation and re-running the task's first turn while
+claiming to resume it.
+
+### Snapshots are verbatim, and the retention window is the control
+
+Continuation replays this conversation. Redacting it would have the agent resume
+believing it read something it can no longer see — a `read` whose output was masked
+becomes a file the model thinks it knows and does not. **Correct replay and redaction
+are mutually exclusive**, and a continuation resuming from a corrupted memory is
+worse than no continuation.
+
+So the control is the window, not the content:
+
+* A snapshot exists **only between a park and its continuation or terminal state**.
+* Deleting it on the terminal transition happens **inline**, in `finishTaskRun`, and
+  is a tested security property — not housekeeping. A timer-based sweep would widen
+  the window to a day, which is a different guarantee from this one.
+* `runCleanup` sweeps only what a crash orphaned. Its count is expected to be zero.
+* Over a byte cap, the **pruned** conversation is stored instead. Prune already runs
+  before every turn, so the pruned form is one the run could have been sent —
+  unlike a truncated message, which is neither the conversation nor a valid request.
+
+Be explicit about the size of this surface: tool results carry **full file contents
+the agent read and raw command output**, so a live snapshot is effectively a partial
+copy of the user's source tree. That is a materially larger exposure than
+`messages.content`, and it is why the next section exists.
+
+### Snapshots are stripped from backups
+
+`exportBackup` runs one `DELETE FROM task_messages` against the temp copy
+`snapshotDatabase()` produces, before zipping. Never against the live database.
+
+A backup today contains **no** project source at all — the database, the MCP config,
+the skills tree, optionally attachments (`backup/export.ts`). Carrying snapshots
+would introduce a new *category* of content to an artifact `mirrorBackup` copies
+off-machine, not merely more of an existing one.
+
+Nothing real is lost, and that is an argument rather than a hope: **continuation
+across a restore is impossible regardless.** The archive has never included the
+projects directory or any worktree, so a restored backup has no worktree for a parked
+Code task to continue into.
+
+### Park no longer releases the worktree
+
+`settleWorktree` gates on the run's **final state**: `complete`/`error`/`stopped`
+release, `blocked`/`ready_for_review` hold.
+
+The gate is the state, not the shape of the promise chain, because a parked run
+arrives through the *success* tail — `runAgentLoop` returns a result for a park rather
+than throwing, so "the promise resolved" says nothing about whether the task
+finished.
+
+Releasing a parked task's worktree is what made every pre-existing park a dead end,
+and the failure was not a clean one. `freePath` deliberately suffixes past an existing
+directory, and `create` always tries branch `hyperion-task-${taskId}` — so
+re-submitting a parked task id got a *new* directory, failed `worktree add -b`
+because the branch already existed, fell back to `--detach`, and restarted from
+`baseCommit` with the prior edits orphaned on disk.
+
+A held worktree costs **disk, not a lane slot**: `withCodeLane` completes when the
+agent returns, so the slot is already free. `GET /api/code/tasks` reports `held`
+separately from `active` for that reason — counting a park as running would misreport
+capacity, and omitting it would make a deliberately retained directory
+indistinguishable from a leaked one.
+
+`reapHeldWorktrees` releases holds older than `parked_worktree_ttl_hours`
+(default 168 — a week, because "someone answers" is a human timescale). It runs on
+boot beside `reconcileOrphanedTaskRuns` and on the cleanup timer.
+`releaseWorktree`'s own safety checks still apply, so a held tree with uncommitted
+work is kept on disk and merely deregistered: **the reaper reclaims tracking, never a
+diff.**
+
+### The state transition is the mutex
+
+`claimParkedRun` flips `blocked`/`ready_for_review` to `running` in one conditional
+`UPDATE`. Zero rows changed means somebody else already continued it.
+
+This is in SQL rather than a read-then-write because a read followed by a write is
+precisely the race being prevented: two clients answering the same prompt — a phone
+and a laptop showing one task — would both see the park and both proceed, and two
+agents would run against one worktree.
+
+The claim happens **before** the lane is awaited, so a queued continuation is already
+marked `running`. That matches what `http/agents.ts` does for a fresh run and is what
+keeps the mutex effective while queued. A `pending_approvals` state transition guards
+the approval case as well, but a bare continue of `plan_ready` has no second guard,
+so this one has to be sufficient alone.
+
+### Continuation is its own route, and acquires the same lane
+
+`POST /api/{tool}/tasks/:taskId/continue`, explicit rather than overloading
+`run-task`. Re-running work and resuming an agent mid-thought with tools already
+authorised are different operations with different failure modes, and the second must
+never happen by accident.
+
+It acquires the same concurrency primitive the original run used — `withCodeLane` for
+Code, `withLock` otherwise, honouring `concurrencyMode()`. A continuation is a real
+agent run: it edits files and spends tokens, so exempting it from the lane would let
+it run alongside the work the lane exists to serialise.
+
+It starts a **new** `runId` and a new `task_runs` row. Reusing the parked id would be
+actively destructive: `startTaskRun` is `INSERT OR REPLACE`, and `task_steps`
+cascades on delete, so writing the continuation under the old id would erase the step
+history explaining why the run stopped. The parked row is closed out as
+`continued_as:<newRunId>` — left `running` by the claim, it would otherwise look live
+to `reconcileOrphanedTaskRuns` and be demoted to `error` on the next boot, reporting a
+failure that never happened.
+
+A fresh cancellable is registered, because the parked run's was disposed in its own
+`finally`. A continuation is separately stoppable.
+
+### The system prompt is rebuilt, not restored
+
+A continuation replays the stored conversation minus its system messages, and prepends
+a freshly built one.
+
+This is correct rather than wasteful. The profile, project rules, project permission
+file and session allowances may all have moved while the task was parked — and that
+change is usually *the reason* the user continued it. Replaying a stale system message
+would resume under exactly the rules that stopped the run.
+
+The original prompt is not re-sent as a fresh user turn either: the snapshot already
+holds it, and sending it again would have the model read its own task description
+twice, once as history and once as a new instruction.
+
+### All five park reasons continue through one route
+
+| Reason | What continuation applies |
+| --- | --- |
+| `approval_required` | The recorded decision, as a session-layer rule |
+| `doom_loop` | The same; a denial finalises as `loop_detected` |
+| `plan_ready` | Planned actions authorised via a session allow — Plan→Act stops meaning "re-run from scratch" |
+| `redaction_blocked` | Replay with the finding acknowledged. Only reachable at all once `unattended` moved to `TaskInput` |
+| `zdr_blocked` | Replay; succeeds only if a setting or a recorded provider fact changed |
+
+Two classes of park with no principled distinction between them would be the worse
+outcome. The table, the route, the worktree lifecycle and the session layer are built
+for `approval_required` regardless; these are additional `ParkReason` values routed
+through the same machinery.
+
+### The doom loop asks before it kills
+
+`RepeatGuard` no longer parks `loop_detected` outright. On threshold it raises the
+same `ask` an `approval_required` verdict does, with reason `doom_loop` and state
+`ready_for_review`.
+
+A stuck model is not always wrong — the common case is a tool that legitimately
+returns the same answer twice — and terminating discards every turn before the
+repetition. Asking costs one confirmation and keeps the work. `loop_detected` is
+retained as the terminal reason a **denial** lands on, so the existing state
+vocabulary and its test stay meaningful.
+
+### `unattended` is a per-run fact, and was a no-op before this
+
+It moved from a construction-time dependency to `TaskInput`.
+
+It could not be fixed at construction time: one registered agent instance serves both
+live HTTP runs and scheduled runs — `scheduler.ts` and `http/agents.ts` call the same
+`requireAgent` — so "is anyone watching?" is not a property of the module.
+`registerProductionModules` constructed both agents with no arguments, so
+`deps.unattended` was `undefined` in production, and `parkOnBlockedSend` guards on
+`if (!unattended || …) throw error`. **`redaction_blocked` and `zdr_blocked` were
+therefore unreachable outside tests that injected the flag.**
+
+Agents read `input.unattended ?? deps.unattended ?? false`. The deps path survives
+only as a test override, which is why it loses.
+
+`http/agents.ts` deliberately does **not** read it from the request body. It is a fact
+about who is watching, not a client preference, and that route exists because somebody
+is: they opened an SSE stream. A body flag would let a client silently opt out of the
+refusals that exist to be answered — a flagged send would park instead of asking,
+which defeats the check.
+
+### Scheduled runs get a `task_runs` row
+
+Two tables, two different questions. `scheduled_task_runs` records the **scheduling**
+outcome: did the cron fire, was it skipped because the app was busy or the cap was
+reached. `task_runs` records the **execution** state: running, parked, complete, error.
+
+The scheduler wrote only the first, and the omission was not harmless:
+`createAgentContext` was called with no `runId`, so `parkRun` skipped both the state
+write and the step row. A scheduled park was invisible and had nothing to continue
+from.
+
+Consequences, all visible to existing users:
+
+* Scheduled tasks now answer `GET /api/{tool}/tasks/:taskId/state`.
+* They write the step history `014` exists to provide.
+* They can **park** where they previously errored. That is the documented intent of
+  1.23/1.26, so the new behaviour is the correct one — but it changes what users see,
+  and with `push_enabled` off by default the park is silent until they open the task.
+  It belongs in a release note.
+
+The activity feed filters `task_runs` rows whose `task_id` is a known scheduled task,
+so one execution yields one entry. Filtering against `scheduled_tasks` rather than
+against the rows in the current page keeps the answer page-independent — a partner row
+falling outside the window would otherwise reappear as a second entry on one page and
+not the next. An interactive run cannot be caught by it, because its `task_id` is a
+chat or Code task id and never a scheduled-task id.
+
+### Approving and continuing are separate calls
+
+`POST .../approve` records a decision and returns JSON. `POST .../continue` drives the
+agent and returns an SSE stream.
+
+Keeping them apart lets a client answer a prompt from a notification without
+committing to drive the run from that connection. `approve` is idempotent: approving an
+already-resolved approval returns the state it actually reached, matching
+`cancelTaskRoute`'s posture on a run that has already ended. Answering a moment after
+somebody else did is a race the user cannot avoid.
+
+A **denial** finalises the run as `stopped` without starting an agent. The answer was
+"do not do this", and running the loop again would immediately re-park on the same
+call.
