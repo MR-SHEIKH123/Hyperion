@@ -15,12 +15,18 @@ import { randomUUID } from 'node:crypto';
 import { getDb } from '../db/adapter.ts';
 import { encrypt, keyHint } from '../security/keystore.ts';
 import { AppError } from '../util/errors.ts';
+import { findSensitive } from '../util/redact.ts';
+import { isZdrFlagLocation, isZdrSupport } from '../types/core.ts';
 import type {
   HealthStatus,
   ModelInfo,
   ProviderPublic,
   ProviderRecord,
   ProviderType,
+  ProviderZdr,
+  ZdrFlagLocation,
+  ZdrRequestFlag,
+  ZdrSupport,
 } from '../types/core.ts';
 
 interface ProviderRow {
@@ -39,8 +45,47 @@ interface ProviderRow {
   models_json: string | null;
   models_fetched_at: number | null;
   models_error: string | null;
+  zdr_support: string | null;
+  zdr_flag_location: string | null;
+  zdr_flag_key: string | null;
+  zdr_flag_value: string | null;
+  zdr_confirmed_at: number | null;
+  zdr_confirmed_note: string | null;
   created_at: number;
   updated_at: number;
+}
+
+/**
+ * Assemble the ZDR block from its columns.
+ *
+ * An unrecognised stored `zdr_support` reads as `unknown` rather than throwing.
+ * The column is free text by design (see migration 016), so a downgrade or a
+ * hand-edited row must not make a provider unreadable — and `unknown` is the
+ * value that fails closed, which is the right direction to fail in.
+ *
+ * A flag is assembled only when it is complete. A half-written flag row is
+ * indistinguishable from none as far as the wire is concerned, and reporting a
+ * partial one would let `zdrStatusFor` claim ZDR was requested when nothing
+ * would be sent.
+ */
+function mapZdr(row: ProviderRow): ProviderZdr {
+  const location: ZdrFlagLocation | null = isZdrFlagLocation(row.zdr_flag_location)
+    ? row.zdr_flag_location
+    : null;
+  const key = row.zdr_flag_key;
+  const value = row.zdr_flag_value;
+
+  const requestFlag: ZdrRequestFlag | null =
+    location !== null && key !== null && key.trim() !== '' && value !== null && value.trim() !== ''
+      ? { location, key, value }
+      : null;
+
+  return {
+    support: isZdrSupport(row.zdr_support) ? row.zdr_support : 'unknown',
+    requestFlag,
+    confirmedAt: row.zdr_confirmed_at,
+    confirmedNote: row.zdr_confirmed_note,
+  };
 }
 
 function mapRow(row: ProviderRow): ProviderRecord {
@@ -60,6 +105,7 @@ function mapRow(row: ProviderRow): ProviderRecord {
     models: parseModels(row.models_json),
     modelsFetchedAt: row.models_fetched_at,
     modelsError: row.models_error,
+    zdr: mapZdr(row),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -97,6 +143,11 @@ export function toPublic(provider: ProviderRecord): ProviderPublic {
     modelCount: provider.models === null ? null : provider.models.length,
     modelsFetchedAt: provider.modelsFetchedAt,
     modelsError: provider.modelsError,
+    // Carried across in full, `requestFlag.value` included. That value is a
+    // policy declaration and never a credential — `setProviderZdr` rejects one
+    // that looks like a credential — and a field maintained by hand is
+    // unverifiable if the user cannot read back what was saved.
+    zdr: provider.zdr,
     createdAt: provider.createdAt,
     updatedAt: provider.updatedAt,
   };
@@ -104,7 +155,8 @@ export function toPublic(provider: ProviderRecord): ProviderPublic {
 
 const COLUMNS = `id, name, type, base_url, api_key_enc, api_key_hint, enabled, priority,
   health_status, last_error, last_error_at, last_success_at, models_json,
-  models_fetched_at, models_error, created_at, updated_at`;
+  models_fetched_at, models_error, zdr_support, zdr_flag_location, zdr_flag_key,
+  zdr_flag_value, zdr_confirmed_at, zdr_confirmed_note, created_at, updated_at`;
 
 // --- reads -----------------------------------------------------------------
 
@@ -297,6 +349,126 @@ export function updateProvider(id: string, input: UpdateProviderInput): Provider
   values.push(id);
 
   db.prepare(`UPDATE providers SET ${sets.join(', ')} WHERE id = ?`).run(...values);
+  return requireProvider(id);
+}
+
+// --- zero data retention (Part 1.26) ---------------------------------------
+
+export interface SetProviderZdrInput {
+  support: ZdrSupport;
+  /**
+   * Tri-state, like `apiKey` above:
+   *   undefined — leave the stored flag alone
+   *   null      — remove it
+   *   object    — replace it
+   */
+  requestFlag?: ZdrRequestFlag | null;
+  /**
+   * The user attesting, in person, that they have verified this. `false` retracts
+   * a previous attestation. Omitted leaves an existing one in place, so recording
+   * a new support value does not silently drop the confirmation.
+   */
+  confirmed?: boolean;
+  /** Free text kept with the attestation. Meaningless without `confirmed`. */
+  note?: string | null;
+}
+
+/**
+ * Record what is known about a provider's retention behaviour.
+ *
+ * Three rules are enforced here and nowhere else.
+ *
+ * **A flag value that looks like a credential is refused, and the error does not
+ * echo it.** The field is a policy declaration (`"true"`, `"strict"`), it is
+ * returned in plaintext by `toPublic()`, and a user who pasted a key into it
+ * would be publishing that key to every client and every log that records a
+ * provider response. The refusal names the rule that matched, never the text —
+ * the same discipline that keeps matched spans out of `redaction_flagged.details`.
+ *
+ * **`confirmed: false` clears the date and the note together.** A note without a
+ * date is an assertion with nothing standing behind it, and it would still be
+ * displayed; retracting has to retract the whole thing.
+ *
+ * **`zdr_confirmed_at` is only ever set from an explicit `confirmed: true`.**
+ * Nothing about a successful request may write it. See `services/safety/zdr.ts`:
+ * a request that was accepted proves the flag was accepted, not that anything was
+ * discarded.
+ *
+ * Unlike `updateProvider`, this deliberately does **not** invalidate the model
+ * cache or the health verdict. Retention policy describes what the provider does
+ * with the request, not where the request goes — the cached evidence still
+ * describes the same endpoint.
+ */
+export function setProviderZdr(id: string, input: SetProviderZdrInput): ProviderRecord {
+  const existing = requireProvider(id);
+
+  if (!isZdrSupport(input.support)) {
+    throw new AppError('bad_request', `"${String(input.support)}" is not a known ZDR support value.`, {
+      details: { field: 'support' },
+    });
+  }
+
+  const sets: string[] = ['zdr_support = ?'];
+  const values: (string | number | null)[] = [input.support];
+
+  if (input.requestFlag !== undefined) {
+    if (input.requestFlag === null) {
+      sets.push('zdr_flag_location = NULL', 'zdr_flag_key = NULL', 'zdr_flag_value = NULL');
+    } else {
+      const { location, key, value } = input.requestFlag;
+      if (!isZdrFlagLocation(location)) {
+        throw new AppError('bad_request', 'requestFlag.location must be "header" or "body".', {
+          details: { field: 'requestFlag.location' },
+        });
+      }
+      if (key.trim() === '') {
+        throw new AppError('bad_request', 'requestFlag.key must not be empty.', {
+          details: { field: 'requestFlag.key' },
+        });
+      }
+      if (value.trim() === '') {
+        throw new AppError('bad_request', 'requestFlag.value must not be empty.', {
+          details: { field: 'requestFlag.value' },
+        });
+      }
+
+      const findings = findSensitive(value);
+      if (findings.length > 0) {
+        throw new AppError(
+          'bad_request',
+          'requestFlag.value looks like a credential. This field is a retention policy ' +
+            'declaration — it is stored and returned in plaintext — so it must never hold a key, ' +
+            'token or password. Put the credential in the provider\'s API key field instead.',
+          {
+            // The kinds that matched, never the value: an error body that quoted
+            // it would publish the thing being protected.
+            details: { field: 'requestFlag.value', kinds: [...new Set(findings.map((f) => f.kind))] },
+          },
+        );
+      }
+
+      sets.push('zdr_flag_location = ?', 'zdr_flag_key = ?', 'zdr_flag_value = ?');
+      values.push(location, key.trim(), value.trim());
+    }
+  }
+
+  if (input.confirmed === true) {
+    sets.push('zdr_confirmed_at = ?', 'zdr_confirmed_note = ?');
+    values.push(Date.now(), input.note?.trim() === '' ? null : input.note ?? null);
+  } else if (input.confirmed === false) {
+    sets.push('zdr_confirmed_at = NULL', 'zdr_confirmed_note = NULL');
+  } else if (input.note !== undefined && existing.zdr.confirmedAt !== null) {
+    // A note may be edited on its own, but only while an attestation exists to
+    // attach it to. Writing one without a date would display an unbacked claim.
+    sets.push('zdr_confirmed_note = ?');
+    values.push(input.note?.trim() === '' ? null : input.note ?? null);
+  }
+
+  sets.push('updated_at = ?');
+  values.push(Date.now());
+  values.push(id);
+
+  getDb().prepare(`UPDATE providers SET ${sets.join(', ')} WHERE id = ?`).run(...values);
   return requireProvider(id);
 }
 

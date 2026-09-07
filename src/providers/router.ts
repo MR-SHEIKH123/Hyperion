@@ -32,12 +32,94 @@ import {
   listFailoverCandidates,
   requireProvider,
 } from './repository.ts';
-import type { CompletionRequest, ProviderRecord, TokenUsage, ToolCall } from '../types/core.ts';
+import { zdrRequirement } from '../db/settings.ts';
+import { isZdrEligible, orderByZdr, zdrStatusFor } from '../services/safety/zdr.ts';
+import type {
+  CompletionRequest,
+  ProviderRecord,
+  TokenUsage,
+  ToolCall,
+  ZdrRequirement,
+} from '../types/core.ts';
 
 const log = createLogger('router');
 
+/**
+ * The refusal raised when the standing policy is `require` and nothing eligible
+ * can serve the request.
+ *
+ * Built in one place because the message has work to do. With every provider
+ * defaulting to `zdr_support = 'unknown'`, switching `require` on blocks every
+ * remote provider until support is recorded per provider — correct fail-closed
+ * behaviour that reads exactly like a bug unless the error says so plainly.
+ */
+function zdrRefusal(provider: ProviderRecord, modelId: string): AppError {
+  const status = zdrStatusFor(provider);
+  return new AppError(
+    'zdr_requirement_unmet',
+    `Zero data retention is set to "require", and ${provider.name} is recorded as "${status}". ` +
+      `No other configured provider both offers "${modelId}" and satisfies the requirement. ` +
+      'Record this provider\'s ZDR support, or lower the requirement in Settings. ' +
+      'Providers start as "unknown", which never satisfies "require".',
+    {
+      retryable: false,
+      details: { requirement: 'require', provider: provider.name, zdrStatus: status, modelId },
+    },
+  );
+}
+
+/**
+ * The refusal raised when a *failover* finds candidates but the ZDR requirement
+ * bars all of them.
+ *
+ * Deliberately `zdr_requirement_unmet` and not `no_healthy_provider`. Both stop
+ * the run, but they mean opposite things: an outage lifts on its own and is worth
+ * retrying, while a privacy refusal never will. Reporting this as an outage would
+ * teach the user to wait for a recovery that cannot happen.
+ */
+function zdrFailoverRefusal(failed: ProviderRecord, modelId: string): AppError {
+  return new AppError(
+    'zdr_requirement_unmet',
+    `${failed.name} is not responding, and every other configured provider that offers ` +
+      `"${modelId}" is barred by the zero-data-retention requirement. The conversation is ` +
+      'paused; your history is intact. Record ZDR support for one of those providers, or lower ' +
+      'the requirement in Settings.',
+    {
+      retryable: false,
+      details: { requirement: 'require', failedProvider: failed.name, modelId },
+    },
+  );
+}
+
+/**
+ * Pre-dispatch ZDR gate for a caller that persists state before it streams.
+ *
+ * Not redundant with the filtering inside `selectProvider`. A refusal that
+ * surfaces from within `stream()` arrives after the caller has written a user
+ * turn and an assistant placeholder, and `orchestrator/chat.ts` documents that a
+ * refusal must leave the transcript exactly as it was. This answers the same
+ * question early, so the caller can refuse before writing anything.
+ *
+ * Reads only cached state — no `ensureModelsCached`, no network. It runs on the
+ * request path before anything is written, and a decision to refuse must not
+ * depend on whether a model list happened to fetch. An unknown model cache
+ * therefore counts as "might serve", which is the same benefit of the doubt
+ * `selectProvider` gives.
+ */
+export function assertZdrDispatchable(intended: ProviderRecord | null, modelId: string): void {
+  const requirement = zdrRequirement();
+  // `prefer` never refuses — it sorts. `off` is not a policy at all.
+  if (requirement !== 'require' || intended === null) return;
+  if (isZdrEligible(intended, requirement)) return;
+
+  const alternative = orderByZdr(listFailoverCandidates(intended.id), requirement).find(
+    (candidate) => cachedSupportsModel(candidate, modelId) !== false,
+  );
+  if (!alternative) throw zdrRefusal(intended, modelId);
+}
+
 /** Why the router moved off the provider it started with. */
-export type SwitchReason = 'capability_mismatch' | 'health_failure';
+export type SwitchReason = 'capability_mismatch' | 'health_failure' | 'zdr_requirement';
 
 export type RouteEvent =
   /** Always first. Tells the caller which provider actually got the request. */
@@ -79,7 +161,8 @@ export interface Selection {
 }
 
 /**
- * Pick a provider for `modelId`, applying the capability check.
+ * Pick a provider for `modelId`, applying the ZDR policy and then the capability
+ * check.
  *
  * An empty/unknown model cache is treated as "might work", not as a mismatch:
  * refusing to send because we have not managed to fetch a model list yet would
@@ -98,6 +181,26 @@ export async function selectProvider(
     );
   }
 
+  // ZDR is checked before capability, deliberately. Both can send the request
+  // elsewhere, but they answer different questions and the user needs the right
+  // one: a provider that is barred on privacy grounds must not be reported as
+  // lacking the model, which would send the user off to fix the wrong thing.
+  const requirement = zdrRequirement();
+  if (requirement === 'require' && !isZdrEligible(start, requirement)) {
+    const eligible = await findEligibleProviderWithModel(modelId, start.id, requirement);
+    if (!eligible) throw zdrRefusal(start, modelId);
+
+    return {
+      provider: eligible,
+      switched: true,
+      from: start,
+      reason: 'zdr_requirement',
+      message:
+        `${start.name} does not satisfy the zero-data-retention requirement ` +
+        `(${zdrStatusFor(start)}); using ${eligible.name} instead.`,
+    };
+  }
+
   const primed = await ensureModelsCached(start);
   const supported = cachedSupportsModel(primed, modelId);
 
@@ -110,6 +213,13 @@ export async function selectProvider(
   // anything upstream to the provider we already know cannot serve it.
   const alternative = await findProviderWithModel(modelId, primed.id);
   if (!alternative) {
+    // Under `require`, an empty candidate list may be empty *because* ZDR
+    // filtered it, and reporting that as a missing model would tell the user to
+    // change models when the policy is what refused. Distinguish the two by
+    // asking whether anything would have been available without the filter.
+    if (requirement === 'require' && (await findProviderWithModel(modelId, primed.id, 'off'))) {
+      throw zdrRefusal(primed, modelId);
+    }
     throw new AppError(
       'no_provider_for_model',
       `No configured provider offers the model "${modelId}". ` +
@@ -133,12 +243,22 @@ export async function selectProvider(
  * Only cached lists are consulted for providers that have one. A provider with
  * no cache at all gets one refresh attempt, because otherwise a newly added
  * provider could never be discovered as a fallback.
+ *
+ * Candidates pass through `orderByZdr` before anything is probed: under `require`
+ * an ineligible provider is removed outright, so it is never a failover target;
+ * under `prefer` it sorts last, so an eligible one wins whenever there is one.
+ * `requirementOverride` exists only so the caller can ask what would have been
+ * available without the ZDR filter, in order to word the refusal correctly.
  */
 async function findProviderWithModel(
   modelId: string,
   excludeId: string,
+  requirementOverride?: ZdrRequirement,
 ): Promise<ProviderRecord | null> {
-  const candidates = listFailoverCandidates(excludeId);
+  const candidates = orderByZdr(
+    listFailoverCandidates(excludeId),
+    requirementOverride ?? zdrRequirement(),
+  );
 
   for (const candidate of candidates) {
     if (cachedSupportsModel(candidate, modelId) === true) return candidate;
@@ -150,6 +270,27 @@ async function findProviderWithModel(
     if (cachedSupportsModel(primed, modelId) === true) return primed;
   }
 
+  return null;
+}
+
+/**
+ * The `require` path's replacement search.
+ *
+ * Distinct from `findProviderWithModel` in one way that matters: an unknown model
+ * cache is accepted here (`!== false`), because refusing on a privacy requirement
+ * must not additionally require that we have already listed the alternative's
+ * models. Being unable to prove a provider has the model is not a reason to send
+ * the request to one that breaks the user's policy — but it is a reason to try.
+ */
+async function findEligibleProviderWithModel(
+  modelId: string,
+  excludeId: string,
+  requirement: ZdrRequirement,
+): Promise<ProviderRecord | null> {
+  for (const candidate of orderByZdr(listFailoverCandidates(excludeId), requirement)) {
+    const primed = await ensureModelsCached(candidate);
+    if (cachedSupportsModel(primed, modelId) !== false) return primed;
+  }
   return null;
 }
 
@@ -254,6 +395,18 @@ export async function* stream(
       // Threshold tripped — evict and move on.
       const next = await pickHealthyAlternative(request.modelId, tried);
       if (!next) {
+        // Which refusal depends on *why* the list came up empty. Asking again
+        // with the policy set aside separates "nothing else can serve this model"
+        // from "the policy barred everything that could" — the first is an
+        // outage, the second is a privacy decision, and they call for opposite
+        // responses from the user.
+        const requirement = zdrRequirement();
+        if (requirement === 'require' && (await pickHealthyAlternative(request.modelId, tried, 'off'))) {
+          log.warn('every healthy alternative is barred by the ZDR requirement', {
+            failed: provider.name,
+          });
+          throw zdrFailoverRefusal(provider, request.modelId);
+        }
         log.warn('no healthy alternative provider', { failed: provider.name });
         throw new AppError(
           'no_healthy_provider',
@@ -280,12 +433,26 @@ export async function* stream(
   }
 }
 
-/** Next provider that both serves the model and has not already been tried. */
+/**
+ * Next provider that both serves the model and has not already been tried.
+ *
+ * The candidate list passes through `orderByZdr` before any of it is probed,
+ * which is what closes the mid-run failover hole for `require`: an ineligible
+ * provider is not in the list, so it cannot become the replacement no matter what
+ * happens to the one that failed. Under `prefer` it stays in the list but sorts
+ * last, and that residual exposure is the documented cost of `prefer`.
+ *
+ * `requirementOverride` is how the caller asks the counterfactual — what would
+ * have been available with no policy — so an empty result can be reported as the
+ * right kind of failure.
+ */
 async function pickHealthyAlternative(
   modelId: string,
   tried: Set<string>,
+  requirementOverride?: ZdrRequirement,
 ): Promise<ProviderRecord | null> {
-  for (const candidate of listFailoverCandidates()) {
+  const candidates = orderByZdr(listFailoverCandidates(), requirementOverride ?? zdrRequirement());
+  for (const candidate of candidates) {
     if (tried.has(candidate.id)) continue;
     const primed = await ensureModelsCached(candidate);
     // `null` (unknown) is allowed through: an unprobed provider is worth trying

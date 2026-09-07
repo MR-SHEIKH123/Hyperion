@@ -18,6 +18,8 @@ import { AppError } from '../util/errors.ts';
 import { redactSecrets } from '../util/redact.ts';
 import { tryDecrypt } from '../security/keystore.ts';
 import { env } from '../config/env.ts';
+import { zdrFlagFor } from '../services/safety/zdr.ts';
+import { DEFAULT_PROVIDER_ZDR } from '../types/core.ts';
 import type {
   ChatMessage,
   CompletionRequest,
@@ -27,6 +29,7 @@ import type {
   StreamChunk,
   ToolCall,
 } from '../types/core.ts';
+
 
 /**
  * Translate one message into OpenAI wire form.
@@ -182,6 +185,44 @@ function authHeaders(provider: ProviderRecord): Record<string, string> {
 }
 
 /**
+ * Headers for a streaming request, with the ZDR opt-in flag merged in.
+ *
+ * Order is load-bearing. The flag is spread **first** and the fixed headers
+ * after, so a user-supplied flag key can never displace `Authorization`,
+ * `Content-Type` or `Accept`. Those three are the request's correctness: a flag
+ * named `Authorization` would replace the credential with the string "true" and
+ * turn a privacy setting into an auth failure the user would have no way to
+ * diagnose. Overriding is silently prevented rather than rejected on write,
+ * because a header name is only knowably harmful in the context it is used.
+ *
+ * `zdrFlagFor` returns null for anything that is not a remote, opt-in provider
+ * with a usable flag — which is what keeps a retention header off a local
+ * Colibrì served by this same adapter.
+ */
+function streamHeaders(provider: ProviderRecord, accept: string): Record<string, string> {
+  const flag = zdrFlagFor(provider);
+  return {
+    ...(flag?.headers ?? {}),
+    ...authHeaders(provider),
+    'Content-Type': 'application/json',
+    Accept: accept,
+  };
+}
+
+/**
+ * Body fields contributed by the ZDR flag, for a provider whose opt-in rides in
+ * the payload rather than in a header.
+ *
+ * Spread into the request body *before* the protocol fields for the same reason
+ * `streamHeaders` orders its spread that way: `model`, `messages` and `stream`
+ * decide what the request is, and a flag key colliding with one of them would
+ * corrupt the request rather than annotate it.
+ */
+function zdrBodyFields(provider: ProviderRecord): Record<string, string> {
+  return zdrFlagFor(provider)?.bodyFields ?? {};
+}
+
+/**
  * Iterate `data:` frames from an SSE body.
  * Buffers across chunk boundaries — a JSON payload is routinely split mid-object.
  */
@@ -276,12 +317,9 @@ export const openAiAdapter: ProviderAdapter = {
       url(provider.baseUrl, '/chat/completions'),
       {
         method: 'POST',
-        headers: {
-          ...authHeaders(provider),
-          'Content-Type': 'application/json',
-          Accept: 'text/event-stream',
-        },
+        headers: streamHeaders(provider, 'text/event-stream'),
         body: JSON.stringify({
+          ...zdrBodyFields(provider),
           model: request.modelId,
           messages: request.messages.map(wireMessage),
           stream: true,
@@ -289,6 +327,7 @@ export const openAiAdapter: ProviderAdapter = {
           stream_options: { include_usage: true },
           ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
           ...(request.maxTokens !== undefined ? { max_tokens: request.maxTokens } : {}),
+          ...reasoningBodyField(provider, request),
           // Only sent when tools exist: an empty array is rejected outright by
           // some gateways instead of being treated as "no tools".
           ...(request.tools && request.tools.length > 0
@@ -398,8 +437,36 @@ function estimateTokens(messages: { content: string }[]): number {
   return Math.ceil(messages.reduce((sum, m) => sum + m.content.length, 0) / 4);
 }
 
+/**
+ * `reasoning_effort`, but only where it means something.
+ *
+ * Sent to `remote` gateways, which is where reasoning models live. Withheld from
+ * `colibri`, which shares this adapter only because it speaks the same protocol:
+ * it serves one local quantised model with no reasoning control, and a strict
+ * OpenAI-compatible server that rejects unknown body fields would turn an
+ * advisory preference into a failed request.
+ *
+ * A gateway that does not recognise the field ignores it, which is the documented
+ * degradation path — see `CompletionRequest.reasoningEffort`.
+ */
+function reasoningBodyField(
+  provider: ProviderRecord,
+  request: CompletionRequest,
+): { reasoning_effort?: string } {
+  if (request.reasoningEffort === undefined || provider.type !== 'remote') return {};
+  return { reasoning_effort: request.reasoningEffort };
+}
+
 // --- Ollama ----------------------------------------------------------------
 
+/**
+ * Ollama has no reasoning-effort control, so `request.reasoningEffort` is dropped
+ * here rather than approximated. See `CompletionRequest.reasoningEffort`: a
+ * profile is authored once and used against whichever provider is active, so a
+ * provider that cannot honour the request must ignore it silently. Mapping it
+ * onto `options.num_predict` or a temperature would change the answer in a way
+ * the user never asked for, which is worse than not thinking harder.
+ */
 export const ollamaAdapter: ProviderAdapter = {
   kind: 'ollama',
 
@@ -576,18 +643,22 @@ export const openCodexAdapter: ProviderAdapter = {
       url(provider.baseUrl, '/responses'),
       {
         method: 'POST',
-        headers: {
-          ...authHeaders(provider),
-          'Content-Type': 'application/json',
-          Accept: 'text/event-stream',
-        },
+        headers: streamHeaders(provider, 'text/event-stream'),
         body: JSON.stringify({
+          ...zdrBodyFields(provider),
           model: request.modelId,
           input,
           stream: true,
           ...(instructions !== '' ? { instructions } : {}),
           ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
           ...(request.maxTokens !== undefined ? { max_output_tokens: request.maxTokens } : {}),
+          // Responses API nests it, unlike chat-completions' flat
+          // `reasoning_effort`. Absent when unasked, never sent as a default:
+          // a `reasoning` block on a non-reasoning model is a 400 on some
+          // upstreams that opencodex routes to.
+          ...(request.reasoningEffort !== undefined
+            ? { reasoning: { effort: request.reasoningEffort } }
+            : {}),
         }),
       },
       env.requestTimeoutMs,
@@ -729,6 +800,7 @@ export async function detectLocalProvider(baseUrl = env.ollamaUrl): Promise<Dete
     models: null,
     modelsFetchedAt: null,
     modelsError: null,
+    zdr: DEFAULT_PROVIDER_ZDR,
     createdAt: 0,
     updatedAt: 0,
   };

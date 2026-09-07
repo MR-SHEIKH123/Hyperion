@@ -16,6 +16,7 @@ import { AppError } from '../util/errors.ts';
 import { createLogger } from '../util/logger.ts';
 import { env } from '../config/env.ts';
 import { openAiAdapter } from './adapters.ts';
+import { DEFAULT_PROVIDER_ZDR } from '../types/core.ts';
 import type { ModelInfo, ProviderRecord } from '../types/core.ts';
 
 const log = createLogger('colibri');
@@ -154,6 +155,7 @@ export async function probeColibri(
     models: null,
     modelsFetchedAt: null,
     modelsError: null,
+    zdr: DEFAULT_PROVIDER_ZDR,
     createdAt: 0,
     updatedAt: 0,
   };
