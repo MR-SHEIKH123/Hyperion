@@ -34,9 +34,10 @@ import {
   updateMessage,
 } from '../db/chats.ts';
 import { computeCost, recordUsage } from '../db/usage.ts';
-import { autoResumeAfterFailover, redactionCheckEnabled } from '../db/settings.ts';
+import { autoResumeAfterFailover, redactionCheckEnabled, zdrRequirement } from '../db/settings.ts';
 import { findProvider, getActiveProvider } from '../providers/repository.ts';
 import { assertOutboundSafe } from '../services/safety/outbound.ts';
+import { zdrStatusFor } from '../services/safety/zdr.ts';
 import { recallForTurn, rememberTurn } from '../services/memory/index.ts';
 import { AppError, toAppError } from '../util/errors.ts';
 
@@ -48,6 +49,7 @@ import type {
   ToolName,
   TokenUsage,
 } from '../types/core.ts';
+import type { SwitchReason } from '../providers/router.ts';
 import { createLogger } from '../util/logger.ts';
 
 const log = createLogger('chat');
@@ -99,11 +101,38 @@ function mapPauseReason(code: string): PauseReason {
       return 'capability_mismatch';
     case 'no_healthy_provider':
     case 'no_active_provider':
+    // A ZDR refusal is not a failure of any provider, but its *effect* on the run
+    // is the one this reason names: nothing can serve it right now. The precise
+    // cause travels in the `code` field, which is what the UI branches on — see
+    // the note at the top of util/errors.ts.
+    case 'zdr_requirement_unmet':
       return 'no_healthy_provider';
     case 'aborted':
       return 'user_request';
     default:
       return 'provider_failure';
+  }
+}
+
+/**
+ * How a router-level provider switch is reported to the run state machine.
+ *
+ * A `switch` with no `default`, on purpose: adding a `SwitchReason` must be a
+ * compile error here rather than silently folding into `provider_failure` and
+ * telling the user a provider broke when none did. Same discipline as
+ * `adapterFor`.
+ */
+function mapSwitchReason(reason: SwitchReason): PauseReason {
+  switch (reason) {
+    case 'capability_mismatch':
+      return 'capability_mismatch';
+    case 'health_failure':
+      return 'provider_failure';
+    // Nothing failed: the run moved because the standing policy barred the
+    // provider it started with. `provider_switch` is the reason that says the
+    // move was decided rather than forced.
+    case 'zdr_requirement':
+      return 'provider_switch';
   }
 }
 
@@ -164,6 +193,22 @@ export async function sendMessage(input: SendMessageInput, sse: SseStream): Prom
     ...(input.acknowledgeSensitive === true ? { acknowledged: true } : {}),
     enabled: redactionCheckEnabled(),
   });
+
+  // Zero data retention (Part 1.26). Checked here for the same reason and at the
+  // same point as the scan above: a refusal must leave the transcript exactly as
+  // it was, and a block raised from inside `router.stream()` would land after the
+  // user turn and the assistant placeholder are already persisted.
+  //
+  // This is not a duplicate of the router's filtering — it is the same question
+  // asked early. The router still enforces the policy on every candidate it
+  // considers, including mid-run failover targets, which is what makes `require`
+  // structurally safe rather than merely checked once.
+  router.assertZdrDispatchable(intendedProvider, input.modelId);
+
+  // Read once, before anything is dispatched, so the row records the policy that
+  // was actually in force for this turn even if the user changes it while the
+  // reply is still streaming.
+  const requirementAtStart = zdrRequirement();
 
   if (input.prompt !== undefined && input.prompt !== '') {
     appendMessage({
@@ -230,6 +275,11 @@ export async function sendMessage(input: SendMessageInput, sse: SseStream): Prom
     // the run paused so it can be resumed; history is never rewritten.
     const reason = mapPauseReason(app.code);
 
+    // `run.providerId` is rewritten by `attachExecution` on every `provider`
+    // event, so it names the provider that actually received the request — which
+    // is not necessarily the one aimed at, once a failover has happened.
+    const pausedOn = (run.providerId ? findProvider(run.providerId) : null) ?? intendedProvider;
+
     updateMessage(assistant.id, {
       content,
       status: 'paused',
@@ -245,7 +295,14 @@ export async function sendMessage(input: SendMessageInput, sse: SseStream): Prom
       modelId: input.modelId,
       providerId: run.providerId,
       providerName: run.providerName,
-      providerType: intendedProvider?.type ?? null,
+      // Attributed to whichever provider the run last attached, falling back to
+      // the one selected up front when the failure happened before any provider
+      // was reached. Both fields come from that single provider on purpose: a row
+      // that took `provider_type` from one provider and `zdr_status` from another
+      // would describe an exposure that never occurred.
+      providerType: pausedOn?.type ?? null,
+      zdrStatus: pausedOn ? zdrStatusFor(pausedOn) : null,
+      zdrRequirement: requirementAtStart,
       tokensIn: 0,
       tokensOut: 0,
       status: content.length > contentAtStart.length ? 'partial' : 'error',
@@ -299,6 +356,8 @@ export async function sendMessage(input: SendMessageInput, sse: SseStream): Prom
     // different egress class, and the exposure summary has to reflect where the
     // bytes went rather than where they were aimed.
     providerType: outcome.provider.type,
+    zdrStatus: zdrStatusFor(outcome.provider),
+    zdrRequirement: requirementAtStart,
     tokensIn,
     tokensOut,
     status: 'ok',
@@ -434,9 +493,10 @@ async function runAttempt(args: AttemptArgs): Promise<Attempt> {
       case 'switched': {
         // Surface the interruption honestly — the old provider did fail — but
         // as a transient pause, since the `resumed` event follows immediately.
+        const pauseReason = mapSwitchReason(event.reason);
         runState.pauseRun({
           runId: run.runId,
-          reason: event.reason === 'capability_mismatch' ? 'capability_mismatch' : 'provider_failure',
+          reason: pauseReason,
           code: event.reason,
           message: event.message,
         });
@@ -444,7 +504,7 @@ async function runAttempt(args: AttemptArgs): Promise<Attempt> {
           event: 'paused',
           data: {
             runId: run.runId,
-            reason: event.reason === 'capability_mismatch' ? 'capability_mismatch' : 'provider_failure',
+            reason: pauseReason,
             code: event.reason,
             message: event.message,
             retryable: true,

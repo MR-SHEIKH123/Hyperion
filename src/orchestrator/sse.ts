@@ -77,10 +77,7 @@ export class SseStream {
     this.#raw(event.event, event.data);
   }
 
-  /**
-   * Untyped emit, for the `agent` channel where Kimi's and Sol's loops define
-   * their own payload shapes.
-   */
+  /** Untyped emit for agent-specific progress payloads outside the shared union. */
   emit(event: string, data: unknown): void {
     this.#raw(event, data);
   }

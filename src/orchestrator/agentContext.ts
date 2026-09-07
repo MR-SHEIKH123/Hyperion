@@ -1,24 +1,24 @@
 /**
  * Builds the AgentContext handed to agent modules (`code`, `cowork`, `design`).
  *
- * Agent modules are implemented outside this backend spine (Kimi = code/cowork,
- * Sol = design/terminal). They only ever implement `runTask(input, ctx)`, so
- * constructing a fully wired `ctx` is this file's job: LLM access through the
- * failover router, sandboxed filesystem paths, shell execution through the
- * registered terminal module, artifact versioning, and SSE progress events.
+ * Each agent implements only `runTask(input, ctx)`, so constructing a fully
+ * wired `ctx` is this file's job: LLM access through the failover router,
+ * sandboxed filesystem paths, shell execution through the registered terminal
+ * module, artifact versioning, and SSE progress events. Production composes
+ * Cowork and Code; Design remains an optional registry entry.
  */
-import { createHash, randomUUID } from 'node:crypto';
-import { statSync } from 'node:fs';
-
-import { getDb } from '../db/adapter.ts';
 import { executeCommand as runCommand } from './agents.ts';
 import { complete as routerComplete, stream as routerStream } from '../providers/router.ts';
 import { resolveInScope } from '../security/fsScope.ts';
 import { containAgentCwd } from '../services/code/worktree.ts';
+import {
+  readCodeFile,
+  restoreArtifactVersion as restoreCodeArtifactVersion,
+  saveArtifactVersion as persistArtifactVersion,
+  writeCodeFile,
+} from '../services/code/files.ts';
 import { skillsSummary } from '../services/skills/registry.ts';
-import { AppError } from '../util/errors.ts';
 import { createLogger } from '../util/logger.ts';
-
 import type { SseStream } from './sse.ts';
 import type {
   AgentContext,
@@ -35,14 +35,17 @@ export interface AgentContextInput {
   modelId: string;
   sse: SseStream;
   cwd?: string;
+  /** Stable identity for state, cancellation, terminal handoff, and artifacts. */
+  taskId: string;
   /**
-   * Present for a parallel Code task, and the reason its paths resolve against
-   * its own worktree instead of the whole projects tree. Every path the agent
-   * offers — `resolvePath`, `executeCommand`, an artifact's `relPath` — is
-   * checked against that one directory, so a task cannot read or write inside
-   * another task's checkout even though both live under the same scope root.
+   * Interactive task_runs identity.
+   *
+   * Scheduled runs used to omit it, which meant `parkRun` skipped both the state
+   * write and the step row and a scheduled park was invisible. Since 1.27 the
+   * scheduler allocates a `task_runs` row and passes it, so this is optional only
+   * for a genuinely row-less caller.
    */
-  taskId?: string;
+  runId?: string;
   /**
    * A second reason to stop, independent of the browser. `sse.signal` fires only
    * on disconnect, so cancelling through it would mean closing the very stream
@@ -54,35 +57,8 @@ export interface AgentContextInput {
   cancelSignal?: AbortSignal;
 }
 
-interface ArtifactInput {
-  artifactKey: string;
-  tool: ToolName;
-  content?: string;
-  relPath?: string;
-  label?: string;
-}
-
-/** Next monotonic version for an artifact key. Version 1 = state before the first edit. */
-function nextVersion(artifactKey: string): number {
-  const row = getDb()
-    .prepare<{ maxVersion: number | null }>(
-      'SELECT MAX(version) AS maxVersion FROM artifact_versions WHERE artifact_key = ?',
-    )
-    .get(artifactKey);
-  const current = row && typeof row.maxVersion === 'number' ? row.maxVersion : 0;
-  return current + 1;
-}
-
-function fileBytes(absolute: string): number | null {
-  try {
-    return statSync(absolute).size;
-  } catch {
-    return null;
-  }
-}
-
 export function createAgentContext(input: AgentContextInput): AgentContext {
-  const { tool, chatId, modelId, sse, taskId, cancelSignal } = input;
+  const { tool, chatId, modelId, sse, taskId, runId, cancelSignal } = input;
   const log = createLogger(`agent:${tool}`);
 
   // Disconnect *or* cancellation, whichever comes first. `sse.signal` is backed
@@ -93,11 +69,14 @@ export function createAgentContext(input: AgentContextInput): AgentContext {
   const stopSignal =
     cancelSignal === undefined ? sse.signal : AbortSignal.any([sse.signal, cancelSignal]);
 
-  // Without a task this is exactly the old rule, the projects scope; with one it
-  // narrows to that task's worktree. Going through a single resolver keeps the
-  // two from drifting apart.
+  // A task id identifies every agent run, but only Code owns a worktree. Cowork
+  // and Design remain inside the projects scope rather than being sent through
+  // Code's worktree lookup merely because they now carry the same identity.
+  const codeTaskId = tool === 'code' ? taskId : undefined;
   const resolvePath = (candidate: string): string =>
-    taskId === undefined ? resolveInScope('projects', candidate) : containAgentCwd(candidate, taskId);
+    codeTaskId === undefined
+      ? resolveInScope('projects', candidate)
+      : containAgentCwd(candidate, codeTaskId);
 
   const emit = (event: string, data: Record<string, unknown>): void => {
     sse.emit('agent', { channel: event, tool, chatId, ...data });
@@ -114,6 +93,9 @@ export function createAgentContext(input: AgentContextInput): AgentContext {
           break;
         case 'usage':
           yield { type: 'usage', usage: event.usage };
+          break;
+        case 'tool_call':
+          yield { type: 'tool_call', call: event.call };
           break;
         case 'done':
           yield { type: 'done', finishReason: event.finishReason };
@@ -156,64 +138,36 @@ export function createAgentContext(input: AgentContextInput): AgentContext {
     runCommand(resolvePath(cwd), command, {
       timeoutMs: options?.timeoutMs,
       signal: stopSignal,
-      ...(taskId === undefined ? {} : { taskId }),
+      ...(codeTaskId === undefined ? {} : { taskId: codeTaskId }),
     });
 
-  const saveArtifactVersion = (artifact: ArtifactInput): { version: number } => {
-    const key = artifact.artifactKey.trim();
-    if (!key) {
-      throw new AppError('bad_request', 'artifactKey is required');
-    }
-    if (artifact.content === undefined && !artifact.relPath) {
-      throw new AppError('bad_request', 'Either content or relPath is required');
-    }
-
-    let relPath: string | null = null;
-    let bytes: number | null = null;
-    let sha256: string | null = null;
-
-    if (typeof artifact.content === 'string') {
-      bytes = Buffer.byteLength(artifact.content, 'utf8');
-      sha256 = createHash('sha256').update(artifact.content, 'utf8').digest('hex');
-    }
-    if (artifact.relPath) {
-      const absolute = resolvePath(artifact.relPath);
-      relPath = artifact.relPath;
-      if (bytes === null) bytes = fileBytes(absolute);
-    }
-
-    const version = nextVersion(key);
-    getDb()
-      .prepare(
-        `INSERT INTO artifact_versions
-           (id, artifact_key, tool, version, content, rel_path, label, bytes, sha256, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        randomUUID(),
-        key,
-        artifact.tool ?? tool,
-        version,
-        artifact.content ?? null,
-        relPath,
-        artifact.label ?? null,
-        bytes,
-        sha256,
-        Date.now(),
-      );
-
-    emit('artifact', { artifactKey: key, version, label: artifact.label ?? null });
-    return { version };
+  const artifactServices = {
+    taskId,
+    resolvePath,
+    emit: (artifactKey: string, version: number, label: string | null): void => {
+      emit('artifact', { artifactKey, version, label });
+    },
   };
+  const saveArtifactVersion: AgentContext['saveArtifactVersion'] = (artifact) =>
+    persistArtifactVersion(artifact, artifactServices);
+  const readFile: AgentContext['readFile'] = (candidate) => readCodeFile(candidate, artifactServices);
+  const writeFile: AgentContext['writeFile'] = (file) => writeCodeFile(file, artifactServices);
+  const restoreArtifactVersion: AgentContext['restoreArtifactVersion'] = (artifact) =>
+    restoreCodeArtifactVersion(artifact, artifactServices);
 
   const getSkillsSummary = (): { name: string; description: string }[] =>
     skillsSummary().map((skill) => ({ name: skill.name, description: skill.description }));
 
   return {
+    taskId,
+    ...(runId === undefined ? {} : { runId }),
     emit,
     llm: { stream: llmStream, complete: llmComplete },
     executeCommand,
     saveArtifactVersion,
+    readFile,
+    writeFile,
+    restoreArtifactVersion,
     getSkillsSummary,
     resolvePath,
     get signal(): AbortSignal {

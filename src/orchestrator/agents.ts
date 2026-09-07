@@ -1,66 +1,19 @@
 /**
- * The integration seam between this backend and the two other build layers.
+ * In-process registries for agent, terminal and MCP orchestration modules.
  *
- * Kimi's code/cowork agents, Sol's design agent, Sol's terminal executor and
- * Kimi's MCP process manager are all **in-process modules**, registered here at
- * boot. They are deliberately not HTTP services:
+ * Production composition synchronously registers Cowork, Code, and the local
+ * terminal executor after bootstrap and before HTTP or schedulers start. Design
+ * remains optional and therefore keeps its explicit 501 boundary when absent.
+ * MCP is different again: its supervisor owns manager registration for
+ * the duration of the supervised transports rather than composition owning it.
  *
- *   - a shell command that has to cross a socket to run adds latency to every
- *     single tool call in an agentic loop, and
- *   - an agent that streams thousands of tokens through a second HTTP hop doubles
- *     the places a stream can break.
+ * These contracts deliberately remain plain function calls. Shell commands and
+ * streamed agent turns should not cross a second HTTP hop, which would add
+ * latency and another failure boundary without adding isolation.
  *
- * So the contract is a plain function call. Everything below is the exact shape
- * the other two layers must implement; nothing here does any work itself.
- *
- * ---------------------------------------------------------------------------
- * FOR SOL — terminal module (Code tool shell execution)
- *
- *   import { registerTerminal } from './orchestrator/agents.ts';
- *
- *   registerTerminal({
- *     async executeCommand(cwd, command, options) {
- *       // → { stdout, stderr, exitCode, timedOut }
- *     },
- *   });
- *
- * `cwd` is always already validated before you receive it, and the boundary it
- * was validated against depends on the task. A parallel Code task works in its
- * own git worktree under `~/Hyperion/worktrees/<task-id>/`, and is contained to
- * *that* directory rather than to the projects root — otherwise two concurrent
- * tasks could reach into each other's checkout. Everything else is contained to
- * `~/Hyperion/projects/`. Pass `options.taskId` when you have one so the tighter
- * boundary applies; without it, containment falls back to the projects root plus
- * any registered worktree. If you ever accept a path from somewhere other than
- * this backend, validate it yourself as well.
- *
- * FOR SOL — design agent
- *
- *   registerAgent('design', { async runTask(input, ctx) { ... } });
- *
- * FOR KIMI — code and cowork agents
- *
- *   registerAgent('code',   { async runTask(input, ctx) { ... } });
- *   registerAgent('cowork', { async runTask(input, ctx) { ... } });
- *
- * Inside `runTask` you get an `AgentContext` with `ctx.llm.stream()` (already
- * routed through provider failover), `ctx.executeCommand()` (Sol's module, or a
- * clear `terminal_not_registered` error if it isn't loaded), `ctx.emit()` for SSE
- * progress, `ctx.saveArtifactVersion()` for undo history, and `ctx.signal` which
- * aborts when the browser disconnects. Long loops must check `ctx.signal.aborted`.
- *
- * FOR KIMI — MCP process manager
- *
- *   registerMcpProcessManager({
- *     getStatus() { ... },        // surfaced verbatim by GET /api/mcp/status
- *     start(name) { ... },
- *     stop(name)  { ... },
- *     testConnection(name) { ... },   // optional; enables live stdio tests
- *   });
- *
- * Read server definitions from `mcp_config.json` (we own writing it) or call
- * `listServers()` in `services/mcp/registry.ts`.
- * ---------------------------------------------------------------------------
+ * Registry presence is not lifecycle ownership. Registering an agent or terminal
+ * makes it callable; schedulers, request handlers and the MCP supervisor still
+ * start and stop their own work.
  */
 import type {
   AgentModule,
@@ -140,7 +93,7 @@ export function requireTerminal(): TerminalModule {
 /**
  * The single entry point for running a shell command.
  *
- * Both the HTTP route and Kimi's code agent go through here so the scope check
+ * Both the HTTP route and every agent module go through here so the scope check
  * cannot be bypassed by one caller forgetting it. `options.taskId` tightens the
  * boundary to that task's own worktree — the thing that keeps parallel Code
  * tasks out of each other's directories. Note the imports are lazy: this module
@@ -149,9 +102,9 @@ export function requireTerminal(): TerminalModule {
  *
  * The capability gate runs **before** the scope check and before the terminal
  * module is asked for anything. Prompt 1.20 §2 requires that `executeCommand`
- * calls be "rejected before Sol's module ever runs anything", and putting the
+ * calls be rejected before the terminal module ever runs anything, and putting the
  * gate here rather than in the HTTP route is what makes that true of the agent
- * path too — a route-level check would leave Kimi's code agent ungated.
+ * path too — a route-level check would leave an in-process agent ungated.
  */
 export async function executeCommand(
   cwd: string,
