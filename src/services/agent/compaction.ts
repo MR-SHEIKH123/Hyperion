@@ -443,26 +443,29 @@ function describeDropped(dropped: readonly MessageGroup[]): string {
  */
 export function recordCompaction(
   ctx: Pick<AgentContext, 'emit' | 'log'>,
-  runId: string,
+  runId: string | undefined,
   result: CompactionResult,
 ): void {
   if (!result.compacted) return;
 
-  recordStep({
-    runId,
-    step: nextStepNumber(runId),
-    kind: 'compression',
-    ok: true,
-    detail:
-      `dropped ${result.droppedMessages} message(s); ` +
-      `~${result.tokensBefore} to ~${result.tokensAfter} tokens ` +
-      `(window ~${result.decision.window.tokens}${result.decision.window.assumed ? ', assumed' : ''})`,
-    tokensIn: result.tokensBefore,
-    tokensOut: result.tokensAfter,
-  });
+  const detail =
+    `dropped ${result.droppedMessages} message(s); ` +
+    `~${result.tokensBefore} to ~${result.tokensAfter} tokens ` +
+    `(window ~${result.decision.window.tokens}${result.decision.window.assumed ? ', assumed' : ''})`;
+  if (runId !== undefined) {
+    recordStep({
+      runId,
+      step: nextStepNumber(runId),
+      kind: 'compression',
+      ok: true,
+      detail,
+      tokensIn: result.tokensBefore,
+      tokensOut: result.tokensAfter,
+    });
+  }
 
   ctx.emit('context_compacted', {
-    runId,
+    ...(runId === undefined ? {} : { runId }),
     droppedMessages: result.droppedMessages,
     tokensBefore: result.tokensBefore,
     tokensAfter: result.tokensAfter,
@@ -471,10 +474,13 @@ export function recordCompaction(
     digest: result.digest,
   });
 
-  ctx.log.info(`compacted the context for run ${runId}`, {
+  ctx.log.info(`compacted the context${runId === undefined ? '' : ` for run ${runId}`}`, {
     dropped: result.droppedMessages,
     tokensBefore: result.tokensBefore,
     tokensAfter: result.tokensAfter,
   });
-  log.debug('compaction detail', { runId, source: result.decision.window.source });
+  log.debug('compaction detail', {
+    ...(runId === undefined ? {} : { runId }),
+    source: result.decision.window.source,
+  });
 }
