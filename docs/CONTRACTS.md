@@ -3849,3 +3849,45 @@ somebody else did is a race the user cannot avoid.
 A **denial** finalises the run as `stopped` without starting an agent. The answer was
 "do not do this", and running the loop again would immediately re-park on the same
 call.
+## Budget enforcement and the HTTP run tail *(added by Master Plan v4, §6.2)*
+
+### The route tail never overwrites a state the run already recorded
+
+`markTaskRun` at the end of every `/run-task` SSE lifecycle is guarded: it stamps the
+terminal state only while the row still reads `running`. A run the agent parked —
+waiting on an approval, blocked by a send refusal — has already chosen its state, and
+the tail used to stamp `complete` over all of them as the stream closed. That made a
+parked state unreachable over HTTP, and it lied to two downstream readers: the
+resumption surface, which sorts parked runs into what they still need, and
+`settleWorktree`'s hold, which reads the same row to decide whether a Code task's
+worktree may be released. The unattended scheduler (`src/services/cowork/scheduler.ts`)
+has always settled its runs with exactly this guard; the HTTP route now matches it.
+
+### A run stops on the ceiling between turns, not inside one
+
+`TaskBudget` is a passive accountant: `charge()` and `step()` record, `exceeded()`
+answers. The agent loop asks the question at the one boundary where stopping is
+graceful — after a model turn returns, before its tool calls are dispatched — because
+a trip mid-turn would abandon partial work with no step written and no snapshot taken.
+Two consequences follow and are deliberate:
+
+* The same turn that trips the ceiling is never dispatched. Its tool calls are
+  discarded. Anything else would mean honouring work the ceiling was there to refuse.
+* A turn that ends the conversation still completes even if its own usage charged past
+  the ceiling. The ceiling exists to stop the *next* spend; there is nothing to stop
+  in a model that just said it was done.
+
+A ceiling stop records `stopped` with `pauseReason: ceiling_reached` and emits a
+`ceiling_reached` SSE event naming the `kind` — `token_budget`, `iteration_limit` or
+`subagent_limit` — so the client can tell a configurable stop from a breakage without
+parsing the detail string. It is **not** a park: nothing is awaiting an answer, and
+continuing is exactly what the ceiling forbids.
+
+### Both agents charge as usage arrives, against one shared budget
+
+Code charges the shared runtime budget — the same object its subagents are handed —
+while Cowork constructs one per run (`createBudget` is injectable for tests). Charging
+inside the stream consumption, chunk by chunk, is what makes a subagent's spend land on
+its parent's ceiling in real time rather than at child completion, by which point the
+overrun would already be paid for.
+

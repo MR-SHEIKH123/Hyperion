@@ -61,7 +61,8 @@
  * context keeps working unchanged.
  */
 
-import { updateTaskRunState } from '../../db/taskRuns.ts';
+import { finishTaskRun, updateTaskRunState } from '../../db/taskRuns.ts';
+import { CEILING_REASON } from '../limits/budget.ts';
 import { recordApproval } from '../../db/approvals.ts';
 import { snapshotConversation } from '../../db/taskMessages.ts';
 import { nextStepNumber, recordStep } from '../../db/taskSteps.ts';
@@ -76,6 +77,7 @@ import type { ErrorCode } from '../../util/errors.ts';
 import type { PendingApproval } from '../../db/approvals.ts';
 import type { TaskRunTool } from '../../db/taskRuns.ts';
 import type { TaskStepKind } from '../../db/taskSteps.ts';
+import type { CeilingKind, TaskBudget } from '../limits/budget.ts';
 import type { ContextWindow } from './compaction.ts';
 import type {
   AgentContext,
@@ -482,6 +484,29 @@ export function parkOnBlockedSend(
   });
 }
 
+/**
+ * Stop a run whose token budget has run out: `stopped` with `ceiling_reached`,
+ * not a park.
+ *
+ * The distinction carries the same weight as the row states themselves. A parked
+ * run is waiting on an answer and will continue; a ceiling stop is over, because
+ * continuing is exactly what the ceiling forbids. `finishTaskRun` is also the
+ * right writer here (unlike a park): the run is terminal, so the pause column
+ * naming the reason is its final record, not a diagnosis to protect.
+ *
+ * Same ordering rule as `parkRun`: the database write lands before the event,
+ * because the row is the record and SSE is only a notification about it.
+ */
+function stopAtCeiling(ctx: AgentContext, input: AgentLoopInput, kind: CeilingKind, detail: string): void {
+  snapshotForPark(input);
+  if (input.runId !== undefined) {
+    finishTaskRun(input.runId, 'stopped', { pauseReason: CEILING_REASON });
+    recordStep({ runId: input.runId, step: nextStepNumber(input.runId), kind: 'note', ok: false, detail });
+  }
+  ctx.emit('ceiling_reached', { ...(input.runId === undefined ? {} : { runId: input.runId }), kind, detail });
+  ctx.log.warn(`run${input.runId === undefined ? '' : ` ${input.runId}`} stopped: ${detail}`);
+}
+
 // --- the loop ------------------------------------------------------------
 
 /**
@@ -538,6 +563,15 @@ export interface AgentLoopInput {
   /** Overrides the stored ceiling. Present for tests, not for callers. */
   iterationCeiling?: number;
   /**
+   * The caller's token budget, shared with any subagents.
+   *
+   * The loop never sees a usage chunk — `turn` does, and charges them as they
+   * arrive — so the budget arrives here only to be asked, after each turn,
+   * whether it has run out. A ceiling the caller set and nothing enforced would
+   * be a setting that lies; omitting the field keeps the loop exactly as before.
+   */
+  budget?: TaskBudget;
+  /**
    * Lets the loop compact the conversation when it approaches the model's window.
    *
    * Optional, and omitting it means no compaction at all rather than a guess. An
@@ -560,6 +594,8 @@ export interface AgentLoopResult {
   iterations: number;
   /** Set when the loop stopped early. */
   parked?: ParkReason;
+  /** Set when the run stopped because the budget's token ceiling ran out. */
+  ceilingReached?: boolean;
   /** Mutating calls Plan mode collected instead of running. */
   plan: PlannedAction[];
   /** The recorded approval a run parked on, for the caller to surface. */
@@ -638,12 +674,13 @@ function snapshotForPark(input: AgentLoopInput): void {
 /**
  * Drive one agent task to a stopping point.
  *
- * Stops for exactly six reasons: the model asked for nothing further, the repeat
- * guard tripped, the iteration ceiling ran out, Plan mode gathered a plan worth
- * showing, a call needs the user's approval, or the conversation outgrew the
- * context window with nothing left to drop. Cancellation is checked at the top of
- * every iteration — a long loop that only checks `signal` around the LLM call
- * keeps running tools after the user has clicked stop.
+ * Stops for exactly seven reasons: the model asked for nothing further, the
+ * repeat guard tripped, the iteration ceiling ran out, Plan mode gathered a plan
+ * worth showing, a call needs the user's approval, the conversation outgrew the
+ * context window with nothing left to drop, or the token budget ran out.
+ * Cancellation is checked at the top of every iteration — a long loop that only
+ * checks `signal` around the LLM call keeps running tools after the user has
+ * clicked stop.
  */
 export async function runAgentLoop(
   input: AgentLoopInput,
@@ -665,6 +702,9 @@ export async function runAgentLoop(
   while (iterations < ceiling) {
     if (ctx.signal.aborted) throw new AppError('aborted', 'The run was cancelled.');
     iterations += 1;
+    // The budget's own iteration counter runs alongside the loop's, because the
+    // budget is shared with subagents whose iterations this loop never sees.
+    input.budget?.step();
 
     // Before `turn`, not after: the point is to shrink the request while it can
     // still be sent. Compacting in response to a rejection means the run has
@@ -695,6 +735,26 @@ export async function runAgentLoop(
         return { completed: false, iterations, parked: 'plan_ready', plan };
       }
       return { completed: true, iterations, plan };
+    }
+
+    // A model turn that spent past the ceiling but asked for nothing more just
+    // completed: the ceiling exists to stop the *next* spend, so a natural end
+    // above still wins. Only a turn that wants to continue is stopped here, and
+    // its tool calls are never dispatched.
+    if (input.budget !== undefined) {
+      const ceiling = input.budget.exceeded();
+      if (ceiling !== null) {
+        const snapshot = input.budget.snapshot();
+        stopAtCeiling(
+          ctx,
+          input,
+          ceiling,
+          ceiling === 'token_budget'
+            ? `token budget exhausted: ${snapshot.tokensUsed} tokens charged against a ceiling of ${snapshot.tokenCeiling}`
+            : `${ceiling} reached: ${snapshot.iterations} iterations against a ceiling of ${snapshot.iterationCeiling}`,
+        );
+        return { completed: false, iterations, plan, ceilingReached: true };
+      }
     }
 
     feedback = [];

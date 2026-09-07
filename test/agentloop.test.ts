@@ -21,6 +21,7 @@ const {
   RepeatGuard,
   DEFAULT_REPEAT_LIMIT,
 } = await import('../src/services/agent/loop.ts');
+const { TaskBudget } = await import('../src/services/limits/budget.ts');
 
 import type { AgentMode, ToolEffect, ToolFeedback } from '../src/services/agent/loop.ts';
 
@@ -833,5 +834,74 @@ describe('the loop keeping a conversation inside the context window', () => {
     assert.equal(result.parked, undefined);
     assert.equal(listSteps(runId).filter((s) => s.kind === 'compression').length, 0);
     assert.equal(events.filter((e) => e.event === 'context_compacted').length, 0);
+  });
+});
+
+describe('the token budget', () => {
+  it('stops as ceiling_reached once the charged tokens cross the ceiling', async () => {
+    const runId = makeRun();
+    const { ctx, events } = fakeCtx();
+    const budget = new TaskBudget(runId, { tokenCeiling: 150 });
+    let dispatched = 0;
+
+    const result = await runAgentLoop(
+      {
+        runId,
+        tool: 'code',
+        mode: 'act',
+        policy,
+        run: async () => {
+          dispatched += 1;
+          return 'ran';
+        },
+        turn: async () => {
+          // The charge is what trips the ceiling; the model still wants to call
+          // a tool, and the stop must land before that call is dispatched.
+          budget.charge(200, 0);
+          return [call('read_file')];
+        },
+        budget,
+        iterationCeiling: 10,
+      },
+      ctx,
+    );
+
+    assert.equal(result.completed, false);
+    assert.equal(result.ceilingReached, true);
+    assert.equal(result.parked, undefined, 'a spent budget is an ending, not a park');
+    assert.equal(dispatched, 0, 'the same turn is never dispatched once the ceiling trips');
+    assert.equal(getTaskRun(runId)?.state, 'stopped');
+    assert.equal(getTaskRun(runId)?.pauseReason, 'ceiling_reached');
+    assert.equal(events.filter((e) => e.event === 'ceiling_reached').length, 1);
+  });
+
+  it('lets a turn that ends the run complete even when its charge crosses the ceiling', async () => {
+    // The ceiling exists to stop the next spend; a model that finished on the
+    // very token that crossed it has nothing left to stop.
+    const runId = makeRun();
+    const { ctx, events } = fakeCtx();
+    const budget = new TaskBudget(runId, { tokenCeiling: 100 });
+
+    const result = await runAgentLoop(
+      {
+        runId,
+        tool: 'code',
+        mode: 'act',
+        policy,
+        run: async () => 'ran',
+        turn: async () => {
+          budget.charge(80, 20);
+          return [];
+        },
+        budget,
+        iterationCeiling: 10,
+      },
+      ctx,
+    );
+
+    assert.equal(result.completed, true);
+    assert.equal(result.ceilingReached, undefined);
+    assert.equal(getTaskRun(runId)?.state, 'running', 'the loop did not flatten the completion to a ceiling stop');
+    assert.equal(events.filter((e) => e.event === 'ceiling_reached').length, 0);
   });
 });

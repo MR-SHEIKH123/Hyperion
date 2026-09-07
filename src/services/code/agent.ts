@@ -302,6 +302,7 @@ async function runCodeInternal(
       // only as a test override.
       unattended: input.unattended ?? runtime.dependencies.unattended ?? false,
       iterationCeiling: runtime.dependencies.iterationCeiling,
+      budget: runtime.shared.budget,
       context: {
         messages: () => messages,
         replace: (next) => { messages = [...next]; },
@@ -328,6 +329,11 @@ async function runCodeInternal(
             ctx.emit('partial', { text: chunk.text, ...(runtime.depth === 0 ? {} : { childTaskId: ctx.taskId }) });
           } else if (chunk.type === 'tool_call') {
             calls.push(chunk.call);
+          } else if (chunk.type === 'usage') {
+            // Charged as the stream reports it, against the shared budget, so a
+            // subagent's spend lands on the parent's ceiling in the same turn.
+            // The loop decides on a trip; the charge itself is the accounting.
+            runtime.shared.budget.charge(chunk.usage.tokensIn, chunk.usage.tokensOut);
           }
         }
         messages.push({ role: 'assistant', content: text, ...(calls.length === 0 ? {} : { toolCalls: calls }) });

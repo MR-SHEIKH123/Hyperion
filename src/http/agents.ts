@@ -212,6 +212,13 @@ function markTaskRun(
   },
 ): void {
   try {
+    // A row whose state is no longer `running` belongs to the run that wrote
+    // it. A parked agent — approval pending, send blocked, context exhausted —
+    // has already recorded its non-terminal state by the time this tail runs,
+    // and stamping `complete` over it falsifies the record: `settleWorktree`'s
+    // hold reads this same state, and a continuation needs the row to still be
+    // parked. The unattended scheduler settles its runs with this same guard.
+    if (getTaskRun(runId)?.state !== 'running') return;
     finishTaskRun(runId, state, reason);
   } catch (error) {
     log.warn(`task run ${runId}: recording ${state} failed: ${String(error)}`);

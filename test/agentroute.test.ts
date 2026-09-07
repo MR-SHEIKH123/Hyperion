@@ -121,3 +121,37 @@ describe('POST /api/cowork/run-task', () => {
     assert.equal(response.headers.get('content-type')?.includes('text/event-stream'), false);
   });
 });
+
+describe('the run-task tail', () => {
+  test('does not overwrite a state the agent already recorded', async () => {
+    // Regression: the route tail used to stamp `complete` onto every run it
+    // settled, including runs the agent had already parked. A run's `blocked`
+    // or `paused` state was therefore unreachable over HTTP, and the same row
+    // feeds the worktree hold in `settleWorktree`.
+    registerAgent('cowork', {
+      async runTask(_input: TaskInput, ctx: AgentContext): Promise<TaskResult> {
+        const { updateTaskRunState } = await import('../src/db/taskRuns.ts');
+        if (ctx.runId !== undefined) updateTaskRunState(ctx.runId, 'blocked');
+        return { ok: true, summary: 'finished' };
+      },
+    });
+
+    const response = await post({});
+    assert.equal(response.status, 200);
+    await response.text();
+
+    const { latestRunForTask } = await import('../src/db/taskRuns.ts');
+    assert.equal(latestRunForTask('cowork', 'chat-default')?.state, 'blocked');
+  });
+
+  test('still records complete for a run whose agent left the state alone', async () => {
+    registerAgent('cowork', recordingAgent([]));
+
+    const response = await post({});
+    assert.equal(response.status, 200);
+    await response.text();
+
+    const { latestRunForTask } = await import('../src/db/taskRuns.ts');
+    assert.equal(latestRunForTask('cowork', 'chat-default')?.state, 'complete');
+  });
+});

@@ -28,6 +28,7 @@ import { sessionPermissionRules } from '../../db/approvals.ts';
 import { loadConversation } from '../../db/taskMessages.ts';
 import { resolveContextWindow } from '../agent/compaction.ts';
 import { toAppError, AppError } from '../../util/errors.ts';
+import { TaskBudget } from '../limits/budget.ts';
 
 import type {
   AgentContext,
@@ -60,6 +61,7 @@ export interface CoworkDependencies {
   resolveProfile?: typeof resolveProfile;
   sessionPermissionRules?: (taskId: string) => Record<string, PermissionRule>;
   resolveContextWindow?: (input: { model?: ModelInfo; override?: number }) => ReturnType<typeof resolveContextWindow>;
+  createBudget?: () => TaskBudget;
   unattended?: boolean;
   iterationCeiling?: number;
 }
@@ -314,6 +316,9 @@ export async function runCoworkTask(
       }),
       knownTools,
     });
+    // One budget per task run: the loop consults it after each turn, and the
+    // turn charges it as usage chunks arrive.
+    const budget = (deps.createBudget ?? (() => new TaskBudget(ctx.taskId)))();
 
     const runTool = async (call: ToolCall): Promise<string> => {
       const args = parseArguments(call.arguments);
@@ -357,6 +362,7 @@ export async function runCoworkTask(
       // was the only source, and production never set it.
       unattended: input.unattended ?? deps.unattended ?? false,
       iterationCeiling: deps.iterationCeiling,
+      budget,
       context: {
         messages: () => messages,
         replace: (next) => { messages = [...next]; },
@@ -381,6 +387,9 @@ export async function runCoworkTask(
             ctx.emit('partial', { text: chunk.text });
           } else if (chunk.type === 'tool_call') {
             calls.push(chunk.call);
+          } else if (chunk.type === 'usage') {
+            // The charge is the accounting; the loop decides on a trip.
+            budget.charge(chunk.usage.tokensIn, chunk.usage.tokensOut);
           }
         }
         messages.push({ role: 'assistant', content: text, ...(calls.length > 0 ? { toolCalls: calls } : {}) });
