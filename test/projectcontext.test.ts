@@ -33,9 +33,17 @@ describe('project context listings', () => {
   test('empty when nothing exists', async () => {
     const rules = await fetch(`${base}/api/code/rules`);
     assert.equal(rules.status, 200);
-    const rulesJson = (await rules.json()) as { source: string; count: number; rules: unknown[] };
+    const rulesJson = (await rules.json()) as {
+      source: string;
+      scopeEnforced: boolean;
+      count: number;
+      matchedCount: number;
+      rules: unknown[];
+    };
     assert.equal(rulesJson.source, 'none');
+    assert.equal(rulesJson.scopeEnforced, false);
     assert.equal(rulesJson.count, 0);
+    assert.equal(rulesJson.matchedCount, 0);
     assert.deepEqual(rulesJson.rules, []);
 
     const agents = await fetch(`${base}/api/code/agents`);
@@ -80,6 +88,73 @@ scope: "*.ts"
     assert.equal(json.rules[0]?.description, 'Use a real logger instead of console.');
     assert.equal(json.rules[0]?.scope, '*.ts');
     assert.equal(json.rules[0]?.path, '.hyperion/rules/no-console.md');
+  });
+
+  test('repeated paths annotate scoped rules without hiding global rules', async () => {
+    const projectRoot = join(testHome, 'projects', 'matching');
+    const rulesDir = join(projectRoot, '.hyperion', 'rules');
+    await mkdir(rulesDir, { recursive: true });
+    await writeFile(
+      join(rulesDir, 'typescript.md'),
+      `---
+name: TypeScript
+scope: "*.ts"
+---
+
+Use strict TypeScript.
+`,
+    );
+    await writeFile(
+      join(rulesDir, 'source.md'),
+      `---
+name: Source files
+scope: "src/**"
+---
+
+Keep source organized.
+`,
+    );
+    await writeFile(join(rulesDir, 'global.md'), '# Always active\n\nUse the project logger.\n');
+
+    const res = await fetch(
+      `${base}/api/code/rules?project=matching&path=src%2Findex.ts&path=index.ts&path=README.md`,
+    );
+    assert.equal(res.status, 200);
+    const json = (await res.json()) as {
+      source: string;
+      scopeEnforced: boolean;
+      count: number;
+      matchedCount: number;
+      rules: Array<{ name: string; matched: boolean }>;
+    };
+    assert.equal(json.source, 'hyperion');
+    assert.equal(json.scopeEnforced, true);
+    assert.equal(json.count, 3);
+    assert.equal(json.matchedCount, 3);
+    assert.deepEqual(
+      json.rules.map((rule) => [rule.name, rule.matched]),
+      [
+        ['Always active', true],
+        ['Source files', true],
+        ['TypeScript', true],
+      ],
+    );
+
+    const unmatched = await fetch(`${base}/api/code/rules?project=matching&path=README.md`);
+    assert.equal(unmatched.status, 200);
+    const unmatchedJson = (await unmatched.json()) as {
+      matchedCount: number;
+      rules: Array<{ name: string; matched: boolean }>;
+    };
+    assert.equal(unmatchedJson.matchedCount, 1);
+    assert.deepEqual(
+      unmatchedJson.rules.map((rule) => [rule.name, rule.matched]),
+      [
+        ['Always active', true],
+        ['Source files', false],
+        ['TypeScript', false],
+      ],
+    );
   });
 
   test('a root HYPERION.md supplies the rules when .hyperion/rules is absent', async () => {

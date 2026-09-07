@@ -458,9 +458,17 @@ describe('stopping a scheduled run', () => {
     await running;
 
     assert.equal(cancellableCount(), 0);
-    // And a second stop finds nothing live and no task_runs row, which is the
-    // 404 case rather than a phantom success.
-    assert.equal((await cancel('cowork', task.id)).status, 404);
+    // A second stop finds nothing live — but the run is not forgotten. 1.27
+    // allocates scheduled runs a task_runs row (see scheduler.ts), so the
+    // recorded row answers "already stopped" as a 200. Only a task id this
+    // process has never seen is a 404 (see CONTRACTS.md, "Every cancel outcome
+    // is a 200"); phantom-success protection lives in `wasRunning`, not the
+    // status.
+    const again = await cancel('cowork', task.id);
+    assert.equal(again.status, 200);
+    const againPayload = (await again.json()) as Record<string, unknown>;
+    assert.equal(againPayload.state, 'stopped');
+    assert.equal(againPayload.wasRunning, false);
   });
 
   test('a scheduled run nobody stopped is still recorded as a success', async () => {

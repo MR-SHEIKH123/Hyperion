@@ -4,7 +4,8 @@
  * These run a real child process — a tiny MCP server written to a temp file —
  * because the behaviour under test (spawn, crash detection, restart, stop) is
  * exactly the part a stub cannot exercise. The fake server speaks just enough
- * MCP over stdio to answer the client's `initialize` and `tools/list`.
+ * MCP over stdio to answer the client's `initialize`, `tools/list` and
+ * `tools/call` requests.
  */
 import './helpers.ts';
 import { after, before, describe, it } from 'node:test';
@@ -19,13 +20,16 @@ const { createProcessManager, FILESYSTEM_SERVER_NAME } = await import(
 const { createServer, deleteServer, findServerByName } = await import(
   '../src/services/mcp/registry.ts'
 );
+const { AppError } = await import('../src/util/errors.ts');
 
 /**
- * A minimal MCP stdio server. It answers `initialize` and `tools/list` and
- * ignores everything else, which is all the client needs to reach "running".
- * Written to a temp .mjs file and spawned with `node`.
+ * A minimal MCP stdio server. The optional `fail-list` argument makes
+ * `tools/list` return a protocol error; named call tools exercise ordinary,
+ * server-declared and protocol-level call results. Written to a temp .mjs file
+ * and spawned with `node`.
  */
 const FAKE_SERVER = `
+const failList = process.argv.includes('fail-list');
 let buffer = '';
 process.stdin.on('data', (chunk) => {
   buffer += chunk;
@@ -45,9 +49,35 @@ process.stdin.on('data', (chunk) => {
     } else if (msg.method === 'notifications/initialized') {
       // no response
     } else if (msg.method === 'tools/list') {
-      send({ jsonrpc: '2.0', id: msg.id, result: { tools: [
-        { name: 'ping', description: 'ping', inputSchema: { type: 'object' } },
-      ]}});
+      if (failList) {
+        send({ jsonrpc: '2.0', id: msg.id, error: {
+          code: -32603,
+          message: 'list failed with private-upstream-detail',
+        }});
+      } else {
+        send({ jsonrpc: '2.0', id: msg.id, result: { tools: [
+          { name: 'ping', description: 'ping', inputSchema: { type: 'object' } },
+          { name: 'declared-error', inputSchema: { type: 'object' } },
+          { name: 'protocol-error', inputSchema: { type: 'object' } },
+        ]}});
+      }
+    } else if (msg.method === 'tools/call') {
+      if (msg.params.name === 'protocol-error') {
+        send({ jsonrpc: '2.0', id: msg.id, error: {
+          code: -32603,
+          message: 'call failed with private-upstream-detail',
+        }});
+      } else if (msg.params.name === 'declared-error') {
+        send({ jsonrpc: '2.0', id: msg.id, result: {
+          content: [{ type: 'text', text: 'the tool declined the request' }],
+          structuredContent: { reason: 'declined' },
+          isError: true,
+        }});
+      } else {
+        send({ jsonrpc: '2.0', id: msg.id, result: {
+          content: [{ type: 'text', text: 'pong:' + msg.params.arguments.value }],
+        }});
+      }
     } else if (msg.id !== undefined) {
       send({ jsonrpc: '2.0', id: msg.id, result: {} });
     }
@@ -99,8 +129,164 @@ describe('MCP process manager', () => {
       );
       const status = manager.getStatus().find((s) => s.name === 'fake-stdio');
       assert.equal(status?.state, 'running');
-      assert.equal(status?.toolCount, 1);
+      assert.equal(status?.toolCount, 3);
       assert.ok(status?.pid, 'a stdio server should expose its child pid');
+    } finally {
+      await manager.stopAll();
+    }
+  });
+
+  it('lists and invokes tools through the live child process', async () => {
+    const script = fakeServerPath();
+    const record = createServer({
+      name: 'fake-tools',
+      type: 'local',
+      command: process.execPath,
+      args: [script],
+      enabled: true,
+    });
+
+    const manager = createProcessManager();
+    try {
+      await manager.start(record.name);
+      await waitFor(() =>
+        manager.getStatus().some((s) => s.name === 'fake-tools' && s.state === 'running'),
+      );
+
+      assert.deepEqual(await manager.listTools(record.name), [
+        { name: 'ping', description: 'ping', inputSchema: { type: 'object' } },
+        { name: 'declared-error', inputSchema: { type: 'object' } },
+        { name: 'protocol-error', inputSchema: { type: 'object' } },
+      ]);
+      assert.deepEqual(await manager.callTool(record.name, 'ping', { value: 'ok' }), {
+        content: [{ type: 'text', text: 'pong:ok' }],
+        isError: false,
+      });
+      assert.equal(manager.activeToolCall(record.name), null);
+    } finally {
+      await manager.stopAll();
+    }
+  });
+
+  it('preserves a server-declared call failure as a result', async () => {
+    const script = fakeServerPath();
+    const record = createServer({
+      name: 'fake-declared-error',
+      type: 'local',
+      command: process.execPath,
+      args: [script],
+      enabled: true,
+    });
+
+    const manager = createProcessManager();
+    try {
+      await manager.start(record.name);
+      await waitFor(() => manager.getStatus().some((s) => s.name === record.name && s.state === 'running'));
+
+      const result = await manager.callTool(record.name, 'declared-error', {});
+      assert.equal(result.isError, true);
+      assert.deepEqual(result.structuredContent, { reason: 'declined' });
+      assert.equal(manager.activeToolCall(record.name), null);
+    } finally {
+      await manager.stopAll();
+    }
+  });
+
+  it('maps a list protocol failure to internal_error without exposing upstream text', async () => {
+    const script = fakeServerPath();
+    const record = createServer({
+      name: 'fake-list-error',
+      type: 'local',
+      command: process.execPath,
+      args: [script, 'fail-list'],
+      enabled: true,
+    });
+
+    const manager = createProcessManager();
+    try {
+      await manager.start(record.name);
+      await waitFor(() =>
+        manager.getStatus().some((s) => s.name === record.name && s.state === 'running'),
+      );
+
+      await assert.rejects(manager.listTools(record.name), (error: unknown) => {
+        assert.ok(error instanceof AppError);
+        assert.equal(error.code, 'internal_error');
+        assert.equal(error.status, 500);
+        assert.equal(error.details?.server, record.name);
+        assert.match(String(error.privateDetails?.mcpMessage), /private-upstream-detail/);
+        assert.equal(error.toJSON().error.message.includes('private-upstream-detail'), false);
+        return true;
+      });
+    } finally {
+      await manager.stopAll();
+    }
+  });
+
+  it('maps MCP protocol failures to internal_error without exposing upstream text', async () => {
+    const script = fakeServerPath();
+    const record = createServer({
+      name: 'fake-protocol-error',
+      type: 'local',
+      command: process.execPath,
+      args: [script],
+      enabled: true,
+    });
+
+    const manager = createProcessManager();
+    try {
+      await manager.start(record.name);
+      await waitFor(() => manager.getStatus().some((s) => s.name === record.name && s.state === 'running'));
+
+      await assert.rejects(
+        manager.callTool(record.name, 'protocol-error', {}),
+        (error: unknown) => {
+          assert.ok(error instanceof AppError);
+          assert.equal(error.code, 'internal_error');
+          assert.equal(error.status, 500);
+          assert.equal(error.details?.server, record.name);
+          assert.match(String(error.privateDetails?.mcpMessage), /private-upstream-detail/);
+          assert.equal(error.toJSON().error.message.includes('private-upstream-detail'), false);
+          return true;
+        },
+      );
+      assert.equal(manager.activeToolCall(record.name), null);
+    } finally {
+      await manager.stopAll();
+    }
+  });
+
+  it('reports unknown and stopped servers as typed lifecycle errors', async () => {
+    const manager = createProcessManager();
+
+    await assert.rejects(manager.listTools('missing-server'), (error: unknown) => {
+      assert.ok(error instanceof AppError);
+      assert.equal(error.code, 'not_found');
+      assert.equal(error.details?.server, 'missing-server');
+      return true;
+    });
+
+    const script = fakeServerPath();
+    const record = createServer({
+      name: 'fake-stopped',
+      type: 'local',
+      command: process.execPath,
+      args: [script],
+      enabled: true,
+    });
+    try {
+      await manager.start(record.name);
+      await waitFor(() => manager.getStatus().some((s) => s.name === record.name && s.state === 'running'));
+      await manager.stop(record.name);
+
+      await assert.rejects(manager.callTool(record.name, 'ping', {}), (error: unknown) => {
+        assert.ok(error instanceof AppError);
+        assert.equal(error.code, 'conflict');
+        assert.equal(error.status, 409);
+        assert.equal(error.details?.server, record.name);
+        assert.equal(error.details?.state, 'stopped');
+        return true;
+      });
     } finally {
       await manager.stopAll();
     }

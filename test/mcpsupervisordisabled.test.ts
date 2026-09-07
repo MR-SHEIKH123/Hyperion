@@ -45,6 +45,8 @@ describe('the MCP supervisor with HYPERION_MCP_DISABLED set', () => {
         getStatus: (): McpServerStatus[] => [],
         start: async () => {},
         stop: async () => {},
+        listTools: async () => [],
+        callTool: async () => ({ content: [], isError: false }),
         startAll: async () => {},
         stopAll: async () => {},
       };

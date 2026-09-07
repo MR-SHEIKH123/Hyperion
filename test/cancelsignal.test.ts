@@ -59,6 +59,7 @@ function newContext(cancelSignal?: AbortSignal) {
     chatId: 'chat-cancel',
     modelId: 'mock-model',
     sse,
+    taskId: 'task-cancel',
     ...(cancelSignal === undefined ? {} : { cancelSignal }),
   });
   return { ctx, sse, sink };

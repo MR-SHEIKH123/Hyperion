@@ -246,12 +246,19 @@ describe('task step history', () => {
   });
 
   describe('the schema refuses nonsense', () => {
-    it('rejects a kind that is not one of the four', () => {
+    it('no longer constrains kind in SQL, so a new kind needs no table rebuild', () => {
+      // 017 dropped the CHECK on `kind` deliberately (D16). It is a descriptive
+      // column that widens with the product — `approval` and `turn` arrived in
+      // 017 alone — and 016's header already made the argument: a CHECK on such
+      // a column "would mean a table rebuild every time it does" widen. The
+      // TypeScript `StepKind` union is the definition now. This asserts the
+      // absence on purpose, so re-adding the constraint fails here rather than
+      // in a migration six months later.
       const runId = makeRun();
-      assert.throws(() => {
+      assert.doesNotThrow(() => {
         getDb()
           .prepare('INSERT INTO task_steps (run_id, step, kind) VALUES (?, ?, ?)')
-          .run(runId, 1, 'freestyle');
+          .run(runId, 1, 'a_kind_invented_after_017');
       });
     });
 

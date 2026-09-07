@@ -57,6 +57,7 @@ function providerRecord(baseUrl: string) {
     models: null,
     modelsFetchedAt: null,
     modelsError: null,
+    zdr: { support: 'unknown' as const, requestFlag: null, confirmedAt: null, confirmedNote: null },
     createdAt: 0,
     updatedAt: 0,
   };

@@ -58,6 +58,8 @@ function fakeSupervisor(options: FakeOptions = {}): Fake {
     stop: async (name) => {
       calls.push(`stop:${name}`);
     },
+    listTools: async () => [],
+    callTool: async () => ({ content: [], isError: false }),
     startAll: async () => {
       calls.push('startAll');
       if (options.startAll) await options.startAll();
