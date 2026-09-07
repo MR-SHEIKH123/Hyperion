@@ -39,6 +39,23 @@ export type ErrorCode =
    * decides whether to send anyway.
    */
   | 'redaction_flagged'
+  /**
+   * The standing zero-data-retention policy is `require` and no provider that
+   * can serve the request satisfies it. A refusal on privacy grounds, never an
+   * outage: nothing is wrong with the request or with the providers.
+   */
+  | 'zdr_requirement_unmet'
+  /**
+   * A tool call needs the user's explicit go-ahead. The run is parked with the
+   * call recorded, not failed — the user resolves it and the run continues.
+   */
+  | 'approval_required'
+  /**
+   * The permission engine refused a tool call outright. Distinct from
+   * `capability_disabled`, which is a global switch: this one names the rule,
+   * layer and pattern that decided, and only a config change alters the answer.
+   */
+  | 'permission_denied'
   // security / storage
   | 'scope_violation'
   | 'encryption_failed'
@@ -82,6 +99,26 @@ const STATUS: Record<ErrorCode, number> = {
   // edit the text or acknowledge the finding, which is a state change, not a
   // permission change.
   redaction_flagged: 409,
+  // 403 rather than 409, for the reason given for `capability_disabled` above:
+  // the request is well-formed and only a settings change alters the answer —
+  // lowering the requirement, or recording that a provider supports ZDR.
+  //
+  // Specifically NOT 409, which is what `redaction_flagged` uses. That code is a
+  // conflict because the user can resolve it by editing the message body or
+  // acknowledging the finding. Here they cannot: no edit to the payload makes an
+  // ineligible provider eligible. Nor 503 — `no_healthy_provider` means "try
+  // later", and this will never resolve on its own.
+  zdr_requirement_unmet: 403,
+
+  // 409, for the same reason `redaction_flagged` is: the request is not
+  // forbidden, it conflicts with the current state — a call is waiting on a
+  // decision. The user resolves it by approving or denying, which is a state
+  // change rather than a permission change, and the run then continues.
+  approval_required: 409,
+  // 403, for the reason given for `capability_disabled`: the request is
+  // well-formed, resending it unchanged will be refused identically, and only
+  // editing a permission layer changes the answer.
+  permission_denied: 403,
 
   scope_violation: 403,
   encryption_failed: 500,

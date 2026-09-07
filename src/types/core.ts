@@ -1,6 +1,6 @@
 /**
- * Shared types — the contract surface Sol's frontend and Kimi's agent modules
- * code against. Changing anything here is a breaking change for their layers.
+ * Shared contracts used across HTTP, orchestration, services and future clients.
+ * Changing a public interface here can break every layer that consumes it.
  */
 
 // --- tools -----------------------------------------------------------------
@@ -49,6 +49,157 @@ export function isProviderType(value: unknown): value is ProviderType {
 
 export type HealthStatus = 'unknown' | 'healthy' | 'degraded' | 'unhealthy';
 
+// --- zero data retention (Part 1.26) ---------------------------------------
+
+/**
+ * What is known about one provider's zero-data-retention behaviour.
+ *
+ * A *fact the user recorded*, never something this backend discovered. Nothing
+ * observable about a request proves what happens to it after it arrives, so
+ * every value here traces back to the user reading a vendor's terms and saying
+ * so.
+ *
+ *   unknown           — nothing has been recorded. The default, and the reason
+ *                       `require` refuses a fresh install's providers.
+ *   supported_default — the provider retains nothing without being asked.
+ *   supported_opt_in  — retention is off only when the request says so, which
+ *                       is what `requestFlag` carries.
+ *   not_supported     — the provider retains request data.
+ *   not_applicable    — the question does not arise for this endpoint. Distinct
+ *                       from `supported_default`: it makes no promise, so it is
+ *                       not ZDR-satisfied and does not pass `require`.
+ */
+export type ZdrSupport =
+  | 'unknown'
+  | 'supported_default'
+  | 'supported_opt_in'
+  | 'not_supported'
+  | 'not_applicable';
+
+export const ZDR_SUPPORTS: readonly ZdrSupport[] = [
+  'unknown',
+  'supported_default',
+  'supported_opt_in',
+  'not_supported',
+  'not_applicable',
+] as const;
+
+export function isZdrSupport(value: unknown): value is ZdrSupport {
+  return typeof value === 'string' && (ZDR_SUPPORTS as readonly string[]).includes(value);
+}
+
+/**
+ * The user's standing policy, account-wide.
+ *
+ *   off     — ZDR is recorded but changes no routing decision.
+ *   prefer  — an eligible provider is chosen first; an ineligible one is still
+ *             used when it is the only option, and the usage row says so.
+ *   require — an ineligible provider is never dispatched to, including during
+ *             failover. The request is refused instead.
+ */
+export type ZdrRequirement = 'off' | 'prefer' | 'require';
+
+export const ZDR_REQUIREMENTS: readonly ZdrRequirement[] = ['off', 'prefer', 'require'] as const;
+
+export function isZdrRequirement(value: unknown): value is ZdrRequirement {
+  return typeof value === 'string' && (ZDR_REQUIREMENTS as readonly string[]).includes(value);
+}
+
+/** Where a `supported_opt_in` flag rides on the outbound request. */
+export type ZdrFlagLocation = 'header' | 'body';
+
+export const ZDR_FLAG_LOCATIONS: readonly ZdrFlagLocation[] = ['header', 'body'] as const;
+
+export function isZdrFlagLocation(value: unknown): value is ZdrFlagLocation {
+  return typeof value === 'string' && (ZDR_FLAG_LOCATIONS as readonly string[]).includes(value);
+}
+
+/**
+ * The opt-in mechanism for a `supported_opt_in` provider, as the user described
+ * it. Entirely user-supplied, which is what makes one generic applier enough —
+ * no vendor-specific code exists or is wanted here.
+ *
+ * `value` is stored and returned in **plaintext** and must never hold a
+ * credential. It is a policy declaration (`"true"`, `"zdr"`, `"strict"`), and
+ * the user has to be able to read it back to check a field they maintain by
+ * hand. `setProviderZdr` refuses a value that `findSensitive()` flags.
+ */
+export interface ZdrRequestFlag {
+  location: ZdrFlagLocation;
+  key: string;
+  value: string;
+}
+
+/** Per-provider ZDR facts. Shared by `ProviderRecord` and `ProviderPublic`. */
+export interface ProviderZdr {
+  support: ZdrSupport;
+  /** Null when the provider needs no flag, or none has been recorded. */
+  requestFlag: ZdrRequestFlag | null;
+  /**
+   * Epoch ms of the user's own attestation, or null.
+   *
+   * **Never machine-set.** A request that succeeded proves the flag was
+   * accepted, not that anything was discarded, so "requested" is the ceiling
+   * for anything Hyperion can conclude on its own.
+   */
+  confirmedAt: number | null;
+  /** What the user attested, in their words. Cleared together with the date. */
+  confirmedNote: string | null;
+}
+
+/**
+ * What ZDR status actually applied to one request.
+ *
+ * An enum, never a display string: the wording belongs to the frontend, and a
+ * stored sentence cannot be grouped, filtered or re-worded later.
+ *
+ *   local_no_egress    — nothing left the machine, so retention is moot.
+ *   zdr_confirmed      — remote, ZDR satisfied, and the user attested it.
+ *   zdr_requested      — remote, ZDR satisfied, not user-attested.
+ *   zdr_not_applied    — remote, opt-in available but no usable flag.
+ *   standard_retention — remote, and the provider retains the data.
+ *   zdr_unknown        — remote, and nothing has been recorded.
+ *   egress_unknown     — the provider type does not classify at all, so we
+ *                        cannot even say whether the bytes left. Fails closed.
+ */
+export type ZdrStatus =
+  | 'local_no_egress'
+  | 'zdr_confirmed'
+  | 'zdr_requested'
+  | 'zdr_not_applied'
+  | 'standard_retention'
+  | 'zdr_unknown'
+  | 'egress_unknown';
+
+export const ZDR_STATUSES: readonly ZdrStatus[] = [
+  'local_no_egress',
+  'zdr_confirmed',
+  'zdr_requested',
+  'zdr_not_applied',
+  'standard_retention',
+  'zdr_unknown',
+  'egress_unknown',
+] as const;
+
+export function isZdrStatus(value: unknown): value is ZdrStatus {
+  return typeof value === 'string' && (ZDR_STATUSES as readonly string[]).includes(value);
+}
+
+/**
+ * The starting point for every provider: nothing recorded, nothing attested.
+ *
+ * Exported so the handful of synthetic `ProviderRecord`s in the codebase — the
+ * local-detection probe, the Colibrì probe — do not each restate the default and
+ * cannot drift from it. Frozen because it is shared: a caller that mutated it
+ * would change what every other probe reports.
+ */
+export const DEFAULT_PROVIDER_ZDR: ProviderZdr = Object.freeze({
+  support: 'unknown',
+  requestFlag: null,
+  confirmedAt: null,
+  confirmedNote: null,
+});
+
 /** A provider as stored. `apiKeyEnc` never leaves the backend. */
 export interface ProviderRecord {
   id: string;
@@ -66,6 +217,8 @@ export interface ProviderRecord {
   models: ModelInfo[] | null;
   modelsFetchedAt: number | null;
   modelsError: string | null;
+  /** Zero-data-retention facts (Part 1.26). Always present; defaults to `unknown`. */
+  zdr: ProviderZdr;
   createdAt: number;
   updatedAt: number;
 }
@@ -92,6 +245,15 @@ export interface ProviderPublic {
   modelCount: number | null;
   modelsFetchedAt: number | null;
   modelsError: string | null;
+  /**
+   * ZDR facts, returned in full including `requestFlag.value`.
+   *
+   * The exception to this interface's no-secrets rule is deliberate and safe:
+   * the flag value is a policy declaration, never a credential — the write path
+   * rejects one that looks like a credential — and a field the user maintains
+   * by hand is unverifiable if it cannot be read back.
+   */
+  zdr: ProviderZdr;
   createdAt: number;
   updatedAt: number;
 }
@@ -227,6 +389,16 @@ export interface CompletionRequest {
    * several gateways.
    */
   toolChoice?: 'auto' | 'none';
+  /**
+   * How hard a reasoning model should think, when the profile asked for a level.
+   *
+   * Advisory by construction: an adapter that has no equivalent omits it rather
+   * than erroring or approximating. A profile is authored once and used against
+   * whichever provider is active, so "this provider ignores it" has to be a
+   * silent no-op — the alternative is a profile that fails on three providers out
+   * of four.
+   */
+  reasoningEffort?: ReasoningVariant;
 }
 
 /** Implemented once per provider protocol (OpenAI-compatible, Ollama). */
@@ -291,21 +463,140 @@ export type SseEvent =
   | { event: 'resumed'; data: { runId: string; providerId: string; providerName: string; modelId: string; attempt: number } }
   | { event: 'error'; data: { runId: string | null; code: string; message: string; retryable: boolean } }
   | { event: 'done'; data: { runId: string; messageId: string; finishReason?: string } }
-  /** Free-form channel for agent progress (Kimi/Sol tool loops). */
+  /** Free-form channel for agent progress. */
   | { event: 'agent'; data: Record<string, unknown> };
 
-// --- agent modules (implemented by Kimi and Sol) ---------------------------
+// --- agent modules ----------------------------------------------------------
 
 /**
- * Result of a long-running agent task.
- * Kimi returns this from the code/cowork agents; Sol from the design agent.
+ * Permission level selected for an agent run.
+ *
+ * Retained after 1.27 turned Ask/Plan/Act into profiles, because it is still the
+ * *base mode* every profile declares and still what `task_steps.mode` records
+ * under a CHECK. A profile name is a different fact and rides in its own column.
  */
+export type AgentMode = 'ask' | 'plan' | 'act';
+
+// --- the permission engine (Part 1.27) --------------------------------------
+
+/**
+ * What may happen when a tool is called.
+ *
+ * `ask` is the load-bearing one. It is not "deny with a nicer message": the call
+ * is recorded, the run parks, and continuing it replays that exact call with the
+ * user's decision applied. A permission model with only allow and deny forces
+ * every uncertain case to be decided in advance, which in practice means every
+ * uncertain case is allowed.
+ */
+export const PERMISSION_ACTIONS = ['allow', 'ask', 'deny'] as const;
+
+export type PermissionAction = (typeof PERMISSION_ACTIONS)[number];
+
+/**
+ * One rule for one permission key.
+ *
+ * A scalar covers every invocation of the tool. A map is glob → action against
+ * the tool's primary argument, so `{"src/**": "allow", "*": "deny"}` says what it
+ * looks like it says. The map form is why a rule cannot simply be an action.
+ */
+export type PermissionRule = PermissionAction | Record<string, PermissionAction>;
+
+/**
+ * Where a rule came from. Later layers override earlier ones, with one exception.
+ *
+ * `inherited` is a subagent's ceiling: a parent's `deny` follows its children and
+ * **cannot** be overridden downward. It is listed last because it is evaluated
+ * last, not because it is the weakest — it is the only layer that wins outright.
+ */
+export const PERMISSION_LAYERS = ['builtin', 'profile', 'project', 'session', 'inherited'] as const;
+
+export type PermissionLayer = (typeof PERMISSION_LAYERS)[number];
+
+/**
+ * The answer, with its reasoning attached.
+ *
+ * `layer` and `pattern` are not diagnostics that could be dropped later. A user
+ * told only "denied" has no way to find which of four layers said so, and a
+ * refusal the user cannot locate is a refusal they will work around by widening
+ * the broadest rule they can find.
+ */
+export interface PermissionVerdict {
+  action: PermissionAction;
+  layer: PermissionLayer;
+  /** The glob that matched, or null when the rule was a bare scalar. */
+  pattern: string | null;
+  /** The permission key the verdict was reached under. */
+  key: string;
+}
+
+/**
+ * Who may select a profile.
+ *
+ * Independent of `hidden`, which only affects listings. A profile can be
+ * selectable and unlisted (a personal shortcut), or listed and subagent-only (a
+ * documented worker a parent delegates to but nobody drives directly).
+ */
+export const PROFILE_VISIBILITIES = ['primary', 'subagent', 'all'] as const;
+
+export type ProfileVisibility = (typeof PROFILE_VISIBILITIES)[number];
+
+/** Reasoning effort a profile asks for, where the provider supports one. */
+export const REASONING_VARIANTS = ['low', 'medium', 'high'] as const;
+
+export type ReasoningVariant = (typeof REASONING_VARIANTS)[number];
+
+/**
+ * A named bundle of permissions, model preference and prompt.
+ *
+ * Moved here from `services/code/projectContext.ts` because it stopped being a
+ * Code concept: the permission engine lives in the shared loop, so Cowork (and
+ * Design when it lands) resolve the same profiles through the same code.
+ *
+ * `tools` widened from `CodeToolName[]` to `string[]` in that move, and the cost
+ * is real — a typo'd tool name is no longer a compile error. It is validated at
+ * load time against the agent's registered tool set instead, which is the only
+ * check that could ever have covered MCP tools whose names are not known until a
+ * server is configured.
+ */
+export interface AgentProfile {
+  /** Front-matter `name`, else the first Markdown heading, else the filename. */
+  name: string;
+  description: string | null;
+  /** Path relative to the project directory. Empty for a built-in. */
+  path: string;
+  /** Declared tool allowlist, or null for "every tool the agent registers". */
+  tools: string[] | null;
+  /** Declared model preference, verbatim. */
+  model: string | null;
+  /** The Ask/Plan/Act gate this profile is a specialization of. */
+  mode: AgentMode;
+  visibility: ProfileVisibility;
+  /** Listing-only. A hidden profile is still resolvable by name. */
+  hidden: boolean;
+  variant: ReasoningVariant | null;
+  permissions: Record<string, PermissionRule> | null;
+  /** True for the three in-code profiles, which cannot be deleted or edited. */
+  builtin: boolean;
+  /** Markdown after front matter, injected into the system prompt. */
+  body: string;
+}
+
+/** A mutating tool call Plan mode recorded instead of executing. */
+export interface PlannedAction {
+  toolName: string;
+  arguments: string;
+  reason: string;
+}
+
+/** Result of a long-running agent task. */
 export interface TaskResult {
   ok: boolean;
   summary: string;
   /** Files created/modified, for the frontend to render a change list. */
   changedFiles?: string[];
   artifacts?: { key: string; version: number }[];
+  /** Mutating actions Plan mode collected for the user to approve. */
+  plan?: PlannedAction[];
   error?: { code: string; message: string };
 }
 
@@ -314,8 +605,21 @@ export interface TaskInput {
   chatId: string;
   modelId: string;
   prompt: string;
+  mode: AgentMode;
   /** Absolute path, always pre-validated inside the projects scope. */
   cwd?: string;
+  /**
+   * Nobody is watching this run, so nothing can be acknowledged interactively.
+   *
+   * A per-*run* property, not a per-module one, and that is the whole reason it
+   * lives here. One registered agent instance serves both live HTTP runs and
+   * scheduled runs — `scheduler.ts` and `http/agents.ts` call the same
+   * `requireAgent` — so "is anyone watching?" cannot be answered at construction
+   * time. It was a construction-time dependency before 1.27, which meant it was
+   * `undefined` in production and the park paths it guards were unreachable
+   * outside tests.
+   */
+  unattended?: boolean;
   attachments?: { id: string; path: string; filename: string }[];
   options?: Record<string, unknown>;
 }
@@ -326,6 +630,10 @@ export interface TaskInput {
  * particular inherits provider failover and the pause/resume machine for free.
  */
 export interface AgentContext {
+  /** Stable identity shared by the run, its state, and any handoff surfaces. */
+  taskId: string;
+  /** Interactive task_runs identity; absent for scheduled/headless runs. */
+  runId?: string;
   /** Push an SSE event to the client watching this task. */
   emit(event: string, data: Record<string, unknown>): void;
   /** Streamed completion through the active provider, with failover applied. */
@@ -333,7 +641,7 @@ export interface AgentContext {
     stream(request: CompletionRequest): AsyncGenerator<StreamChunk, void, unknown>;
     complete(request: CompletionRequest): Promise<{ text: string; usage: TokenUsage }>;
   };
-  /** Run a shell command. Backed by Sol's terminal module. */
+  /** Run a shell command through the registered terminal module. */
   executeCommand(
     cwd: string,
     command: string,
@@ -347,6 +655,22 @@ export interface AgentContext {
     relPath?: string;
     label?: string;
   }): { version: number };
+  /** Read UTF-8 text through this task's project/worktree containment boundary. */
+  readFile(path: string): Promise<{ path: string; content: string; sha256: string; bytes: number }>;
+  /** Replace UTF-8 text only when the on-disk state still matches the caller's observation. */
+  writeFile(input: {
+    path: string;
+    content: string;
+    /** null explicitly means the caller observed that the file did not exist. */
+    expectedSha256: string | null;
+  }): Promise<{ path: string; sha256: string; version: number }>;
+  /** Restore an inline Code snapshot with the same clobber protection as a write. */
+  restoreArtifactVersion(input: {
+    artifactKey: string;
+    version: number;
+    path: string;
+    expectedSha256: string | null;
+  }): Promise<{ path: string; sha256: string | null; version: number }>;
   /** Name + description of every registered skill, for prompt injection. */
   getSkillsSummary(): { name: string; description: string }[];
   /** Validate a path against the projects scope. Throws on escape. */
@@ -361,15 +685,12 @@ export interface AgentContext {
   };
 }
 
-/** Implemented by Kimi (code, cowork) and Sol (design). */
+/** In-process implementation of one long-running agent tool. */
 export interface AgentModule {
   runTask(input: TaskInput, ctx: AgentContext): Promise<TaskResult>;
 }
 
-/**
- * Terminal execution, implemented by Sol and called in-process by Kimi's code
- * agent. A function call rather than an HTTP hop, for latency.
- */
+/** Result returned by the in-process terminal executor. */
 export interface CommandResult {
   stdout: string;
   stderr: string;
@@ -385,17 +706,37 @@ export interface TerminalModule {
   ): Promise<CommandResult>;
 }
 
-/**
- * MCP process manager, implemented by Kimi. This backend owns the config file
- * and the API surface; spawning and supervising the servers is Kimi's.
- */
+/** Live MCP transport supervision registered for the supervisor's lifetime. */
 export interface McpProcessManager {
   /** Live status of every running server, surfaced by GET /api/mcp/status. */
   getStatus(): McpServerStatus[];
   start(name: string): Promise<void>;
   stop(name: string): Promise<void>;
+  /** Project-owned tool descriptions; SDK-specific types do not cross this boundary. */
+  listTools(name: string): Promise<McpToolDefinition[]>;
+  /** Invoke one tool and preserve the MCP server's result/error distinction. */
+  callTool(
+    name: string,
+    toolName: string,
+    args: Record<string, unknown>,
+  ): Promise<McpToolCallResult>;
   /** Optional live probe used by the test-connection endpoint for stdio servers. */
   testConnection?(name: string): Promise<{ ok: boolean; message: string }>;
+}
+
+export interface McpToolDefinition {
+  name: string;
+  inputSchema: Record<string, unknown>;
+  title?: string;
+  description?: string;
+  outputSchema?: Record<string, unknown>;
+}
+
+export interface McpToolCallResult {
+  content: unknown[];
+  structuredContent?: Record<string, unknown>;
+  /** A server-declared tool failure is a result, not a manager exception. */
+  isError: boolean;
 }
 
 export interface McpServerStatus {
