@@ -37,14 +37,38 @@ export type TaskStepMode = 'ask' | 'plan' | 'act';
  * not a call, a plan or a compression — a retry, a refusal, a ceiling being
  * approached. It exists so those do not get logged as fake `tool_call`s with a
  * made-up name, which would corrupt any count of what the run actually invoked.
+ *
+ * This union is now the *only* definition: 017 dropped the CHECK that used to
+ * constrain the column, because two kinds arrived in that one migration and a
+ * descriptive column carrying a CHECK means a table rebuild every time the
+ * product widens it (016's header makes the same argument for ZDR status).
+ *
+ * `approval` is a call that stopped for the user's decision; `turn` is one
+ * model round-trip, carrying its token counts so the per-turn bar graph has one
+ * bar per turn rather than per tool call.
  */
-export type TaskStepKind = 'tool_call' | 'plan' | 'compression' | 'note';
+export type TaskStepKind = 'tool_call' | 'plan' | 'compression' | 'note' | 'approval' | 'turn';
 
 export interface TaskStep {
   runId: string;
   step: number;
   mode: TaskStepMode | null;
   kind: TaskStepKind;
+  /**
+   * The agent profile in force. Null for a step taken by an agent that runs no
+   * profile, or recorded before profiles existed.
+   *
+   * Separate from `mode` on purpose: `mode` keeps its three-value CHECK because a
+   * UI control maps onto it, and turning it into free text to carry a profile
+   * name would break that mapping for every existing reader.
+   */
+  profile: string | null;
+  /**
+   * Which permission layer and pattern decided, e.g. `allow (project:src/**) for
+   * write`. The point of recording it is that "why was this refused?" stays
+   * answerable from the database after the run, without re-running anything.
+   */
+  provenance: string | null;
   toolName: string | null;
   /** Null when the step is not the kind of thing that can fail. */
   ok: boolean | null;
@@ -52,6 +76,10 @@ export interface TaskStep {
   /** Null means the provider did not report a count — not zero. */
   tokensIn: number | null;
   tokensOut: number | null;
+  /** Reported only by providers that separate these out. Null, never 0. */
+  reasoningTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
   createdAt: number;
 }
 
@@ -60,11 +88,16 @@ interface TaskStepRow {
   step: number;
   mode: string | null;
   kind: string;
+  profile: string | null;
+  provenance: string | null;
   tool_name: string | null;
   ok: number | null;
   detail: string | null;
   tokens_in: number | null;
   tokens_out: number | null;
+  reasoning_tokens: number | null;
+  cache_read_tokens: number | null;
+  cache_write_tokens: number | null;
   created_at: number;
 }
 
@@ -74,6 +107,8 @@ function mapRow(row: TaskStepRow): TaskStep {
     step: row.step,
     mode: row.mode as TaskStepMode | null,
     kind: row.kind as TaskStepKind,
+    profile: row.profile,
+    provenance: row.provenance,
     toolName: row.tool_name,
     // Deliberately not `Boolean(row.ok)`: that would fold a missing outcome into
     // `false`, reporting "this failed" for a plan that never had an outcome.
@@ -81,6 +116,9 @@ function mapRow(row: TaskStepRow): TaskStep {
     detail: row.detail,
     tokensIn: row.tokens_in,
     tokensOut: row.tokens_out,
+    reasoningTokens: row.reasoning_tokens,
+    cacheReadTokens: row.cache_read_tokens,
+    cacheWriteTokens: row.cache_write_tokens,
     createdAt: row.created_at,
   };
 }
@@ -90,11 +128,16 @@ export interface RecordStepInput {
   step: number;
   kind: TaskStepKind;
   mode?: TaskStepMode | undefined;
+  profile?: string | undefined;
+  provenance?: string | undefined;
   toolName?: string | undefined;
   ok?: boolean | undefined;
   detail?: string | undefined;
   tokensIn?: number | undefined;
   tokensOut?: number | undefined;
+  reasoningTokens?: number | undefined;
+  cacheReadTokens?: number | undefined;
+  cacheWriteTokens?: number | undefined;
 }
 
 /** Longest `detail` kept. Past this a step row is storing output, not a summary. */
@@ -120,14 +163,17 @@ export function recordStep(input: RecordStepInput): void {
     getDb()
       .prepare(
         `INSERT INTO task_steps
-           (run_id, step, mode, kind, tool_name, ok, detail, tokens_in, tokens_out, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (run_id, step, mode, kind, profile, provenance, tool_name, ok, detail,
+            tokens_in, tokens_out, reasoning_tokens, cache_read_tokens, cache_write_tokens, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.runId,
         input.step,
         input.mode ?? null,
         input.kind,
+        input.profile ?? null,
+        input.provenance ?? null,
         input.toolName ?? null,
         // Booleans go in as 0/1 explicitly. `undefined` would bind as NULL,
         // which is the right answer for "no outcome" but must not be reached by
@@ -136,6 +182,9 @@ export function recordStep(input: RecordStepInput): void {
         truncateDetail(input.detail),
         input.tokensIn ?? null,
         input.tokensOut ?? null,
+        input.reasoningTokens ?? null,
+        input.cacheReadTokens ?? null,
+        input.cacheWriteTokens ?? null,
         Date.now(),
       );
   } catch (error) {

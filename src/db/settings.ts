@@ -7,6 +7,9 @@
  */
 
 import { getDb } from '../db/adapter.ts';
+import { isZdrRequirement } from '../types/core.ts';
+
+import type { ZdrRequirement } from '../types/core.ts';
 
 export interface SettingRow {
   key: string;
@@ -262,6 +265,7 @@ export const TASK_TOKEN_CEILING_KEY = 'task_token_ceiling';
 export const TASK_ITERATION_CEILING_KEY = 'task_iteration_ceiling';
 export const SUBAGENT_COUNT_LIMIT_KEY = 'subagent_count_limit';
 export const REDACTION_CHECK_KEY = 'redaction_check_enabled';
+export const PARKED_WORKTREE_TTL_KEY = 'parked_worktree_ttl_hours';
 
 
 // --- spending and runaway limits (Part 1.19) -------------------------------
@@ -313,6 +317,25 @@ export function subagentCountLimit(): number {
 }
 
 
+/**
+ * How long a parked Code task keeps its git worktree before the reaper releases it.
+ *
+ * A week by default. Parking exists so a run can be *continued*, which means the
+ * directory and its uncommitted edits have to survive until someone answers — and
+ * "someone answers" is a human timescale, not a process one. An hour would silently
+ * turn approval prompts back into dead ends over a lunch break.
+ *
+ * Zero and negatives read as the default rather than as "release immediately". A
+ * TTL of zero would discard every parked task's work the moment the cleanup timer
+ * fired, which is not something anyone types on purpose — the same reasoning
+ * `dailySpendCapUsd` uses for treating zero as unset.
+ */
+export function parkedWorktreeTtlHours(): number {
+  const raw = getNumberSetting(PARKED_WORKTREE_TTL_KEY, 168);
+  return raw > 0 ? raw : 168;
+}
+
+
 // --- outbound data safety (Part 1.23) --------------------------------------
 
 /**
@@ -331,6 +354,34 @@ export function subagentCountLimit(): number {
  */
 export function redactionCheckEnabled(): boolean {
   return getBoolSetting(REDACTION_CHECK_KEY, false);
+}
+
+// --- zero data retention (Part 1.26) ---------------------------------------
+
+/**
+ * Named for the same reason as the limit keys above: a typo'd key write succeeds
+ * while the reader keeps returning its default, so the policy silently never
+ * applies — and a ZDR policy that silently does not apply is the worst possible
+ * failure for this feature, because the user believes the opposite.
+ */
+export const ZDR_REQUIREMENT_KEY = 'zdr_requirement';
+
+/**
+ * The standing zero-data-retention policy.
+ *
+ * Defaults to `off`, and that is not timidity. Every provider starts at
+ * `zdr_support = 'unknown'`, and `require` fails closed on unknown, so a default
+ * of `require` would make a fresh install refuse every remote provider it has —
+ * presenting a correct safety decision as a broken app. Turning it on is an
+ * informed act, taken after recording what each provider actually does.
+ *
+ * An unrecognised stored value reads as `off` rather than throwing: this is
+ * consulted on the request path, and a hand-edited settings row must not be able
+ * to make every send fail.
+ */
+export function zdrRequirement(): ZdrRequirement {
+  const raw = getSetting(ZDR_REQUIREMENT_KEY);
+  return isZdrRequirement(raw) ? raw : 'off';
 }
 
 

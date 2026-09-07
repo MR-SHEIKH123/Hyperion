@@ -15,9 +15,11 @@
 import { getDb } from './adapter.ts';
 import { isTemporaryChat } from './temporaryChats.ts';
 import { classifyProviderType } from '../services/safety/outbound.ts';
+import { zdrPreferenceUnmet } from '../services/safety/zdr.ts';
+import { isZdrRequirement } from '../types/core.ts';
 import { createLogger } from '../util/logger.ts';
 
-import type { ProviderType, ToolName } from '../types/core.ts';
+import type { ProviderType, ToolName, ZdrRequirement, ZdrStatus } from '../types/core.ts';
 import type { EgressClass } from '../services/safety/outbound.ts';
 
 const log = createLogger('usage');
@@ -37,6 +39,18 @@ export interface RecordUsageInput {
    * would trade a missing classification for a missing spend row.
    */
   providerType?: ProviderType | null;
+  /**
+   * What ZDR status actually applied, and what the policy demanded (Part 1.26).
+   *
+   * Two fields rather than one derived verdict: "was that acceptable?" can only
+   * be answered later if the log holds both the fact and the rule it was judged
+   * against. `zdrPreferenceUnmet` is computed from the pair on read.
+   *
+   * Optional and stored as NULL when absent, for the same reason as
+   * `providerType` — a caller that cannot say must not lose its spend row.
+   */
+  zdrStatus?: ZdrStatus | null;
+  zdrRequirement?: ZdrRequirement | null;
   tokensIn: number;
   tokensOut: number;
   status?: 'ok' | 'error' | 'partial';
@@ -110,8 +124,9 @@ export function recordUsage(input: RecordUsageInput): void {
       .prepare(
         `INSERT INTO usage_log
            (chat_id, message_id, tool, model_id, provider_id, provider_name, provider_type,
-            tokens_in, tokens_out, cost_usd, status, duration_ms, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            zdr_status, zdr_requirement, tokens_in, tokens_out, cost_usd, status, duration_ms,
+            created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         temporary ? null : input.chatId ?? null,
@@ -123,6 +138,11 @@ export function recordUsage(input: RecordUsageInput): void {
         // Stamped at write time rather than joined on read: a provider row can be
         // retyped or deleted afterwards, and history must not change retroactively.
         input.providerType ?? null,
+        // Same rule, and it matters more here: a provider's recorded ZDR support
+        // can be edited or attested at any time, and a row that re-derived its
+        // status on read would silently restate history as the current settings.
+        input.zdrStatus ?? null,
+        input.zdrRequirement ?? null,
         Math.max(0, Math.round(input.tokensIn)),
         Math.max(0, Math.round(input.tokensOut)),
         cost,
@@ -142,6 +162,21 @@ export interface UsageQuery {
   to?: number;
   tool?: ToolName;
   providerId?: string;
+  /**
+   * Narrow to one recorded ZDR status (Part 1.26).
+   *
+   * Answers "show me only what went out under standard retention", which is the
+   * question a user asks once they have turned the policy on. `'unrecorded'`
+   * selects the pre-1.26 rows, whose column is NULL: they are reachable rather
+   * than invisible, because an audit that silently omitted them would report a
+   * cleaner history than actually exists.
+   *
+   * Typed as `ZdrBucketKey` so a bucket the summary reports can always be fetched
+   * by its own key — including a raw status from a newer build. A filter that
+   * accepted only the statuses this build knows would leave those rows visible in
+   * the summary but impossible to select, which is worse than either.
+   */
+  zdrStatus?: ZdrBucketKey;
 }
 
 export interface UsageBucket {
@@ -193,6 +228,14 @@ function where(query: UsageQuery): { sql: string; values: (string | number)[] } 
   if (query.providerId) {
     clauses.push('provider_id = ?');
     values.push(query.providerId);
+  }
+  if (query.zdrStatus === 'unrecorded') {
+    // `= NULL` is never true in SQL, so the pre-1.26 rows need the IS form. This
+    // is the whole reason the filter is not just a string compare.
+    clauses.push('zdr_status IS NULL');
+  } else if (query.zdrStatus) {
+    clauses.push('zdr_status = ?');
+    values.push(query.zdrStatus);
   }
   return { sql: clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '', values };
 }
@@ -318,13 +361,178 @@ export interface ExposureSummary {
    * presenting an egress figure that is missing some of the traffic.
    */
   hasUnclassified: boolean;
+  /** One entry per recorded ZDR status present (Part 1.26). */
+  byZdrStatus: ZdrBucket[];
+  /**
+   * True when at least one row in range was served by a provider that fell short
+   * of a `prefer` policy.
+   *
+   * This is the compensating control for `prefer`'s residual failover gap: the
+   * policy cannot prevent a mid-run switch onto an ineligible provider, so the
+   * record has to be able to say that it happened. Never true for `require`, which
+   * refuses instead, or for `off`, which demands nothing.
+   */
+  hasPreferenceUnmet: boolean;
+}
+
+/**
+ * A ZDR bucket key: a status this build knows, `unrecorded` for a NULL column, or
+ * a raw value stamped by a build that knew more.
+ *
+ * The third case is not hypothetical. Migration `016` deliberately omits a `CHECK`
+ * so the status enum can widen, which means a downgrade leaves rows carrying a
+ * status this build cannot name. Those are reported **verbatim** rather than
+ * folded into `unrecorded`, because `unrecorded` asserts something specific — "no
+ * policy was recorded when this row was written" — and saying that about a row
+ * that *did* record one understates what happened, which is the one error this
+ * layer must never make. `ExposureBucket.providerTypes` keeps unrecognised
+ * provider types visible for the same reason.
+ */
+export type ZdrBucketKey = ZdrStatus | 'unrecorded' | (string & {});
+
+/** Spend grouped by the ZDR status that actually applied to it. */
+export interface ZdrBucket extends UsageBucket {
+  /** See `ZdrBucketKey`: a known status, `unrecorded` for NULL, or a raw value. */
+  key: ZdrBucketKey;
+  /**
+   * True when this bucket's status did not satisfy a `prefer` policy that was in
+   * force at the time.
+   *
+   * Computed from the stored `(zdr_status, zdr_requirement)` pair rather than
+   * stored as a verdict of its own. The log holds facts; a conclusion drawn from
+   * them can be re-derived if the definition changes, whereas a stored verdict
+   * would silently keep the old definition forever.
+   */
+  preferenceUnmet: boolean;
+  /**
+   * The requirements in force across these rows, for the tooltip.
+   *
+   * Raw stored values, including one this build does not recognise. A requirement
+   * that was dropped for failing a type guard would make the bucket claim a policy
+   * was absent when the row says otherwise.
+   */
+  requirements: string[];
 }
 
 interface ExposureRow extends AggRow {
   provider_type: string | null;
 }
 
+interface ZdrRow extends AggRow {
+  zdr_status: string | null;
+  zdr_requirement: string | null;
+}
+
 const CLASS_ORDER: readonly EgressClass[] = ['local', 'remote', 'unknown'];
+
+/**
+ * Display order for the ZDR buckets: safest first, then the ones that need
+ * attention, with the unrecordable ones last.
+ *
+ * A fixed list rather than "whatever SQL returned", so the same summary always
+ * reads in the same order and a bucket cannot appear to have moved because its
+ * cost changed. Statuses not named here are appended in the order encountered,
+ * which keeps a future status visible instead of dropping it.
+ */
+const ZDR_ORDER: readonly (ZdrStatus | 'unrecorded')[] = [
+  'local_no_egress',
+  'zdr_confirmed',
+  'zdr_requested',
+  'zdr_not_applied',
+  'zdr_unknown',
+  'standard_retention',
+  'egress_unknown',
+  'unrecorded',
+];
+
+/**
+ * Spend grouped by the ZDR status recorded on each row.
+ *
+ * Grouped in SQL but *interpreted* in TypeScript, the same split as
+ * `summarizeExposure`: SQLite sums the numbers, and `zdrPreferenceUnmet` decides
+ * what a `(status, requirement)` pair means. The judgement stays in one module.
+ *
+ * A row is grouped by both columns and then merged by status, because a single
+ * status can have been reached under different policies — the same
+ * `standard_retention` send is unremarkable under `off` and a broken promise
+ * under `prefer`, and the bucket has to be able to say which rows were which.
+ *
+ * **The type guards classify; they never discard.** An earlier revision used
+ * `isZdrStatus`/`isZdrRequirement` to decide whether to *keep* a stored value, so
+ * anything a newer build had written folded into `unrecorded` and its requirement
+ * vanished — three lies at once: the bucket disagreed with the `?zdrStatus=` filter
+ * over the same rows, it reported a requirement while claiming none was recorded,
+ * and a `prefer` shortfall on an unrecognised status read as satisfied because the
+ * status reached `zdrPreferenceUnmet` as `null`. Stored values are now passed
+ * through as they are, and only a genuine NULL becomes `unrecorded`.
+ */
+function summarizeZdr(query: UsageQuery): { buckets: ZdrBucket[]; hasPreferenceUnmet: boolean } {
+  const { sql, values } = where(query);
+
+  const rows = getDb()
+    .prepare<ZdrRow>(
+      `SELECT zdr_status, zdr_requirement, zdr_status AS key, ${AGG_COLUMNS}
+         FROM usage_log ${sql}
+        GROUP BY zdr_status, zdr_requirement`,
+    )
+    .all(...values);
+
+  const merged = new Map<
+    ZdrBucketKey,
+    { bucket: UsageBucket; requirements: Set<string>; preferenceUnmet: boolean }
+  >();
+  let hasPreferenceUnmet = false;
+
+  for (const row of rows) {
+    // Only NULL is `unrecorded`. Any stored string is its own bucket, recognised
+    // or not.
+    const key: ZdrBucketKey = row.zdr_status ?? 'unrecorded';
+    const requirement = row.zdr_requirement;
+    // The raw status goes in: `zdrPreferenceUnmet` treats a value it cannot name as
+    // unmet rather than as satisfied, which is the only safe direction.
+    const unmet = zdrPreferenceUnmet(
+      row.zdr_status,
+      isZdrRequirement(requirement) ? requirement : null,
+    );
+    if (unmet) hasPreferenceUnmet = true;
+
+    const bucket = mapBucket(row, key);
+    const existing = merged.get(key);
+    if (existing) {
+      existing.bucket.requests += bucket.requests;
+      existing.bucket.tokensIn += bucket.tokensIn;
+      existing.bucket.tokensOut += bucket.tokensOut;
+      existing.bucket.costUsd += bucket.costUsd;
+      existing.bucket.unpricedRequests += bucket.unpricedRequests;
+      existing.preferenceUnmet = existing.preferenceUnmet || unmet;
+      if (requirement !== null) existing.requirements.add(requirement);
+    } else {
+      merged.set(key, {
+        bucket: { ...bucket, key },
+        requirements: new Set(requirement !== null ? [requirement] : []),
+        preferenceUnmet: unmet,
+      });
+    }
+  }
+
+  const ordered: ZdrBucketKey[] = [
+    ...ZDR_ORDER.filter((key) => merged.has(key)),
+    ...[...merged.keys()].filter((key) => !(ZDR_ORDER as readonly string[]).includes(key)),
+  ];
+
+  const buckets = ordered.map((key) => {
+    // Present by construction: `ordered` is built from this map's own keys.
+    const entry = merged.get(key) as { bucket: UsageBucket; requirements: Set<string>; preferenceUnmet: boolean };
+    return {
+      ...entry.bucket,
+      key,
+      preferenceUnmet: entry.preferenceUnmet,
+      requirements: [...entry.requirements].sort(),
+    };
+  });
+
+  return { buckets, hasPreferenceUnmet };
+}
 
 /**
  * How much of this machine's traffic actually left it, grouped by egress class.
@@ -390,10 +598,31 @@ export function summarizeExposure(query: UsageQuery = {}): ExposureSummary {
     { key: 'total', requests: 0, tokensIn: 0, tokensOut: 0, costUsd: 0, unpricedRequests: 0 },
   );
 
+  const zdr = summarizeZdr(query);
+
   return {
     range: { from: query.from ?? null, to: query.to ?? null },
     totals,
     byClass,
     hasUnclassified: byClass.some((bucket) => bucket.key === 'unknown'),
+    byZdrStatus: zdr.buckets,
+    hasPreferenceUnmet: zdr.hasPreferenceUnmet,
   };
+}
+
+/**
+ * Every distinct non-NULL `zdr_status` actually present in the log.
+ *
+ * Exists so the HTTP layer can accept a filter for a status this build does not
+ * know while still rejecting a typo. Validating against the compiled-in enum alone
+ * would 400 on real stored data — the rows a downgrade leaves behind — and those
+ * are exactly the rows an audit most needs to reach.
+ */
+export function recordedZdrStatuses(): string[] {
+  return getDb()
+    .prepare<{ zdr_status: string }>(
+      `SELECT DISTINCT zdr_status FROM usage_log WHERE zdr_status IS NOT NULL ORDER BY zdr_status`,
+    )
+    .all()
+    .map((row) => row.zdr_status);
 }
