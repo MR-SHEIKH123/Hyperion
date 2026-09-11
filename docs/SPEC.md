@@ -21,10 +21,13 @@ You are building **the backbone all three depend on**: the API server, the datab
 
 > **Implementation note — current Phase 1/2 composition.** The ownership split
 > above is retained as the historical allocation from the original prompt. The
-> shipped backend now composes Cowork and a local terminal executor itself before
-> HTTP and schedulers start, and MCP process lifecycle is already implemented by
-> the backend supervisor. Code and Design remain genuinely unregistered agents;
-> the shared agent-loop infrastructure is not a Code-agent implementation.
+> shipped backend now composes Cowork, Code and a local terminal executor itself
+> before HTTP and schedulers start, and MCP process lifecycle is already
+> implemented by the backend supervisor. Design remains the one genuinely
+> unregistered agent — `/api/design/run-task` answers a coded 501 until a
+> design module registers. (Corrected 2026-09-11: this note previously listed
+> Code as unregistered; the Code agent has since shipped and
+> `test/composition.test.ts` asserts the set.)
 
 **Tech stack**: Node.js backend (Express or Fastify — your choice), SQLite via `better-sqlite3`, runs as a plain local web server (no Electron/Tauri — just a browser tab). No authentication (single trusted user) — this is intentional and must not change; remote access is handled separately via Tailscale (a private mesh VPN the user installs on their own devices), not by adding public auth to the app itself.
 

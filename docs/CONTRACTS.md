@@ -414,10 +414,13 @@ rather than one: the interpreter in its command does not exist until the venv
 below is created, *and* the graph it serves does not exist until it has been
 built. Enable it in the MCP panel once both are done.
 
-Worth remembering while testing: this backend writes `mcp_config.json` and owns
-the registry but **never spawns MCP processes** (`managed: false`). Even a
-correct, enabled entry does not start a server today — that is Kimi's
-`McpProcessManager` in Prompt 3.
+Worth remembering while testing: this backend writes `mcp_config.json`, owns
+the registry and, since *The MCP supervisor* below landed, spawns the
+processes too. `managed: false` now means only `HYPERION_MCP_DISABLED=1` or a
+boot that has not reached registration yet — never "spawning is someone
+else's job". A correct, enabled entry is still not a *running* server: read
+`servers[].state`, and for graphify the venv and the graph build above have
+to exist first.
 
 #### One-time setup
 
@@ -2955,9 +2958,11 @@ the UI says stopped and the filesystem keeps changing.
 
 Production module registration is one synchronous boundary after database
 bootstrap and before either the HTTP listener or any scheduler starts. The exact
-production set is **Cowork plus the local terminal executor**. Code and Design
-remain unregistered agents; shared loop infrastructure is not itself a Code
-agent, so the two claims must not be collapsed into one.
+production set is **Cowork, Code and the local terminal executor**. Design
+remains the only unregistered agent: `/api/design/run-task` keeps its coded 501
+until a design module registers. (This paragraph predates the Code agent
+landing; `test/composition.test.ts` pins the registered set so the code and
+this record cannot drift apart again unnoticed.)
 
 This ordering prevents partial-production states. A status request, an immediate
 Cowork request and the first scheduled Cowork tick must all observe the same
