@@ -68,6 +68,11 @@ test('the listing is newest first and advertises a file URL per source', () => {
   const first = saveKnowledgeSource(file('one.md'));
   const second = saveKnowledgeSource(file('two.md'));
 
+  // Two inserts inside one millisecond tie on created_at — which is exactly
+  // what happens on a fast machine. Force the tie so the assertion pins the
+  // tie-break (later insert first) rather than the clock happening to differ.
+  getDb().prepare('UPDATE knowledge_sources SET created_at = ?').run(1_000);
+
   const listed = listKnowledgeSources();
   assert.deepEqual(
     listed.map((s) => s.id),

@@ -1509,6 +1509,10 @@ KnowledgePublic { id, label: string|null, filename, relPath,
 | GET | `/api/cowork/knowledge/:id/file` | the file bytes |
 | DELETE | `/api/cowork/knowledge/:id` | `{ deleted: true, id, bytesFreed }` |
 
+The listing is newest first: `created_at` descending, insertion order breaking
+ties — two sources filed inside the same millisecond still list the later one
+first.
+
 **POST** is `multipart/form-data`, field name **`file`**, exactly one file, plus
 an optional `label` text field. A request with no file is **400 `bad_request`**
 with `details: { field: 'file' }`. `label` is the user's own handle for the

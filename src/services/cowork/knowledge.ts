@@ -109,11 +109,14 @@ export function toPublic(source: KnowledgeSource): KnowledgePublic {
 // --- queries ---------------------------------------------------------------
 
 export function listKnowledgeSources(): KnowledgePublic[] {
+  // created_at is a millisecond clock: two uploads inside the same tick tie on
+  // it, and an unordered tie comes back in scan order — oldest first. rowid
+  // breaks the tie so the later insert really is listed as newer.
   const rows = getDb()
     .prepare<KnowledgeRow>(
       `SELECT id, label, filename, rel_path, mime_type, bytes, sha256, created_at
          FROM knowledge_sources
-        ORDER BY created_at DESC`,
+        ORDER BY created_at DESC, rowid DESC`,
     )
     .all();
   return rows.map((row) => toPublic(mapRow(row)));
