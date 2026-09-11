@@ -91,6 +91,9 @@ export interface CodeDependencies {
   resolveContextWindow?: (input: { model?: ModelInfo; override?: number }) => ReturnType<typeof resolveContextWindow>;
   unattended?: boolean;
   iterationCeiling?: number;
+  /** Test seam only: hand in the reservation map to seed or observe it.
+   *  Production runs always create their own, per parent run. */
+  pathReservations?: Map<string, string>;
 }
 
 export interface CodeRunOptions {
@@ -103,6 +106,9 @@ interface SharedRunState {
   nextSequence: number;
   changedFiles: Set<string>;
   artifacts: { key: string; version: number }[];
+  /** Paths a delegated child claimed by writing them, to the child task id
+   *  holding each. The rules live on `reserveWorkspacePath`. */
+  pathReservations: Map<string, string>;
 }
 
 interface InternalRun {
@@ -157,6 +163,7 @@ export async function runCodeTask(
     nextSequence: 1,
     changedFiles: new Set<string>(),
     artifacts: [],
+    pathReservations: dependencies.pathReservations ?? new Map<string, string>(),
   };
   return runCodeInternal(input, ctx, { depth: 0, shared, dependencies });
 }
@@ -237,9 +244,11 @@ async function runCodeInternal(
           return bounded(`${JSON.stringify({ path: file.path, sha256: file.sha256, bytes: file.bytes })}\n${file.content}`);
         }
         case 'write': {
+          const requestedPath = requiredString(args, 'path');
           const expectedSha256 = nullableSha(args.expectedSha256, 'expectedSha256');
+          reserveWorkspacePath(runtime, ctx, requestedPath);
           const saved = await ctx.writeFile({
-            path: requiredString(args, 'path'),
+            path: requestedPath,
             content: requiredString(args, 'content', true),
             expectedSha256,
           });
@@ -403,6 +412,11 @@ async function delegate(
       ? { summary: bounded(appError.message, MAX_SUMMARY) }
       : { errorCode: appError.code, errorMessage: bounded(appError.message, 1_000) });
     throw error;
+  } finally {
+    // However the child ended — complete, error, stopped — its
+    // reservations die with it. A stale entry would block every later
+    // sibling (and the parent) from a file nobody is writing any more.
+    releaseWorkspacePaths(runtime.shared, childTaskId);
   }
 
   const summary = bounded(result.summary, MAX_SUMMARY);
@@ -436,6 +450,54 @@ function childContext(parent: AgentContext, childTaskId: string): AgentContext {
     signal: parent.signal,
     log: parent.log,
   };
+}
+
+/**
+ * Path reservation between delegated children (Master Plan v4 §6.6).
+ *
+ * Batch `delegate` is confirmed to parallelise, and every child shares the
+ * parent's worktree, so two children told to edit the same file would race
+ * each other's writes. The map lives in `SharedRunState`, keyed per parent
+ * run, and records which child task id currently owns a path. It is
+ * deliberately detection, not prevention: the second writer's `write` fails
+ * with a coded `conflict` naming the holder, that child stops, and the
+ * parent reads the failure in the delegate result and can re-route.
+ * Pre-declaring path sets up front is the sequenced v2, gated on observed
+ * collision frequency.
+ *
+ * Only children hold reservations. The parent checks but never acquires, so
+ * the ordinary handoff — parent writes a skeleton, then delegates "fill it
+ * in" — is not a self-inflicted conflict. Two accepted limits, recorded in
+ * CONTRACTS.md: only the `write` tool participates (`bash`, `command` and
+ * `restore` side effects cannot be intercepted), and the map arbitrates one
+ * parent run — lane-parallel Code tasks are separated by worktrees instead.
+ * Under the loop's current serial tool dispatch the conflict cannot fire;
+ * the guard is in place and tested so parallel dispatch cannot ship
+ * unprotected.
+ */
+function reserveWorkspacePath(runtime: InternalRun, ctx: AgentContext, requestedPath: string): void {
+  // resolvePath doubles as the normaliser: two spellings of the same file
+  // land on one key, and an escaping path dies as a scope violation here
+  // exactly as it would inside writeFile.
+  const key = ctx.resolvePath(requestedPath);
+  const holder = runtime.shared.pathReservations.get(key);
+  if (holder !== undefined && holder !== ctx.taskId) {
+    throw new AppError(
+      'conflict',
+      `"${requestedPath}" is reserved by delegated subtask ${holder}, which is still working on it. Leave it to that subtask and pick a different file.`,
+      { details: { path: requestedPath, heldBy: holder } },
+    );
+  }
+  if (runtime.depth === 1) {
+    runtime.shared.pathReservations.set(key, ctx.taskId);
+  }
+}
+
+/** Drop every reservation a finished child held, however its run ended. */
+function releaseWorkspacePaths(shared: SharedRunState, childTaskId: string): void {
+  for (const [key, holder] of shared.pathReservations) {
+    if (holder === childTaskId) shared.pathReservations.delete(key);
+  }
 }
 
 /**

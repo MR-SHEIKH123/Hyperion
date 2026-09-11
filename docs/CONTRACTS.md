@@ -259,6 +259,54 @@ the deliverable. Nothing in this app merges for you.
 
 ---
 
+## Subagent path reservation (added by Master Plan v4 §6.6)
+
+**Who depends on this:** the Code agent's `delegate` tool and anything that
+reads a file a delegated child wrote — and, the day batch delegation actually
+parallelises, every child running in the shared worktree at once.
+
+Each parent run carries a map from workspace path to the child task id that
+has written it, living in the run's shared state and acquired automatically:
+the first time a child's `write` targets a path, that path is reserved to
+that child for the rest of its run. A `write` from anyone else — a sibling
+child or the parent itself — fails with a coded `conflict` naming the holder,
+before any bytes land. Reservations are released in `delegate`'s `finally`,
+so a child that errors or is stopped leaves nothing behind.
+
+The parent checks but never acquires. That asymmetry keeps the ordinary
+handoff — parent writes a skeleton, then delegates "fill it in" — from being
+a self-inflicted conflict, and it is why the map's values are only ever child
+task ids.
+
+Two accepted limitations, both deliberate:
+
+- **Only the `write` tool participates.** A child can still reach the same
+  file through `bash`, `command` or `restore`, whose side effects cannot be
+  intercepted at a dispatch table. The reservation is a cooperation protocol
+  between well-behaved writes, not a hard guarantee.
+- **It detects at write time; it does not prevent at plan time.** The losing
+  child stops with a coded error and the parent re-routes. Pre-declaring path
+  sets up front — which would let the parent schedule around collisions — is
+  the sequenced v2 and stays gated on observed collision frequency, not built
+  on spec.
+
+Scope, stated once and pre-registered so it is not re-litigated: the guard is
+Code-only. Cowork is collision-safe by construction (its outputs are
+append-version `artifact_versions` rows; there is no shared mutable
+location). Design, when it lands, is excluded for the same reason doubled —
+its artifacts are DB-backed (`design:file:{runId}:{path}`) and its toolset
+contractually excludes `write`, `bash` and `command`. And the map arbitrates
+within one parent run: lane-parallel top-level Code tasks are separated by
+worktrees, with `direct` mode the documented degradation where they are not.
+
+Under the loop's current serial tool dispatch the `conflict` cannot fire —
+children run to completion one at a time and release before the next starts.
+The guard is in place and tested anyway, so the confirmed parallel direction
+of batch `delegate` cannot ship without it.
+
+---
+
+
 ## Recommended skills (added by Prompt 1.7)
 
 **Not installed by anything.** This section is documentation: two third-party
