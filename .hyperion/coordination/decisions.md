@@ -65,6 +65,22 @@ content to fill holes.
   provider). Closed toolset, `design:` artifact namespace, brand proposals
   unapproved by construction, vision stub, guidance-not-fatal state errors.
 
+## Resolved verifications
+
+- **Cowork: complete against Slice 4, not a stub** (verified against the code
+  2026-09-12, answering v4 §2's "registered != completed" flag):
+  knowledge-first prompting with sources statused before content
+  (`readKnowledgeSource` enforces sha256, UTF-8, size and type bounds);
+  wigolo offered only when configured, enabled AND running under the MCP
+  supervisor, with an honest status line in the prompt otherwise; the shared
+  compaction hook wired (`context: { messages, replace, window }`); partial
+  text and artifacts preserved on a failed late turn (pinned by
+  `coworkagent.test.ts`); `cowork.save_artifact` writes real
+  `artifact_versions` rows. The one genuinely open sub-item is a product
+  question, not an implementation gap: when wigolo is absent there is no
+  fallback research path at all — the absence is reported honestly. Whether
+  a fallback should exist is the owner's call.
+
 ## Open decisions
 
 - **Open #3 — who builds Design.** Whether Design's Slice 5 output is worth
