@@ -3950,3 +3950,63 @@ inside the stream consumption, chunk by chunk, is what makes a subagent's spend 
 its parent's ceiling in real time rather than at child completion, by which point the
 overrun would already be paid for.
 
+---
+
+## The Design agent (added by Prompt 3 — the Design slice)
+
+**Who depends on this:** the frontend embedding the preview iframe, anyone
+touching the permission engine's unknown-tool rule, and whoever is tempted to
+give Design a filesystem or shell tool "just for convenience".
+
+### The toolset is the security model
+
+Design offers exactly nine tools and nothing else: no `bash`, no `command`,
+no `write`, no `delegate`. A design draft never needs the shell or the
+project tree, and the smaller surface is the point: the only things the model
+can mutate are its own artifact lineage and brand proposals. Enforcement sits
+in two places. The permission engine refuses any name outside the set as an
+unknown tool — a deny at the builtin layer, before any rule is consulted —
+and the dispatch table's default case is the drift insurance if the name list
+and the switch ever diverge.
+
+### Revisions are rows; undo is a new version
+
+Every generate or revise writes a NEW `artifact_versions` row under
+`design:file:{runId}:{name}`, never in place. The history is therefore the
+undo substrate: `design.undo` writes the prior content as the next version,
+so a bad undo is itself undoable and nothing is ever destroyed. The loop's
+RepeatGuard ends degenerate identical-revision cycles the same way it ends
+any other doom loop.
+
+### The model proposes; only the user approves
+
+`brand_propose` writes land in the gallery with `is_brand_approved = 0`, and
+no agent-reachable surface flips that flag — approval lives in the `/api/design`
+UI routes, which the model cannot call. The generation context only ever
+injects the APPROVED set. An agent that could approve its own proposals would
+be writing its own canon.
+
+### The preview is served inert, not sanitized
+
+`GET /api/design/preview/:versionId` serves draft bytes verbatim under
+`default-src 'none'; style-src 'unsafe-inline'; img-src data:` plus `nosniff`
+and `no-store`. A poisoned draft goes out byte-for-byte: the sandbox iframe
+attribute, the CSP and the localhost bind are the three layers, and rewriting
+the markup would be a fourth that lies about what the draft contains. Unknown
+ids, other tools' artifacts and file-backed rows share one 404, so the
+response never confirms which kind of miss it was.
+
+### vision_verify is a stub by contract
+
+It always answers `{ status: 'unverified', checks: [...] }`. Shipping the stub
+means prompts and callers are already written against the real contract, so
+the Playwright-based implementation lands without a call-site change. A draft
+is never "visually checked" until that exists, and the system prompt says so.
+
+### Model-correctable mistakes are guidance, not fatalities
+
+Argument-shape errors still throw `bad_request`, as everywhere else. What
+differs is state errors: revise-before-generate, undo-past-the-first-version
+and double-generate return explanatory tool output and the run continues.
+Design's core loop is long-running iteration, and one hallucinated call must
+not cost twenty revisions of kept work.

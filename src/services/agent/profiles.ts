@@ -60,6 +60,7 @@ import type {
   ReasoningVariant,
   TaskInput,
 } from '../../types/core.ts';
+import { DESIGN_TOOL_NAMES } from '../design/tools.ts';
 import type { PermissionLayerInput, PermissionRules } from './permissions.ts';
 
 export const DEFAULT_AGENT_PROFILE_KEY = 'default_agent_profile';
@@ -118,6 +119,25 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = Object.freeze([
     { [ANY_TOOL]: 'allow' },
     'You are in Act mode and may use every tool offered to you.',
   ),
+  /** Design is not a mode: its base mode is Act and its tools list is the
+   * closed design toolset. The profile exists so a design run is identifiable
+   * in provenance and the allow-list is data rather than convention — and the
+   * list doubles as a guard: selected for any other agent, `assertKnownTools`
+   * rejects it, because no design tool exists there. */
+  Object.freeze({
+    name: 'design',
+    description: 'Iterative HTML/CSS and SVG design with brand memory; no shell, filesystem or delegation reach.',
+    path: '',
+    tools: [...DESIGN_TOOL_NAMES],
+    model: null,
+    mode: 'act',
+    visibility: 'all' as ProfileVisibility,
+    hidden: false,
+    variant: null,
+    permissions: {},
+    builtin: true,
+    body: 'You are working through the Design agent: iterative HTML/CSS and SVG, a closed toolset, and brand assets that are canonical only once the user has approved them.',
+  }),
 ]);
 
 export function builtinProfile(name: string): AgentProfile | null {

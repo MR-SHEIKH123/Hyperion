@@ -9,15 +9,15 @@ const { getAgent, getTerminal, registeredAgents, resetModules } = await import('
 afterEach(() => resetModules());
 
 describe('production agent composition', () => {
-  test('registers Cowork, Code, and terminal while leaving Design absent', () => {
+  test('registers Cowork, Code, Design, and terminal', () => {
     resetModules();
 
     registerProductionModules();
 
-    assert.deepEqual(registeredAgents(), ['cowork', 'code']);
+    assert.deepEqual(registeredAgents(), ['cowork', 'code', 'design']);
     assert.notEqual(getAgent('cowork'), null);
     assert.notEqual(getTerminal(), null);
     assert.notEqual(getAgent('code'), null);
-    assert.equal(getAgent('design'), null);
+    assert.notEqual(getAgent('design'), null);
   });
 });

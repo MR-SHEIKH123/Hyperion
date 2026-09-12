@@ -21,6 +21,8 @@ import { Router } from 'express';
 
 import { wrap } from './errors.ts';
 import { asBool, body, pathParam, queryNumber } from './params.ts';
+import { getDesignVersion } from '../services/design/tools.ts';
+import { AppError } from '../util/errors.ts';
 import {
   listApprovedAssets,
   setAssetBrandApproved,
@@ -66,5 +68,37 @@ designRouter.post(
   wrap(async (req, res) => {
     const asset = setAssetBrandApproved(pathParam(req, 'id'), false);
     res.json({ asset: toPublic(asset) });
+  }),
+);
+
+/**
+ * Serve one stored design version for the sandboxed preview iframe.
+ *
+ * The draft is model output — untrusted markup. It is served with a CSP that
+ * allows no scripts, no network and no fonts (`default-src 'none';
+ * `style-src 'unsafe-inline'; img-src data:`), so even a poisoned draft
+ * renders inert. The frontend embeds it in `<iframe sandbox>` with no
+ * `allow-same-origin` and no `allow-scripts`; the CSP and the localhost bind
+ * are the second and third layers (Master Plan v4 section 3.6).
+ *
+ * Only inline-content rows under the `design:` namespace are previewable.
+ * Anything else — an unknown id, another tool's artifact, a file-backed row
+ * — gets the same 404, which does not confirm which one it was.
+ */
+designRouter.get(
+  '/preview/:versionId',
+  wrap(async (req, res) => {
+    const version = getDesignVersion(pathParam(req, 'versionId'));
+    if (!version) {
+      throw new AppError('not_found', 'No previewable design version with that id.');
+    }
+    res.setHeader('content-security-policy', "default-src 'none'; style-src 'unsafe-inline'; img-src data:");
+    res.setHeader('x-content-type-options', 'nosniff');
+    res.setHeader('cache-control', 'no-store');
+    res.setHeader(
+      'content-type',
+      version.artifactKey.endsWith('.svg') ? 'image/svg+xml; charset=utf-8' : 'text/html; charset=utf-8',
+    );
+    res.send(version.content);
   }),
 );

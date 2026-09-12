@@ -59,7 +59,7 @@ beforeEach(() => {
 });
 
 describe('production terminal HTTP boundary', () => {
-  test('reports Cowork, Code, and terminal live while leaving Design absent', async () => {
+  test('reports Cowork, Code, Design, and terminal live', async () => {
     const response = await fetch(`${base}/api/agents/status`);
     const payload = (await response.json()) as {
       agents: string[];
@@ -68,9 +68,9 @@ describe('production terminal HTTP boundary', () => {
     };
 
     assert.equal(response.status, 200);
-    assert.deepEqual(payload.agents, ['cowork', 'code']);
+    assert.deepEqual(payload.agents, ['cowork', 'code', 'design']);
     assert.equal(payload.terminal, true);
-    assert.deepEqual(payload.registered, { code: true, cowork: true, design: false });
+    assert.deepEqual(payload.registered, { code: true, cowork: true, design: true });
   });
 
   test('executes a real command through the registered terminal', async () => {

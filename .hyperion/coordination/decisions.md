@@ -55,6 +55,16 @@ content to fill holes.
   in conversation or code comments alone. Conversation-only items are treated
   as undecided until committed.
 
+## Landed since this register opened
+
+- **The Design agent (v4 §3 / Prompt 3's last slice)** — 2026-09-11:
+  `src/services/design/{agent,tools}.ts`, registered third in
+  `composition.ts`, the sandboxed preview route in `src/http/design.ts`,
+  the `design` built-in profile, and `test/designagent.test.ts` (agent-level
+  against the real artifact store, plus real-server HTTP with the mock
+  provider). Closed toolset, `design:` artifact namespace, brand proposals
+  unapproved by construction, vision stub, guidance-not-fatal state errors.
+
 ## Open decisions
 
 - **Open #3 — who builds Design.** Whether Design's Slice 5 output is worth
@@ -65,8 +75,13 @@ content to fill holes.
   gate was dropped (structurally unfalsifiable from inside a session) and
   replaced with artifact judgment: `open-decision-3/EVIDENCE.md` plus
   `open-decision-3/component/v1..v3`, 2 revisions, uncertainty and a
-  production-trust judgment included. The owner closes this after
-  reviewing the artifact.
+  production-trust judgment included.
+
+  **RESOLVED 2026-09-11 (practical question only):** the owner verified the
+  artifact directly and ruled this channel's output good enough to build the
+  Design agent against. The narrower question — whether Kimi specifically
+  outperforms this channel — stays genuinely open until a confirmed-Kimi
+  session exists. Do not conflate the two.
 - **v4 ratification.** §6.6 (S-1/S-2) was ratified and shipped 2026-09-11.
   The remaining v4 upgrade-track items not already marked landed above
   (§6.1, §6.4, §6.8) stay proposals until the owner ratifies them.
