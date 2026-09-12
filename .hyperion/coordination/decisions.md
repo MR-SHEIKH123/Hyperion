@@ -61,9 +61,12 @@ content to fill holes.
   shipping from a non-Kimi fallback, or whether Kimi's LMArena Frontend Code
   Arena advantage is real and visible in practice. Identity checks gate on
   product-level confirmation (model family + harness), not sub-tier claims no
-  self-report can verify. Status 2026-09-11: **open** — the session that
-  landed this file could not confirm its model family from inside the
-  session, so Design stays held for a confirmed-Kimi session.
+  self-report can verify. Status 2026-09-11: **open, evidence submitted** — the identity
+  gate was dropped (structurally unfalsifiable from inside a session) and
+  replaced with artifact judgment: `open-decision-3/EVIDENCE.md` plus
+  `open-decision-3/component/v1..v3`, 2 revisions, uncertainty and a
+  production-trust judgment included. The owner closes this after
+  reviewing the artifact.
 - **v4 ratification.** §6.6 (S-1/S-2) was ratified and shipped 2026-09-11.
   The remaining v4 upgrade-track items not already marked landed above
   (§6.1, §6.4, §6.8) stay proposals until the owner ratifies them.
