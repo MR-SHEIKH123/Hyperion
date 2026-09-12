@@ -16,6 +16,7 @@ const {
 } = await import('../src/db/subagents.ts');
 const { AppError } = await import('../src/util/errors.ts');
 const { runCodeTask } = await import('../src/services/code/agent.ts');
+const { resolveProfile: realResolveProfile } = await import('../src/services/agent/profiles.ts');
 
 before(async () => {
   await freshDb();
@@ -282,5 +283,61 @@ describe('path reservation between delegated children', () => {
     assert.equal(run.files.get(run.resolve('foo.md')), 'parent takes over');
     assert.equal(listSubagentRuns(run.ctx.taskId)[0]?.state, 'error');
     assert.equal(reservations.size, 0);
+  });
+});
+
+// --- D7: a delegated child inherits the parent run's mode -------------------
+
+describe('a delegated child inherits the parent mode', () => {
+  it('resolves its profile from the parent mode, never a hardcoded act', async () => {
+    const seenModes: string[] = [];
+    const run = codeHarness([
+      { chunks: [toolChunk('d1', 'delegate', { prompt: 'child in plan' })] },
+      { chunks: [tokenChunk('child does nothing in plan')] },
+      { chunks: [tokenChunk('parent done')] },
+    ], new Map());
+    const input: TaskInput = { ...run.input, mode: 'plan' };
+    const dependencies: CodeDependencies = {
+      ...run.dependencies,
+      // Plan's baseline denies every mutation; the delegation runs only
+      // because the project file explicitly allows it.
+      loadProjectPermissions: async () => ({ delegate: 'allow' }),
+      resolveProfile: async (profileInput) => {
+        seenModes.push(profileInput.mode);
+        return realResolveProfile(profileInput);
+      },
+    };
+
+    const result = await runCodeTask(input, run.ctx, { dependencies });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(seenModes, ['plan', 'plan']);
+  });
+
+  it('a child of a Plan run cannot mutate even when delegation itself is allowed', async () => {
+    const run = codeHarness([
+      { chunks: [toolChunk('d1', 'delegate', { prompt: 'child tries to write' })] },
+      { chunks: [toolChunk('w1', 'write', { path: 'forbidden.md', content: 'nope', expectedSha256: null })] },
+      { chunks: [tokenChunk('child could not write')] },
+      { chunks: [tokenChunk('parent done')] },
+    ], new Map());
+    const input: TaskInput = { ...run.input, mode: 'plan' };
+    const dependencies: CodeDependencies = {
+      ...run.dependencies,
+      loadProjectPermissions: async () => ({ delegate: 'allow' }),
+    };
+
+    const result = await runCodeTask(input, run.ctx, { dependencies });
+
+    assert.equal(result.ok, true);
+    assert.equal(run.files.has(run.resolve('forbidden.md')), false);
+    // The attempted write was collected into a parked plan, not executed.
+    const parked = run.events.find((entry) => entry.event === 'task_parked');
+    assert.equal(parked?.data.reason, 'plan_ready');
+    // A parked child cannot be continued through the parent, so delegate
+    // reports it as not completed rather than as a clean finish.
+    const child = listSubagentRuns(run.ctx.taskId)[0];
+    assert.equal(child?.state, 'error');
+    assert.match(child?.errorMessage ?? '', /stopped without completing/);
   });
 });

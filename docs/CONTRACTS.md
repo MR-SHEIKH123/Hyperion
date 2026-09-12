@@ -3387,6 +3387,12 @@ There are deliberately **no hard floors** below `inherited`. Hyperion is a
 single-user tool on the user's own machine, and a permission the user granted in
 their own project file is not something this code should second-guess.
 
+A delegated child runs this same engine, and its resolution starts from the
+**parent's mode**: `delegate` passes the parent run's mode through rather than
+substituting a hardcoded `act`. The hardcode meant a Plan run whose project
+rules happened to allow `delegate` produced a fully unrestricted child — one
+allowed call became an unrestricted agent. (D7, Master Plan v4.)
+
 ### The `builtin` layer is the base mode's baseline, not the profile's own
 
 A project profile declaring `mode: plan` starts from Plan's read-only baseline and

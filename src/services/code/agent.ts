@@ -400,7 +400,9 @@ async function delegate(
     ...parentInput,
     tool: 'code',
     prompt,
-    mode: 'act',
+    // Inherit the parent's mode: hardcoding 'act' let a restricted parent
+    // whose rules happened to allow `delegate` produce an unrestricted child.
+    mode: parentInput.mode,
   };
 
   let result: TaskResult;
