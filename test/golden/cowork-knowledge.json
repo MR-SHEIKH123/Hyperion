@@ -1,0 +1,229 @@
+{
+  "name": "cowork: knowledge-first answer, saved as an artifact",
+  "agent": "cowork",
+  "input": {
+    "tool": "cowork",
+    "chatId": "golden-chat",
+    "modelId": "model-1",
+    "prompt": "What does the handbook say about scope?",
+    "mode": "act"
+  },
+  "turns": [
+    {
+      "chunks": [
+        {
+          "type": "token",
+          "text": "The handbook says: ship small. "
+        },
+        {
+          "type": "tool_call",
+          "call": {
+            "id": "s1",
+            "name": "cowork.save_artifact",
+            "arguments": "{\"format\":\"markdown\",\"artifactKey\":\"golden-summary\",\"content\":\"# Summary\\nShip small.\"}"
+          }
+        }
+      ]
+    },
+    {
+      "chunks": [
+        {
+          "type": "token",
+          "text": "Done — saved as golden-summary v1."
+        }
+      ]
+    }
+  ],
+  "requests": [
+    {
+      "modelId": "model-1",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are Cowork, a knowledge-first research and productivity agent.\n\nUse only confirmed usable knowledge text as source evidence. Never infer facts from unavailable source status.\n\nKnowledge sources (only entries marked usable are evidence):\n\n--- Handbook (handbook.md) ---\n# Handbook\nShip small.\n\nNo relevant memory was available for this turn.\n\nWigolo status: Wigolo is unavailable. To set it up, run `npx -y wigolo init`.\n\nDo not claim Wigolo ran unless a live supervised tool returned a result.\n\nSave an artifact only when the user requested or clearly confirmed it, and only as Markdown or CSV."
+        },
+        {
+          "role": "user",
+          "content": "What does the handbook say about scope?"
+        },
+        {
+          "role": "assistant",
+          "content": "The handbook says: ship small. ",
+          "toolCalls": [
+            {
+              "id": "s1",
+              "name": "cowork.save_artifact",
+              "arguments": "{\"format\":\"markdown\",\"artifactKey\":\"golden-summary\",\"content\":\"# Summary\\nShip small.\"}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "Saved markdown artifact golden-summary version 1.",
+          "toolCallId": "s1",
+          "name": "cowork.save_artifact"
+        },
+        {
+          "role": "assistant",
+          "content": "Done — saved as golden-summary v1."
+        }
+      ],
+      "tools": [
+        {
+          "name": "cowork.save_artifact",
+          "description": "Save confirmed Markdown or CSV content as a versioned artifact.",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "format",
+              "artifactKey",
+              "content"
+            ],
+            "properties": {
+              "format": {
+                "type": "string",
+                "enum": [
+                  "markdown",
+                  "csv"
+                ]
+              },
+              "artifactKey": {
+                "type": "string",
+                "minLength": 1
+              },
+              "content": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "relPath": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ],
+      "toolChoice": "auto"
+    },
+    {
+      "modelId": "model-1",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are Cowork, a knowledge-first research and productivity agent.\n\nUse only confirmed usable knowledge text as source evidence. Never infer facts from unavailable source status.\n\nKnowledge sources (only entries marked usable are evidence):\n\n--- Handbook (handbook.md) ---\n# Handbook\nShip small.\n\nNo relevant memory was available for this turn.\n\nWigolo status: Wigolo is unavailable. To set it up, run `npx -y wigolo init`.\n\nDo not claim Wigolo ran unless a live supervised tool returned a result.\n\nSave an artifact only when the user requested or clearly confirmed it, and only as Markdown or CSV."
+        },
+        {
+          "role": "user",
+          "content": "What does the handbook say about scope?"
+        },
+        {
+          "role": "assistant",
+          "content": "The handbook says: ship small. ",
+          "toolCalls": [
+            {
+              "id": "s1",
+              "name": "cowork.save_artifact",
+              "arguments": "{\"format\":\"markdown\",\"artifactKey\":\"golden-summary\",\"content\":\"# Summary\\nShip small.\"}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "Saved markdown artifact golden-summary version 1.",
+          "toolCallId": "s1",
+          "name": "cowork.save_artifact"
+        },
+        {
+          "role": "assistant",
+          "content": "Done — saved as golden-summary v1."
+        }
+      ],
+      "tools": [
+        {
+          "name": "cowork.save_artifact",
+          "description": "Save confirmed Markdown or CSV content as a versioned artifact.",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "format",
+              "artifactKey",
+              "content"
+            ],
+            "properties": {
+              "format": {
+                "type": "string",
+                "enum": [
+                  "markdown",
+                  "csv"
+                ]
+              },
+              "artifactKey": {
+                "type": "string",
+                "minLength": 1
+              },
+              "content": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "relPath": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ],
+      "toolChoice": "auto"
+    }
+  ],
+  "events": [
+    {
+      "event": "partial",
+      "data": {
+        "text": "The handbook says: ship small. "
+      }
+    },
+    {
+      "event": "artifact",
+      "data": {
+        "artifactKey": "golden-summary",
+        "version": 1
+      }
+    },
+    {
+      "event": "artifact",
+      "data": {
+        "artifactKey": "golden-summary",
+        "version": 1,
+        "format": "markdown"
+      }
+    },
+    {
+      "event": "partial",
+      "data": {
+        "text": "Done — saved as golden-summary v1."
+      }
+    }
+  ],
+  "result": {
+    "ok": true,
+    "summary": "Done — saved as golden-summary v1.",
+    "artifacts": [
+      {
+        "key": "golden-summary",
+        "version": 1
+      }
+    ]
+  },
+  "artifacts": [
+    {
+      "artifact_key": "golden-summary",
+      "tool": "cowork",
+      "version": 1,
+      "content": "# Summary\nShip small.",
+      "label": null
+    }
+  ]
+}
