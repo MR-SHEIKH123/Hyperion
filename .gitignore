@@ -14,6 +14,9 @@ node_modules/
 # Anchoring keeps the guard on the data root, where it was aimed, without
 # shadowing source directories that happen to share a name.
 /data/
+# The anchored set below mirrors the runtime roots in src/config/env.ts
+# (env.paths) one for one — worktrees, knowledge, memory and mcp included.
+# When env.paths grows, this list grows in the same commit.
 *.db
 *.db-shm
 *.db-wal
@@ -30,6 +33,10 @@ secret.key
 /backups/
 /tmp/
 /mcp_config.json
+/worktrees/
+/knowledge/
+/memory/
+/mcp/
 
 # Editor/agent tooling, not part of the application. These are instructions for
 # Cline about how to work on Hyperion; no src/ file imports them, tsconfig only
