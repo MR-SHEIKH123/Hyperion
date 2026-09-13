@@ -1,0 +1,663 @@
+{
+  "name": "code: read, then a clobber-safe write",
+  "agent": "code",
+  "input": {
+    "tool": "code",
+    "chatId": "golden-chat",
+    "modelId": "model-1",
+    "prompt": "Rename the note.",
+    "mode": "act"
+  },
+  "turns": [
+    {
+      "chunks": [
+        {
+          "type": "tool_call",
+          "call": {
+            "id": "r1",
+            "name": "read",
+            "arguments": "{\"path\":\"note.md\"}"
+          }
+        }
+      ]
+    },
+    {
+      "chunks": [
+        {
+          "type": "tool_call",
+          "call": {
+            "id": "w1",
+            "name": "write",
+            "arguments": "{\"path\":\"note.md\",\"content\":\"renamed content\",\"expectedSha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}"
+          }
+        }
+      ]
+    },
+    {
+      "chunks": [
+        {
+          "type": "token",
+          "text": "Renamed."
+        }
+      ]
+    }
+  ],
+  "requests": [
+    {
+      "modelId": "model-1",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are Code, Hyperion’s production software-engineering agent.\n\nWork only through the offered tools. Read before writing and preserve observed SHA-256 values for clobber-safe edits.\n\nA declared command executes only its frontmatter run: value; Markdown command bodies are instructions, never shell text.\n\nDelegate only a focused bounded subtask. A child shares this workspace and cannot delegate again.\n\nAllowed tools: read, write, restore, bash, command, delegate.\n\nProject rules source: none.\nNo project rules apply to this task.\n\nActive agent profile: act (built-in).\nYou are in Act mode and may use every tool offered to you.\n\nNo registered skills are available."
+        },
+        {
+          "role": "user",
+          "content": "Rename the note."
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "toolCalls": [
+            {
+              "id": "r1",
+              "name": "read",
+              "arguments": "{\"path\":\"note.md\"}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"path\":\"note.md\",\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"bytes\":19}\nseeded file content",
+          "toolCallId": "r1",
+          "name": "read"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "toolCalls": [
+            {
+              "id": "w1",
+              "name": "write",
+              "arguments": "{\"path\":\"note.md\",\"content\":\"renamed content\",\"expectedSha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"path\":\"note.md\",\"sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"bytes\":15,\"version\":1,\"artifactKey\":\"code:file:{taskId}:note.md\"}",
+          "toolCallId": "w1",
+          "name": "write"
+        },
+        {
+          "role": "assistant",
+          "content": "Renamed."
+        }
+      ],
+      "tools": [
+        {
+          "name": "read",
+          "description": "Read one UTF-8 file in the task workspace and return its SHA-256.",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "path"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        {
+          "name": "write",
+          "description": "Clobber-safe UTF-8 file replacement. expectedSha256 is the hash previously read, or null for an observed absence.",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "path",
+              "content",
+              "expectedSha256"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "content": {
+                "type": "string"
+              },
+              "expectedSha256": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^[a-fA-F0-9]{64}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "restore",
+          "description": "Restore an inline Code file snapshot without clobbering newer work.",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "artifactKey",
+              "version",
+              "path",
+              "expectedSha256"
+            ],
+            "properties": {
+              "artifactKey": {
+                "type": "string",
+                "minLength": 1
+              },
+              "version": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "expectedSha256": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^[a-fA-F0-9]{64}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "bash",
+          "description": "Run a shell command through Hyperion’s capability, scope, timeout, cancellation, and output guards.",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "command"
+            ],
+            "properties": {
+              "command": {
+                "type": "string",
+                "minLength": 1
+              },
+              "cwd": {
+                "type": "string"
+              },
+              "timeoutMs": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        },
+        {
+          "name": "command",
+          "description": "Run a project-declared command by selector. Only frontmatter run: is executable.",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "selector"
+            ],
+            "properties": {
+              "selector": {
+                "type": "string",
+                "minLength": 1
+              },
+              "cwd": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "name": "delegate",
+          "description": "Run one focused subtask in a bounded one-level child sharing this task workspace.",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "prompt"
+            ],
+            "properties": {
+              "prompt": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 16000
+              }
+            }
+          }
+        }
+      ],
+      "toolChoice": "auto"
+    },
+    {
+      "modelId": "model-1",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are Code, Hyperion’s production software-engineering agent.\n\nWork only through the offered tools. Read before writing and preserve observed SHA-256 values for clobber-safe edits.\n\nA declared command executes only its frontmatter run: value; Markdown command bodies are instructions, never shell text.\n\nDelegate only a focused bounded subtask. A child shares this workspace and cannot delegate again.\n\nAllowed tools: read, write, restore, bash, command, delegate.\n\nProject rules source: none.\nNo project rules apply to this task.\n\nActive agent profile: act (built-in).\nYou are in Act mode and may use every tool offered to you.\n\nNo registered skills are available."
+        },
+        {
+          "role": "user",
+          "content": "Rename the note."
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "toolCalls": [
+            {
+              "id": "r1",
+              "name": "read",
+              "arguments": "{\"path\":\"note.md\"}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"path\":\"note.md\",\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"bytes\":19}\nseeded file content",
+          "toolCallId": "r1",
+          "name": "read"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "toolCalls": [
+            {
+              "id": "w1",
+              "name": "write",
+              "arguments": "{\"path\":\"note.md\",\"content\":\"renamed content\",\"expectedSha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"path\":\"note.md\",\"sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"bytes\":15,\"version\":1,\"artifactKey\":\"code:file:{taskId}:note.md\"}",
+          "toolCallId": "w1",
+          "name": "write"
+        },
+        {
+          "role": "assistant",
+          "content": "Renamed."
+        }
+      ],
+      "tools": [
+        {
+          "name": "read",
+          "description": "Read one UTF-8 file in the task workspace and return its SHA-256.",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "path"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        {
+          "name": "write",
+          "description": "Clobber-safe UTF-8 file replacement. expectedSha256 is the hash previously read, or null for an observed absence.",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "path",
+              "content",
+              "expectedSha256"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "content": {
+                "type": "string"
+              },
+              "expectedSha256": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^[a-fA-F0-9]{64}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "restore",
+          "description": "Restore an inline Code file snapshot without clobbering newer work.",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "artifactKey",
+              "version",
+              "path",
+              "expectedSha256"
+            ],
+            "properties": {
+              "artifactKey": {
+                "type": "string",
+                "minLength": 1
+              },
+              "version": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "expectedSha256": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^[a-fA-F0-9]{64}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "bash",
+          "description": "Run a shell command through Hyperion’s capability, scope, timeout, cancellation, and output guards.",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "command"
+            ],
+            "properties": {
+              "command": {
+                "type": "string",
+                "minLength": 1
+              },
+              "cwd": {
+                "type": "string"
+              },
+              "timeoutMs": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        },
+        {
+          "name": "command",
+          "description": "Run a project-declared command by selector. Only frontmatter run: is executable.",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "selector"
+            ],
+            "properties": {
+              "selector": {
+                "type": "string",
+                "minLength": 1
+              },
+              "cwd": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "name": "delegate",
+          "description": "Run one focused subtask in a bounded one-level child sharing this task workspace.",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "prompt"
+            ],
+            "properties": {
+              "prompt": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 16000
+              }
+            }
+          }
+        }
+      ],
+      "toolChoice": "auto"
+    },
+    {
+      "modelId": "model-1",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are Code, Hyperion’s production software-engineering agent.\n\nWork only through the offered tools. Read before writing and preserve observed SHA-256 values for clobber-safe edits.\n\nA declared command executes only its frontmatter run: value; Markdown command bodies are instructions, never shell text.\n\nDelegate only a focused bounded subtask. A child shares this workspace and cannot delegate again.\n\nAllowed tools: read, write, restore, bash, command, delegate.\n\nProject rules source: none.\nNo project rules apply to this task.\n\nActive agent profile: act (built-in).\nYou are in Act mode and may use every tool offered to you.\n\nNo registered skills are available."
+        },
+        {
+          "role": "user",
+          "content": "Rename the note."
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "toolCalls": [
+            {
+              "id": "r1",
+              "name": "read",
+              "arguments": "{\"path\":\"note.md\"}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"path\":\"note.md\",\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"bytes\":19}\nseeded file content",
+          "toolCallId": "r1",
+          "name": "read"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "toolCalls": [
+            {
+              "id": "w1",
+              "name": "write",
+              "arguments": "{\"path\":\"note.md\",\"content\":\"renamed content\",\"expectedSha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"path\":\"note.md\",\"sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"bytes\":15,\"version\":1,\"artifactKey\":\"code:file:{taskId}:note.md\"}",
+          "toolCallId": "w1",
+          "name": "write"
+        },
+        {
+          "role": "assistant",
+          "content": "Renamed."
+        }
+      ],
+      "tools": [
+        {
+          "name": "read",
+          "description": "Read one UTF-8 file in the task workspace and return its SHA-256.",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "path"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        {
+          "name": "write",
+          "description": "Clobber-safe UTF-8 file replacement. expectedSha256 is the hash previously read, or null for an observed absence.",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "path",
+              "content",
+              "expectedSha256"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "content": {
+                "type": "string"
+              },
+              "expectedSha256": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^[a-fA-F0-9]{64}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "restore",
+          "description": "Restore an inline Code file snapshot without clobbering newer work.",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "artifactKey",
+              "version",
+              "path",
+              "expectedSha256"
+            ],
+            "properties": {
+              "artifactKey": {
+                "type": "string",
+                "minLength": 1
+              },
+              "version": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "expectedSha256": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^[a-fA-F0-9]{64}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "bash",
+          "description": "Run a shell command through Hyperion’s capability, scope, timeout, cancellation, and output guards.",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "command"
+            ],
+            "properties": {
+              "command": {
+                "type": "string",
+                "minLength": 1
+              },
+              "cwd": {
+                "type": "string"
+              },
+              "timeoutMs": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        },
+        {
+          "name": "command",
+          "description": "Run a project-declared command by selector. Only frontmatter run: is executable.",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "selector"
+            ],
+            "properties": {
+              "selector": {
+                "type": "string",
+                "minLength": 1
+              },
+              "cwd": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "name": "delegate",
+          "description": "Run one focused subtask in a bounded one-level child sharing this task workspace.",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "prompt"
+            ],
+            "properties": {
+              "prompt": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 16000
+              }
+            }
+          }
+        }
+      ],
+      "toolChoice": "auto"
+    }
+  ],
+  "events": [
+    {
+      "event": "partial",
+      "data": {
+        "text": "Renamed."
+      }
+    }
+  ],
+  "result": {
+    "ok": true,
+    "summary": "Renamed.",
+    "artifacts": [
+      {
+        "key": "code:file:{taskId}:note.md",
+        "version": 1
+      }
+    ]
+  },
+  "artifacts": []
+}

@@ -3230,6 +3230,18 @@ compaction. Only one of those is recoverable, so the conservative number wins �
 and `assumed` travels into the step detail and the event so the UI can say the
 number was a guess instead of presenting it as fact.
 
+The ladder is only as good as what feeds it, and until the v4 window wiring the
+agents fed it nothing: every run fell to the 8192 default, so every compaction
+percentage was wrong for every real model. Now each agent resolves the
+requested model against the provider model **cache** at run start
+(`findCachedModel` — active provider first, then failover order), and the
+lookup never fetches, because a run start must not wait on the network. A
+model no cache knows keeps the honest `assumed` default; the request itself
+validates the model when it goes out. A mid-run failover keeps the originally
+resolved window: the model id is the same, and re-resolving per turn would put
+a cache read on the hot path to re-answer a question that has one good answer
+per run. (Master Plan v4, section 6.1.)
+
 ### Token counts are estimates, and the estimator matches the one already shipped
 
 `estimateTokens` uses 4 characters per token, the same ratio
@@ -3950,3 +3962,83 @@ inside the stream consumption, chunk by chunk, is what makes a subagent's spend 
 its parent's ceiling in real time rather than at child completion, by which point the
 overrun would already be paid for.
 
+---
+
+## The Design agent (added by Prompt 3 — the Design slice)
+
+**Who depends on this:** the frontend embedding the preview iframe, anyone
+touching the permission engine's unknown-tool rule, and whoever is tempted to
+give Design a filesystem or shell tool "just for convenience".
+
+### The toolset is the security model
+
+Design offers exactly nine tools and nothing else: no `bash`, no `command`,
+no `write`, no `delegate`. A design draft never needs the shell or the
+project tree, and the smaller surface is the point: the only things the model
+can mutate are its own artifact lineage and brand proposals. Enforcement sits
+in two places. The permission engine refuses any name outside the set as an
+unknown tool — a deny at the builtin layer, before any rule is consulted —
+and the dispatch table's default case is the drift insurance if the name list
+and the switch ever diverge.
+
+### Revisions are rows; undo is a new version
+
+Every generate or revise writes a NEW `artifact_versions` row under
+`design:file:{runId}:{name}`, never in place. The history is therefore the
+undo substrate: `design.undo` writes the prior content as the next version,
+so a bad undo is itself undoable and nothing is ever destroyed. The loop's
+RepeatGuard ends degenerate identical-revision cycles the same way it ends
+any other doom loop.
+
+### The model proposes; only the user approves
+
+`brand_propose` writes land in the gallery with `is_brand_approved = 0`, and
+no agent-reachable surface flips that flag — approval lives in the `/api/design`
+UI routes, which the model cannot call. The generation context only ever
+injects the APPROVED set. An agent that could approve its own proposals would
+be writing its own canon.
+
+### The preview is served inert, not sanitized
+
+`GET /api/design/preview/:versionId` serves draft bytes verbatim under
+`default-src 'none'; style-src 'unsafe-inline'; img-src data:` plus `nosniff`
+and `no-store`. A poisoned draft goes out byte-for-byte: the sandbox iframe
+attribute, the CSP and the localhost bind are the three layers, and rewriting
+the markup would be a fourth that lies about what the draft contains. Unknown
+ids, other tools' artifacts and file-backed rows share one 404, so the
+response never confirms which kind of miss it was.
+
+### vision_verify is a stub by contract
+
+It always answers `{ status: 'unverified', checks: [...] }`. Shipping the stub
+means prompts and callers are already written against the real contract, so
+the Playwright-based implementation lands without a call-site change. A draft
+is never "visually checked" until that exists, and the system prompt says so.
+
+### Model-correctable mistakes are guidance, not fatalities
+
+Argument-shape errors still throw `bad_request`, as everywhere else. What
+differs is state errors: revise-before-generate, undo-past-the-first-version
+and double-generate return explanatory tool output and the run continues.
+Design's core loop is long-running iteration, and one hallucinated call must
+not cost twenty revisions of kept work.
+
+---
+
+## Golden-run regression tests (added by Master Plan v4, section 6.8)
+
+**Who depends on this:** anyone editing an agent's system prompt, tool
+schemas or message assembly — and anyone reviewing such an edit.
+
+One real run per agent is recorded in `test/golden/*.json`: every request
+sent to the provider, every event emitted, the result, and the artifact rows
+written (run/task ids and generated UUIDs normalised out). Replaying the
+recording drives the agent through the same scripted turns and asserts
+byte-for-byte equality, so a prompt reword or a reordered tool list fails a
+test instead of silently changing what the model sees. Unit tests cover
+branches; goldens cover the assembled whole.
+
+When a drift is intentional, re-record — `HYPERION_RECORD_GOLDEN=1
+node --test test/goldenruns.test.ts` — and review the fixture diff like
+any other change. Hand-editing a fixture to make a failing run pass defeats
+the purpose: the diff review is the check.

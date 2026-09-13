@@ -8,10 +8,12 @@
 import { registerAgent, registerTerminal } from '../../orchestrator/agents.ts';
 import { createCodeAgent } from '../code/agent.ts';
 import { createCoworkAgent } from '../cowork/agent.ts';
+import { createDesignAgent } from '../design/agent.ts';
 import { terminalModule } from '../terminal/executor.ts';
 
 export function registerProductionModules(): void {
   registerAgent('cowork', createCoworkAgent());
   registerAgent('code', createCodeAgent());
+  registerAgent('design', createDesignAgent());
   registerTerminal(terminalModule);
 }

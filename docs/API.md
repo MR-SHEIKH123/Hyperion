@@ -917,10 +917,10 @@ Known keys: `theme` (`'dark'`, fixed), `cost_tracking_enabled` (`true`),
 
 ## 12. Agent tools — `/api/code`, `/api/cowork`, `/api/design`, `/api/agents`
 
-These are the seams for Kimi's and Sol's modules. **The bodies are not mine** —
-the routes are wired, validated, locked and streamed here, but until a module
-registers they return **501** (`agent_not_registered` / `terminal_not_registered`)
-as plain JSON.
+These routes are wired, validated, locked and streamed here, with the agent
+modules registered at boot — `cowork`, `code`, `design` and the terminal, via
+`registerProductionModules`. If a module is ever absent they keep returning
+**501** (`agent_not_registered` / `terminal_not_registered`) as plain JSON.
 
 | Method | Path | Response |
 | --- | --- | --- |
@@ -1215,6 +1215,51 @@ Scheduled Cowork runs (§17.2) are cancellable through the same
 `/api/cowork/tasks/:taskId/cancel` path, using the scheduled task's own id. A
 stopped scheduled run is recorded with status `skipped` and its `lastRunAt` is
 stamped, so it does not immediately come due again on the next tick.
+
+### 12.4 The Design agent  *(new — Prompt 3, the Design slice)*
+
+Design registers at boot alongside Cowork and Code, so `/api/design/run-task`
+streams SSE like any other agent run. `taskId` is optional (unlike Code): with
+no worktree to name, the chat id is the identity when one is not supplied. A
+design run shares the app-wide job lock with Cowork and chat (§12.1).
+
+**The toolset is closed.** The model is offered exactly these tools, and the
+permission engine refuses anything else as an unknown tool:
+
+| Tool | Effect | What it does |
+| --- | --- | --- |
+| `design.generate_html` | mutate | Create the run's HTML+CSS draft (version 1) |
+| `design.generate_svg` | mutate | Create an SVG asset artifact |
+| `design.revise` | mutate | New version of an existing artifact; the `note` becomes the version label |
+| `design.preview_snapshot` | read | Latest version + its sandboxed preview URL |
+| `design.save_asset` | mutate | Declare the latest version the run's deliverable (returned in `TaskResult.artifacts`) |
+| `design.brand_read` | read | The approved brand set; SVG content comes back inline |
+| `design.brand_propose` | mutate | Propose a brand candidate — lands **unapproved** (§23) |
+| `design.undo` | mutate | Restore the run's previous state of an artifact as a new version |
+| `design.vision_verify` | read | Stub: always `{ status: 'unverified', checks: [...] }` |
+
+There is no `bash`, `command`, `write` or `delegate`. Drafts are rows in
+`artifact_versions` under keys `design:file:{runId}:{name}` — append-only, so
+the history is the undo substrate: `design.undo` writes the prior content as
+the next version, and nothing is ever overwritten or deleted. Model-
+correctable mistakes (revising a draft that does not exist, undoing past the
+first version, generating twice) come back as guidance in the tool output
+rather than killing the run — iteration is the core loop here.
+
+#### The sandboxed preview
+
+| Method | Path | Response |
+| --- | --- | --- |
+| GET | `/api/design/preview/:versionId` | the draft bytes — `text/html`, or `image/svg+xml` for `.svg` keys |
+
+Drafts are model output and therefore untrusted markup. The response carries
+`Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; img-src
+data:` — no scripts, no network, no fonts — plus `X-Content-Type-Options:
+nosniff` and `Cache-Control: no-store`. Embed it as `<iframe sandbox src=...>`
+with **no** `allow-same-origin` and **no** `allow-scripts`: the attribute, the
+CSP and the localhost bind are three independent layers. An unknown id, another
+tool's artifact and a file-backed row all get the same **404 `not_found`**, which
+confirms none of them.
 
 ---
 

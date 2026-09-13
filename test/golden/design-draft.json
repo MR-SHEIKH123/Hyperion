@@ -1,0 +1,1019 @@
+{
+  "name": "design: generate, revise, save the deliverable",
+  "agent": "design",
+  "input": {
+    "tool": "design",
+    "chatId": "golden-chat",
+    "modelId": "model-1",
+    "prompt": "Design a small landing hero.",
+    "mode": "act"
+  },
+  "turns": [
+    {
+      "chunks": [
+        {
+          "type": "tool_call",
+          "call": {
+            "id": "g1",
+            "name": "design.generate_html",
+            "arguments": "{\"content\":\"<html><body><h1>Golden hero</h1></body></html>\",\"title\":\"golden hero\"}"
+          }
+        }
+      ]
+    },
+    {
+      "chunks": [
+        {
+          "type": "tool_call",
+          "call": {
+            "id": "r1",
+            "name": "design.revise",
+            "arguments": "{\"content\":\"<html><body><h1>Golden hero</h1><p>Ship small.</p></body></html>\",\"note\":\"add the tagline\"}"
+          }
+        }
+      ]
+    },
+    {
+      "chunks": [
+        {
+          "type": "tool_call",
+          "call": {
+            "id": "s1",
+            "name": "design.save_asset",
+            "arguments": "{}"
+          }
+        }
+      ]
+    },
+    {
+      "chunks": [
+        {
+          "type": "token",
+          "text": "The deliverable is version 2."
+        }
+      ]
+    }
+  ],
+  "requests": [
+    {
+      "modelId": "model-1",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are Design, Hyperion's iterative visual-design agent.\n\nYou produce complete HTML documents (CSS inline or in <style>) and SVG assets. Work iteratively: generate once, then revise in small described steps. Never regenerate what a revision could change — the version history is the user's safety net.\n\nYour toolset is closed: design.generate_html, design.generate_svg, design.revise, design.preview_snapshot, design.save_asset, design.brand_read, design.brand_propose, design.undo, design.vision_verify. You cannot run shell commands, read or write project files, or delegate. Do not attempt to.\n\nPreviews are served sandboxed — no scripts, no network, no same-origin — over the localhost API. design.preview_snapshot returns the URL of the current version.\n\ndesign.vision_verify is a stub and always reports unverified. Never claim you visually checked a draft.\n\nEnd with a short summary naming the deliverable version (declare it with design.save_asset once the work is finished).\n\nApproved brand assets: none. Nothing is canonical until the user approves an asset."
+        },
+        {
+          "role": "user",
+          "content": "Design a small landing hero."
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "toolCalls": [
+            {
+              "id": "g1",
+              "name": "design.generate_html",
+              "arguments": "{\"content\":\"<html><body><h1>Golden hero</h1></body></html>\",\"title\":\"golden hero\"}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "Created draft.html version 1 (46 bytes). Preview: /api/design/preview/{uuid}",
+          "toolCallId": "g1",
+          "name": "design.generate_html"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "toolCalls": [
+            {
+              "id": "r1",
+              "name": "design.revise",
+              "arguments": "{\"content\":\"<html><body><h1>Golden hero</h1><p>Ship small.</p></body></html>\",\"note\":\"add the tagline\"}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "Revised: draft.html version 2 (64 bytes). Preview: /api/design/preview/{uuid} Revision note: add the tagline",
+          "toolCallId": "r1",
+          "name": "design.revise"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "toolCalls": [
+            {
+              "id": "s1",
+              "name": "design.save_asset",
+              "arguments": "{}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "Saved as the deliverable: draft.html version 2 (64 bytes). Preview: /api/design/preview/{uuid}",
+          "toolCallId": "s1",
+          "name": "design.save_asset"
+        },
+        {
+          "role": "assistant",
+          "content": "The deliverable is version 2."
+        }
+      ],
+      "tools": [
+        {
+          "name": "design.generate_html",
+          "description": "Create the run's HTML+CSS draft (first version). Revise afterwards; never regenerate.",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "content"
+            ],
+            "properties": {
+              "content": {
+                "type": "string",
+                "minLength": 1,
+                "description": "A complete HTML document, CSS inline or in <style>."
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "name": "design.generate_svg",
+          "description": "Create an SVG asset (logo, icon, illustration) as a new versioned artifact.",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "filename",
+              "content"
+            ],
+            "properties": {
+              "filename": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Must end in .svg"
+              },
+              "content": {
+                "type": "string",
+                "minLength": 1,
+                "description": "The SVG document."
+              }
+            }
+          }
+        },
+        {
+          "name": "design.revise",
+          "description": "Apply one revision to an existing artifact, producing a new version. The iterative core: small, described changes.",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "content",
+              "note"
+            ],
+            "properties": {
+              "target": {
+                "type": "string",
+                "description": "Which artifact to act on: omit for the HTML draft (\"draft.html\"), or the filename of an SVG asset from this run."
+              },
+              "content": {
+                "type": "string",
+                "minLength": 1,
+                "description": "The full revised document, not a diff."
+              },
+              "note": {
+                "type": "string",
+                "minLength": 1,
+                "description": "What this revision changes and why — it becomes the version label."
+              }
+            }
+          }
+        },
+        {
+          "name": "design.preview_snapshot",
+          "description": "Read the current state of an artifact: latest version and the URL the sandboxed preview iframe serves.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "target": {
+                "type": "string",
+                "description": "Which artifact to act on: omit for the HTML draft (\"draft.html\"), or the filename of an SVG asset from this run."
+              }
+            }
+          }
+        },
+        {
+          "name": "design.save_asset",
+          "description": "Declare a version the deliverable of this run. The user closes the loop; save only finished work.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "target": {
+                "type": "string",
+                "description": "Which artifact to act on: omit for the HTML draft (\"draft.html\"), or the filename of an SVG asset from this run."
+              },
+              "version": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Defaults to the latest."
+              }
+            }
+          }
+        },
+        {
+          "name": "design.brand_read",
+          "description": "Read the approved brand assets (the canonical set). Only approved rows are ever returned.",
+          "parameters": {
+            "type": "object",
+            "properties": {}
+          }
+        },
+        {
+          "name": "design.brand_propose",
+          "description": "Propose a candidate brand asset (SVG). Lands unapproved; only the user can approve it.",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "filename",
+              "content"
+            ],
+            "properties": {
+              "filename": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Must end in .svg"
+              },
+              "content": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        {
+          "name": "design.undo",
+          "description": "Roll back the run's own last change to an artifact by restoring the previous content as a new version.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "target": {
+                "type": "string",
+                "description": "Which artifact to act on: omit for the HTML draft (\"draft.html\"), or the filename of an SVG asset from this run."
+              }
+            }
+          }
+        },
+        {
+          "name": "design.vision_verify",
+          "description": "Visual verification STUB: always reports unverified. Never claim a draft was visually checked.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "target": {
+                "type": "string",
+                "description": "Which artifact to act on: omit for the HTML draft (\"draft.html\"), or the filename of an SVG asset from this run."
+              }
+            }
+          }
+        }
+      ],
+      "toolChoice": "auto"
+    },
+    {
+      "modelId": "model-1",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are Design, Hyperion's iterative visual-design agent.\n\nYou produce complete HTML documents (CSS inline or in <style>) and SVG assets. Work iteratively: generate once, then revise in small described steps. Never regenerate what a revision could change — the version history is the user's safety net.\n\nYour toolset is closed: design.generate_html, design.generate_svg, design.revise, design.preview_snapshot, design.save_asset, design.brand_read, design.brand_propose, design.undo, design.vision_verify. You cannot run shell commands, read or write project files, or delegate. Do not attempt to.\n\nPreviews are served sandboxed — no scripts, no network, no same-origin — over the localhost API. design.preview_snapshot returns the URL of the current version.\n\ndesign.vision_verify is a stub and always reports unverified. Never claim you visually checked a draft.\n\nEnd with a short summary naming the deliverable version (declare it with design.save_asset once the work is finished).\n\nApproved brand assets: none. Nothing is canonical until the user approves an asset."
+        },
+        {
+          "role": "user",
+          "content": "Design a small landing hero."
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "toolCalls": [
+            {
+              "id": "g1",
+              "name": "design.generate_html",
+              "arguments": "{\"content\":\"<html><body><h1>Golden hero</h1></body></html>\",\"title\":\"golden hero\"}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "Created draft.html version 1 (46 bytes). Preview: /api/design/preview/{uuid}",
+          "toolCallId": "g1",
+          "name": "design.generate_html"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "toolCalls": [
+            {
+              "id": "r1",
+              "name": "design.revise",
+              "arguments": "{\"content\":\"<html><body><h1>Golden hero</h1><p>Ship small.</p></body></html>\",\"note\":\"add the tagline\"}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "Revised: draft.html version 2 (64 bytes). Preview: /api/design/preview/{uuid} Revision note: add the tagline",
+          "toolCallId": "r1",
+          "name": "design.revise"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "toolCalls": [
+            {
+              "id": "s1",
+              "name": "design.save_asset",
+              "arguments": "{}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "Saved as the deliverable: draft.html version 2 (64 bytes). Preview: /api/design/preview/{uuid}",
+          "toolCallId": "s1",
+          "name": "design.save_asset"
+        },
+        {
+          "role": "assistant",
+          "content": "The deliverable is version 2."
+        }
+      ],
+      "tools": [
+        {
+          "name": "design.generate_html",
+          "description": "Create the run's HTML+CSS draft (first version). Revise afterwards; never regenerate.",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "content"
+            ],
+            "properties": {
+              "content": {
+                "type": "string",
+                "minLength": 1,
+                "description": "A complete HTML document, CSS inline or in <style>."
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "name": "design.generate_svg",
+          "description": "Create an SVG asset (logo, icon, illustration) as a new versioned artifact.",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "filename",
+              "content"
+            ],
+            "properties": {
+              "filename": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Must end in .svg"
+              },
+              "content": {
+                "type": "string",
+                "minLength": 1,
+                "description": "The SVG document."
+              }
+            }
+          }
+        },
+        {
+          "name": "design.revise",
+          "description": "Apply one revision to an existing artifact, producing a new version. The iterative core: small, described changes.",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "content",
+              "note"
+            ],
+            "properties": {
+              "target": {
+                "type": "string",
+                "description": "Which artifact to act on: omit for the HTML draft (\"draft.html\"), or the filename of an SVG asset from this run."
+              },
+              "content": {
+                "type": "string",
+                "minLength": 1,
+                "description": "The full revised document, not a diff."
+              },
+              "note": {
+                "type": "string",
+                "minLength": 1,
+                "description": "What this revision changes and why — it becomes the version label."
+              }
+            }
+          }
+        },
+        {
+          "name": "design.preview_snapshot",
+          "description": "Read the current state of an artifact: latest version and the URL the sandboxed preview iframe serves.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "target": {
+                "type": "string",
+                "description": "Which artifact to act on: omit for the HTML draft (\"draft.html\"), or the filename of an SVG asset from this run."
+              }
+            }
+          }
+        },
+        {
+          "name": "design.save_asset",
+          "description": "Declare a version the deliverable of this run. The user closes the loop; save only finished work.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "target": {
+                "type": "string",
+                "description": "Which artifact to act on: omit for the HTML draft (\"draft.html\"), or the filename of an SVG asset from this run."
+              },
+              "version": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Defaults to the latest."
+              }
+            }
+          }
+        },
+        {
+          "name": "design.brand_read",
+          "description": "Read the approved brand assets (the canonical set). Only approved rows are ever returned.",
+          "parameters": {
+            "type": "object",
+            "properties": {}
+          }
+        },
+        {
+          "name": "design.brand_propose",
+          "description": "Propose a candidate brand asset (SVG). Lands unapproved; only the user can approve it.",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "filename",
+              "content"
+            ],
+            "properties": {
+              "filename": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Must end in .svg"
+              },
+              "content": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        {
+          "name": "design.undo",
+          "description": "Roll back the run's own last change to an artifact by restoring the previous content as a new version.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "target": {
+                "type": "string",
+                "description": "Which artifact to act on: omit for the HTML draft (\"draft.html\"), or the filename of an SVG asset from this run."
+              }
+            }
+          }
+        },
+        {
+          "name": "design.vision_verify",
+          "description": "Visual verification STUB: always reports unverified. Never claim a draft was visually checked.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "target": {
+                "type": "string",
+                "description": "Which artifact to act on: omit for the HTML draft (\"draft.html\"), or the filename of an SVG asset from this run."
+              }
+            }
+          }
+        }
+      ],
+      "toolChoice": "auto"
+    },
+    {
+      "modelId": "model-1",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are Design, Hyperion's iterative visual-design agent.\n\nYou produce complete HTML documents (CSS inline or in <style>) and SVG assets. Work iteratively: generate once, then revise in small described steps. Never regenerate what a revision could change — the version history is the user's safety net.\n\nYour toolset is closed: design.generate_html, design.generate_svg, design.revise, design.preview_snapshot, design.save_asset, design.brand_read, design.brand_propose, design.undo, design.vision_verify. You cannot run shell commands, read or write project files, or delegate. Do not attempt to.\n\nPreviews are served sandboxed — no scripts, no network, no same-origin — over the localhost API. design.preview_snapshot returns the URL of the current version.\n\ndesign.vision_verify is a stub and always reports unverified. Never claim you visually checked a draft.\n\nEnd with a short summary naming the deliverable version (declare it with design.save_asset once the work is finished).\n\nApproved brand assets: none. Nothing is canonical until the user approves an asset."
+        },
+        {
+          "role": "user",
+          "content": "Design a small landing hero."
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "toolCalls": [
+            {
+              "id": "g1",
+              "name": "design.generate_html",
+              "arguments": "{\"content\":\"<html><body><h1>Golden hero</h1></body></html>\",\"title\":\"golden hero\"}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "Created draft.html version 1 (46 bytes). Preview: /api/design/preview/{uuid}",
+          "toolCallId": "g1",
+          "name": "design.generate_html"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "toolCalls": [
+            {
+              "id": "r1",
+              "name": "design.revise",
+              "arguments": "{\"content\":\"<html><body><h1>Golden hero</h1><p>Ship small.</p></body></html>\",\"note\":\"add the tagline\"}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "Revised: draft.html version 2 (64 bytes). Preview: /api/design/preview/{uuid} Revision note: add the tagline",
+          "toolCallId": "r1",
+          "name": "design.revise"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "toolCalls": [
+            {
+              "id": "s1",
+              "name": "design.save_asset",
+              "arguments": "{}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "Saved as the deliverable: draft.html version 2 (64 bytes). Preview: /api/design/preview/{uuid}",
+          "toolCallId": "s1",
+          "name": "design.save_asset"
+        },
+        {
+          "role": "assistant",
+          "content": "The deliverable is version 2."
+        }
+      ],
+      "tools": [
+        {
+          "name": "design.generate_html",
+          "description": "Create the run's HTML+CSS draft (first version). Revise afterwards; never regenerate.",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "content"
+            ],
+            "properties": {
+              "content": {
+                "type": "string",
+                "minLength": 1,
+                "description": "A complete HTML document, CSS inline or in <style>."
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "name": "design.generate_svg",
+          "description": "Create an SVG asset (logo, icon, illustration) as a new versioned artifact.",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "filename",
+              "content"
+            ],
+            "properties": {
+              "filename": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Must end in .svg"
+              },
+              "content": {
+                "type": "string",
+                "minLength": 1,
+                "description": "The SVG document."
+              }
+            }
+          }
+        },
+        {
+          "name": "design.revise",
+          "description": "Apply one revision to an existing artifact, producing a new version. The iterative core: small, described changes.",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "content",
+              "note"
+            ],
+            "properties": {
+              "target": {
+                "type": "string",
+                "description": "Which artifact to act on: omit for the HTML draft (\"draft.html\"), or the filename of an SVG asset from this run."
+              },
+              "content": {
+                "type": "string",
+                "minLength": 1,
+                "description": "The full revised document, not a diff."
+              },
+              "note": {
+                "type": "string",
+                "minLength": 1,
+                "description": "What this revision changes and why — it becomes the version label."
+              }
+            }
+          }
+        },
+        {
+          "name": "design.preview_snapshot",
+          "description": "Read the current state of an artifact: latest version and the URL the sandboxed preview iframe serves.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "target": {
+                "type": "string",
+                "description": "Which artifact to act on: omit for the HTML draft (\"draft.html\"), or the filename of an SVG asset from this run."
+              }
+            }
+          }
+        },
+        {
+          "name": "design.save_asset",
+          "description": "Declare a version the deliverable of this run. The user closes the loop; save only finished work.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "target": {
+                "type": "string",
+                "description": "Which artifact to act on: omit for the HTML draft (\"draft.html\"), or the filename of an SVG asset from this run."
+              },
+              "version": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Defaults to the latest."
+              }
+            }
+          }
+        },
+        {
+          "name": "design.brand_read",
+          "description": "Read the approved brand assets (the canonical set). Only approved rows are ever returned.",
+          "parameters": {
+            "type": "object",
+            "properties": {}
+          }
+        },
+        {
+          "name": "design.brand_propose",
+          "description": "Propose a candidate brand asset (SVG). Lands unapproved; only the user can approve it.",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "filename",
+              "content"
+            ],
+            "properties": {
+              "filename": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Must end in .svg"
+              },
+              "content": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        {
+          "name": "design.undo",
+          "description": "Roll back the run's own last change to an artifact by restoring the previous content as a new version.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "target": {
+                "type": "string",
+                "description": "Which artifact to act on: omit for the HTML draft (\"draft.html\"), or the filename of an SVG asset from this run."
+              }
+            }
+          }
+        },
+        {
+          "name": "design.vision_verify",
+          "description": "Visual verification STUB: always reports unverified. Never claim a draft was visually checked.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "target": {
+                "type": "string",
+                "description": "Which artifact to act on: omit for the HTML draft (\"draft.html\"), or the filename of an SVG asset from this run."
+              }
+            }
+          }
+        }
+      ],
+      "toolChoice": "auto"
+    },
+    {
+      "modelId": "model-1",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are Design, Hyperion's iterative visual-design agent.\n\nYou produce complete HTML documents (CSS inline or in <style>) and SVG assets. Work iteratively: generate once, then revise in small described steps. Never regenerate what a revision could change — the version history is the user's safety net.\n\nYour toolset is closed: design.generate_html, design.generate_svg, design.revise, design.preview_snapshot, design.save_asset, design.brand_read, design.brand_propose, design.undo, design.vision_verify. You cannot run shell commands, read or write project files, or delegate. Do not attempt to.\n\nPreviews are served sandboxed — no scripts, no network, no same-origin — over the localhost API. design.preview_snapshot returns the URL of the current version.\n\ndesign.vision_verify is a stub and always reports unverified. Never claim you visually checked a draft.\n\nEnd with a short summary naming the deliverable version (declare it with design.save_asset once the work is finished).\n\nApproved brand assets: none. Nothing is canonical until the user approves an asset."
+        },
+        {
+          "role": "user",
+          "content": "Design a small landing hero."
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "toolCalls": [
+            {
+              "id": "g1",
+              "name": "design.generate_html",
+              "arguments": "{\"content\":\"<html><body><h1>Golden hero</h1></body></html>\",\"title\":\"golden hero\"}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "Created draft.html version 1 (46 bytes). Preview: /api/design/preview/{uuid}",
+          "toolCallId": "g1",
+          "name": "design.generate_html"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "toolCalls": [
+            {
+              "id": "r1",
+              "name": "design.revise",
+              "arguments": "{\"content\":\"<html><body><h1>Golden hero</h1><p>Ship small.</p></body></html>\",\"note\":\"add the tagline\"}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "Revised: draft.html version 2 (64 bytes). Preview: /api/design/preview/{uuid} Revision note: add the tagline",
+          "toolCallId": "r1",
+          "name": "design.revise"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "toolCalls": [
+            {
+              "id": "s1",
+              "name": "design.save_asset",
+              "arguments": "{}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "Saved as the deliverable: draft.html version 2 (64 bytes). Preview: /api/design/preview/{uuid}",
+          "toolCallId": "s1",
+          "name": "design.save_asset"
+        },
+        {
+          "role": "assistant",
+          "content": "The deliverable is version 2."
+        }
+      ],
+      "tools": [
+        {
+          "name": "design.generate_html",
+          "description": "Create the run's HTML+CSS draft (first version). Revise afterwards; never regenerate.",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "content"
+            ],
+            "properties": {
+              "content": {
+                "type": "string",
+                "minLength": 1,
+                "description": "A complete HTML document, CSS inline or in <style>."
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "name": "design.generate_svg",
+          "description": "Create an SVG asset (logo, icon, illustration) as a new versioned artifact.",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "filename",
+              "content"
+            ],
+            "properties": {
+              "filename": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Must end in .svg"
+              },
+              "content": {
+                "type": "string",
+                "minLength": 1,
+                "description": "The SVG document."
+              }
+            }
+          }
+        },
+        {
+          "name": "design.revise",
+          "description": "Apply one revision to an existing artifact, producing a new version. The iterative core: small, described changes.",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "content",
+              "note"
+            ],
+            "properties": {
+              "target": {
+                "type": "string",
+                "description": "Which artifact to act on: omit for the HTML draft (\"draft.html\"), or the filename of an SVG asset from this run."
+              },
+              "content": {
+                "type": "string",
+                "minLength": 1,
+                "description": "The full revised document, not a diff."
+              },
+              "note": {
+                "type": "string",
+                "minLength": 1,
+                "description": "What this revision changes and why — it becomes the version label."
+              }
+            }
+          }
+        },
+        {
+          "name": "design.preview_snapshot",
+          "description": "Read the current state of an artifact: latest version and the URL the sandboxed preview iframe serves.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "target": {
+                "type": "string",
+                "description": "Which artifact to act on: omit for the HTML draft (\"draft.html\"), or the filename of an SVG asset from this run."
+              }
+            }
+          }
+        },
+        {
+          "name": "design.save_asset",
+          "description": "Declare a version the deliverable of this run. The user closes the loop; save only finished work.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "target": {
+                "type": "string",
+                "description": "Which artifact to act on: omit for the HTML draft (\"draft.html\"), or the filename of an SVG asset from this run."
+              },
+              "version": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Defaults to the latest."
+              }
+            }
+          }
+        },
+        {
+          "name": "design.brand_read",
+          "description": "Read the approved brand assets (the canonical set). Only approved rows are ever returned.",
+          "parameters": {
+            "type": "object",
+            "properties": {}
+          }
+        },
+        {
+          "name": "design.brand_propose",
+          "description": "Propose a candidate brand asset (SVG). Lands unapproved; only the user can approve it.",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "filename",
+              "content"
+            ],
+            "properties": {
+              "filename": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Must end in .svg"
+              },
+              "content": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        {
+          "name": "design.undo",
+          "description": "Roll back the run's own last change to an artifact by restoring the previous content as a new version.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "target": {
+                "type": "string",
+                "description": "Which artifact to act on: omit for the HTML draft (\"draft.html\"), or the filename of an SVG asset from this run."
+              }
+            }
+          }
+        },
+        {
+          "name": "design.vision_verify",
+          "description": "Visual verification STUB: always reports unverified. Never claim a draft was visually checked.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "target": {
+                "type": "string",
+                "description": "Which artifact to act on: omit for the HTML draft (\"draft.html\"), or the filename of an SVG asset from this run."
+              }
+            }
+          }
+        }
+      ],
+      "toolChoice": "auto"
+    }
+  ],
+  "events": [
+    {
+      "event": "artifact",
+      "data": {
+        "artifactKey": "design:file:{runId}:draft.html",
+        "version": 1
+      }
+    },
+    {
+      "event": "artifact",
+      "data": {
+        "artifactKey": "design:file:{runId}:draft.html",
+        "version": 2
+      }
+    },
+    {
+      "event": "partial",
+      "data": {
+        "text": "The deliverable is version 2."
+      }
+    }
+  ],
+  "result": {
+    "ok": true,
+    "summary": "The deliverable is version 2.",
+    "artifacts": [
+      {
+        "key": "design:file:{runId}:draft.html",
+        "version": 2
+      }
+    ]
+  },
+  "artifacts": [
+    {
+      "artifact_key": "design:file:{runId}:draft.html",
+      "tool": "design",
+      "version": 1,
+      "content": "<html><body><h1>Golden hero</h1></body></html>",
+      "label": "golden hero"
+    },
+    {
+      "artifact_key": "design:file:{runId}:draft.html",
+      "tool": "design",
+      "version": 2,
+      "content": "<html><body><h1>Golden hero</h1><p>Ship small.</p></body></html>",
+      "label": "add the tagline"
+    }
+  ]
+}

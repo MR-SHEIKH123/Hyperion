@@ -55,6 +55,48 @@ content to fill holes.
   in conversation or code comments alone. Conversation-only items are treated
   as undecided until committed.
 
+## Landed since this register opened
+
+- **v4 §6.1 — model-aware context windows** (2026-09-12): `findCachedModel`
+  (cache-only, active provider then failover order, never fetches) and all
+  three agents resolve the requested model's real `contextLength` at run
+  start; unknown models keep the honest `assumed` default. Tests in
+  `test/modelwindow.test.ts`, mutation-verified.
+- **v4 §6.4 — verified already landed** (per-run `unattended` on TaskInput,
+  scheduler-allocated `task_runs` rows, push on unattended parks gated by
+  `push_enabled`). Nothing to build; reconciled, not rebuilt.
+- **v4 §6.8 — landed.** reload-config, the agent-profiles and
+  resolved-permissions endpoints, and the activity-feed dedupe of scheduler
+  rows (`visibleTaskRuns`) were verified already in the tree; the one missing
+  piece was built 2026-09-12: the golden-run regression harness
+  (`test/goldenruns.test.ts` + `test/golden/*.json`), one recorded run per
+  agent replayed byte-for-byte, re-recordable via `HYPERION_RECORD_GOLDEN=1`,
+  drift-catch verified by a prompt mutation.
+
+- **The Design agent (v4 §3 / Prompt 3's last slice)** — 2026-09-11:
+  `src/services/design/{agent,tools}.ts`, registered third in
+  `composition.ts`, the sandboxed preview route in `src/http/design.ts`,
+  the `design` built-in profile, and `test/designagent.test.ts` (agent-level
+  against the real artifact store, plus real-server HTTP with the mock
+  provider). Closed toolset, `design:` artifact namespace, brand proposals
+  unapproved by construction, vision stub, guidance-not-fatal state errors.
+
+## Resolved verifications
+
+- **Cowork: complete against Slice 4, not a stub** (verified against the code
+  2026-09-12, answering v4 §2's "registered != completed" flag):
+  knowledge-first prompting with sources statused before content
+  (`readKnowledgeSource` enforces sha256, UTF-8, size and type bounds);
+  wigolo offered only when configured, enabled AND running under the MCP
+  supervisor, with an honest status line in the prompt otherwise; the shared
+  compaction hook wired (`context: { messages, replace, window }`); partial
+  text and artifacts preserved on a failed late turn (pinned by
+  `coworkagent.test.ts`); `cowork.save_artifact` writes real
+  `artifact_versions` rows. The one genuinely open sub-item is a product
+  question, not an implementation gap: when wigolo is absent there is no
+  fallback research path at all — the absence is reported honestly. Whether
+  a fallback should exist is the owner's call.
+
 ## Open decisions
 
 - **Open #3 — who builds Design.** Whether Design's Slice 5 output is worth
@@ -65,8 +107,13 @@ content to fill holes.
   gate was dropped (structurally unfalsifiable from inside a session) and
   replaced with artifact judgment: `open-decision-3/EVIDENCE.md` plus
   `open-decision-3/component/v1..v3`, 2 revisions, uncertainty and a
-  production-trust judgment included. The owner closes this after
-  reviewing the artifact.
+  production-trust judgment included.
+
+  **RESOLVED 2026-09-11 (practical question only):** the owner verified the
+  artifact directly and ruled this channel's output good enough to build the
+  Design agent against. The narrower question — whether Kimi specifically
+  outperforms this channel — stays genuinely open until a confirmed-Kimi
+  session exists. Do not conflate the two.
 - **v4 ratification.** §6.6 (S-1/S-2) was ratified and shipped 2026-09-11.
   The remaining v4 upgrade-track items not already marked landed above
   (§6.1, §6.4, §6.8) stay proposals until the owner ratifies them.

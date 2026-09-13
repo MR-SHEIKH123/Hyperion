@@ -27,6 +27,7 @@ import { assertKnownTools, permissionLayers, profileSelector, resolveProfile } f
 import { sessionPermissionRules } from '../../db/approvals.ts';
 import { loadConversation } from '../../db/taskMessages.ts';
 import { resolveContextWindow } from '../agent/compaction.ts';
+import { findCachedModel } from '../../providers/registry.ts';
 import { toAppError, AppError } from '../../util/errors.ts';
 import { TaskBudget } from '../limits/budget.ts';
 
@@ -61,6 +62,8 @@ export interface CoworkDependencies {
   resolveProfile?: typeof resolveProfile;
   sessionPermissionRules?: (taskId: string) => Record<string, PermissionRule>;
   resolveContextWindow?: (input: { model?: ModelInfo; override?: number }) => ReturnType<typeof resolveContextWindow>;
+  /** Test seam for the cache-only model lookup; production uses the registry. */
+  findModel?: (modelId: string) => ModelInfo | null;
   createBudget?: () => TaskBudget;
   unattended?: boolean;
   iterationCeiling?: number;
@@ -348,6 +351,11 @@ export async function runCoworkTask(
       return serialiseToolResult(result);
     };
 
+    // The window is the model's real one when a provider cache knows it.
+    // Cache-only: a run start must not wait on a network call, and an
+    // unknown model keeps the honest `assumed` default.
+    const modelInfo = (deps.findModel ?? findCachedModel)(input.modelId);
+
     const loop = await runAgentLoop({
       runId: ctx.runId,
       taskId: ctx.taskId,
@@ -366,7 +374,9 @@ export async function runCoworkTask(
       context: {
         messages: () => messages,
         replace: (next) => { messages = [...next]; },
-        window: (deps.resolveContextWindow ?? ((value) => resolveContextWindow(value)))({}),
+        window: (deps.resolveContextWindow ?? ((value) => resolveContextWindow(value)))(
+          modelInfo === null ? {} : { model: modelInfo },
+        ),
       },
       turn: async (feedback) => {
         for (const item of feedback) {
