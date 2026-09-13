@@ -57,6 +57,19 @@ content to fill holes.
 
 ## Landed since this register opened
 
+- **v4 §6.1 — model-aware context windows** (2026-09-12): `findCachedModel`
+  (cache-only, active provider then failover order, never fetches) and all
+  three agents resolve the requested model's real `contextLength` at run
+  start; unknown models keep the honest `assumed` default. Tests in
+  `test/modelwindow.test.ts`, mutation-verified.
+- **v4 §6.4 — verified already landed** (per-run `unattended` on TaskInput,
+  scheduler-allocated `task_runs` rows, push on unattended parks gated by
+  `push_enabled`). Nothing to build; reconciled, not rebuilt.
+- **v4 §6.8 — mostly landed already** (reload-config, agent-profiles and
+  resolved-permissions endpoints, activity-feed dedupe of scheduler rows via
+  `visibleTaskRuns`). The one genuinely missing piece — the golden-run
+  regression harness — is the remaining build item.
+
 - **The Design agent (v4 §3 / Prompt 3's last slice)** — 2026-09-11:
   `src/services/design/{agent,tools}.ts`, registered third in
   `composition.ts`, the sandboxed preview route in `src/http/design.ts`,

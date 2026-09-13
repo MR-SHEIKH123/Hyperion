@@ -17,6 +17,7 @@ import { runAgentLoop } from '../agent/loop.ts';
 import { createPermissionResolver } from '../agent/permissions.ts';
 import { assertKnownTools, permissionLayers, profileSelector, resolveProfile } from '../agent/profiles.ts';
 import { resolveContextWindow } from '../agent/compaction.ts';
+import { findCachedModel } from '../../providers/registry.ts';
 import { assertWithinSpendCap, TaskBudget } from '../limits/budget.ts';
 import {
   loadAgentProfile,
@@ -89,6 +90,8 @@ export interface CodeDependencies {
   startSubagentRun?: typeof startSubagentRun;
   finishSubagentRun?: typeof finishSubagentRun;
   resolveContextWindow?: (input: { model?: ModelInfo; override?: number }) => ReturnType<typeof resolveContextWindow>;
+  /** Test seam for the cache-only model lookup; production uses the registry. */
+  findModel?: (modelId: string) => ModelInfo | null;
   unattended?: boolean;
   iterationCeiling?: number;
   /** Test seam only: hand in the reservation map to seed or observe it.
@@ -298,6 +301,11 @@ async function runCodeInternal(
       }
     };
 
+    // The window is the model's real one when a provider cache knows it.
+    // Cache-only: a run start must not wait on a network call, and an
+    // unknown model keeps the honest `assumed` default.
+    const modelInfo = (runtime.dependencies.findModel ?? findCachedModel)(input.modelId);
+
     const loop = await runAgentLoop({
       ...(runtime.depth === 0 && ctx.runId !== undefined ? { runId: ctx.runId } : {}),
       taskId: ctx.taskId,
@@ -315,7 +323,9 @@ async function runCodeInternal(
       context: {
         messages: () => messages,
         replace: (next) => { messages = [...next]; },
-        window: (runtime.dependencies.resolveContextWindow ?? resolveContextWindow)({}),
+        window: (runtime.dependencies.resolveContextWindow ?? resolveContextWindow)(
+          modelInfo === null ? {} : { model: modelInfo },
+        ),
       },
       turn: async (feedback) => {
         for (const item of feedback) {

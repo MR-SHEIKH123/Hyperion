@@ -3230,6 +3230,18 @@ compaction. Only one of those is recoverable, so the conservative number wins â€
 and `assumed` travels into the step detail and the event so the UI can say the
 number was a guess instead of presenting it as fact.
 
+The ladder is only as good as what feeds it, and until the v4 window wiring the
+agents fed it nothing: every run fell to the 8192 default, so every compaction
+percentage was wrong for every real model. Now each agent resolves the
+requested model against the provider model **cache** at run start
+(`findCachedModel` â€” active provider first, then failover order), and the
+lookup never fetches, because a run start must not wait on the network. A
+model no cache knows keeps the honest `assumed` default; the request itself
+validates the model when it goes out. A mid-run failover keeps the originally
+resolved window: the model id is the same, and re-resolving per turn would put
+a cache read on the hot path to re-answer a question that has one good answer
+per run. (Master Plan v4, section 6.1.)
+
 ### Token counts are estimates, and the estimator matches the one already shipped
 
 `estimateTokens` uses 4 characters per token, the same ratio

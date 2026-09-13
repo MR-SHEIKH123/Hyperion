@@ -18,6 +18,7 @@ import {
   createProvider,
   findProviderByName,
   getActiveProvider,
+  listFailoverCandidates,
   listProviders,
   requireActiveProvider,
   saveModelCache,
@@ -231,4 +232,27 @@ export function summarize(): RegistrySummary {
     providerCount: listProviders().length,
     hasAnyProvider: listProviders().length > 0,
   };
+}
+
+/**
+ * The ModelInfo for a model id, from caches only \u2014 active provider first, then
+ * failover candidates in order.
+ *
+ * This runs at the start of every agent run, to size the context window, so it
+ * must never fetch: a provider blip must not stand in front of work the user
+ * can already see is possible. A miss everywhere returns null and the caller
+ * reports the window as `assumed` \u2014 the request itself validates the model
+ * when it goes out.
+ */
+export function findCachedModel(modelId: string): ModelInfo | null {
+  const active = getActiveProvider();
+  const candidates = [
+    ...(active === null ? [] : [active]),
+    ...listFailoverCandidates(active?.id),
+  ];
+  for (const provider of candidates) {
+    const hit = provider.models?.find((model) => matchesModelId(model.id, modelId));
+    if (hit !== undefined) return hit;
+  }
+  return null;
 }
