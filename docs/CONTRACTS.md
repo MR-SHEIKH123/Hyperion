@@ -4022,3 +4022,23 @@ differs is state errors: revise-before-generate, undo-past-the-first-version
 and double-generate return explanatory tool output and the run continues.
 Design's core loop is long-running iteration, and one hallucinated call must
 not cost twenty revisions of kept work.
+
+---
+
+## Golden-run regression tests (added by Master Plan v4, section 6.8)
+
+**Who depends on this:** anyone editing an agent's system prompt, tool
+schemas or message assembly — and anyone reviewing such an edit.
+
+One real run per agent is recorded in `test/golden/*.json`: every request
+sent to the provider, every event emitted, the result, and the artifact rows
+written (run/task ids and generated UUIDs normalised out). Replaying the
+recording drives the agent through the same scripted turns and asserts
+byte-for-byte equality, so a prompt reword or a reordered tool list fails a
+test instead of silently changing what the model sees. Unit tests cover
+branches; goldens cover the assembled whole.
+
+When a drift is intentional, re-record — `HYPERION_RECORD_GOLDEN=1
+node --test test/goldenruns.test.ts` — and review the fixture diff like
+any other change. Hand-editing a fixture to make a failing run pass defeats
+the purpose: the diff review is the check.

@@ -65,10 +65,13 @@ content to fill holes.
 - **v4 §6.4 — verified already landed** (per-run `unattended` on TaskInput,
   scheduler-allocated `task_runs` rows, push on unattended parks gated by
   `push_enabled`). Nothing to build; reconciled, not rebuilt.
-- **v4 §6.8 — mostly landed already** (reload-config, agent-profiles and
-  resolved-permissions endpoints, activity-feed dedupe of scheduler rows via
-  `visibleTaskRuns`). The one genuinely missing piece — the golden-run
-  regression harness — is the remaining build item.
+- **v4 §6.8 — landed.** reload-config, the agent-profiles and
+  resolved-permissions endpoints, and the activity-feed dedupe of scheduler
+  rows (`visibleTaskRuns`) were verified already in the tree; the one missing
+  piece was built 2026-09-12: the golden-run regression harness
+  (`test/goldenruns.test.ts` + `test/golden/*.json`), one recorded run per
+  agent replayed byte-for-byte, re-recordable via `HYPERION_RECORD_GOLDEN=1`,
+  drift-catch verified by a prompt mutation.
 
 - **The Design agent (v4 §3 / Prompt 3's last slice)** — 2026-09-11:
   `src/services/design/{agent,tools}.ts`, registered third in
