@@ -163,6 +163,32 @@ the record of what was said); this section is the correction layer.
   **escalate** ✓ exist; **summarize** exists only as the deterministic
   receipt, by design; **truncate** has no stage in the chain (agent-side
   output caps like `MAX_TOOL_OUTPUT` are ingest bounds, not compaction).
+  The receipt-for-summary swap is owner-signed as **AD-1** below.
+
+## Accepted deviations (owner-signed)
+
+- **AD-1 — the compaction digest is a deterministic receipt, not a model
+  summary (accepted 2026-09-18).** This deviates from the v4 §4 wording
+  ("full 4-step compression chain": prune → truncate → summarize → escalate);
+  the shipped chain is gate → prune → receipt → escalate. Reasoning, also
+  carried at the definition site (`compaction.ts` module docstring) and in
+  CONTRACTS.md "Context compaction": a model-written summary (a) needs an
+  extra provider request at exactly the moment the run is already in trouble,
+  so the recovery path acquires its own failure mode; (b) can fail, and then
+  compaction fails, and the run dies for a reason unrelated to the user's
+  task; (c) can hallucinate — an invented file edit in a summary is worse
+  than no summary, because the agent acts on it. The receipt is always
+  correct, always cheap, and never quotes dropped content. **Do not "fix" the
+  digest into a model summary without an explicit owner decision** — same
+  standing as the 120-day retention note in SPEC.md. Migration audit behind
+  this entry: of the original `truncate-oldest → summarize → escalate`
+  design, `truncate-oldest`'s job (shorten from the oldest end when over the
+  window) is performed by `prune` — hardened, not lost (group-atomic so a
+  tool result never leaves its call; pinned system messages, latest tool
+  result, last two groups; 80%-trigger/50%-target so it doesn't stutter) —
+  and `escalate` survives as the `nothing_droppable` → parked
+  `context_exhausted` path. `summarize` is the only stage whose *mechanism*
+  changed, and that change is this signed deviation, not drift.
 
 ## Open decisions
 
