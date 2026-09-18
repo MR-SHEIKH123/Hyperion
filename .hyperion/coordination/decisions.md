@@ -114,6 +114,56 @@ content to fill holes.
   fallback research path at all — the absence is reported honestly. Whether
   a fallback should exist is the owner's call.
 
+## Corrections to inherited claims (2026-09-18)
+
+Direct re-verifications against the code, recorded so stale plan wording stops
+being inherited as background fact. The v4 text below stays verbatim (it is
+the record of what was said); this section is the correction layer.
+
+- **MCP process manager — re-verified directly, not via Cowork's wigolo
+  check.** `processManager.ts` / `registry.ts` / `supervisor.ts` all present;
+  the entrypoint calls `startMcpSupervisor()` at boot (`src/index.ts:267`)
+  which registers the manager synchronously (`supervisor.ts:91`) before any
+  server connects, and the shutdown path unregisters it (`supervisor.ts:157`)
+  so status cannot outlive the servers. Focused suite green: mcpprocesses,
+  mcpsupervisor, mcpsupervisordisabled, mcpdefaults — 31/31. The supervisor's
+  own module comment records the pre-fix state (registered nowhere) as
+  history, not current truth.
+- **Subagent dispatch is strictly serial — D7's finding confirmed against
+  this tree.** `loop.ts:761` runs `for (const call of calls) { await
+  dispatchToolCall(...) }` — no `Promise.all`, no interleaving. So yes:
+  parallel delegation genuinely is not real yet, and that is exactly why the
+  §6.6 path-reservation `conflict` cannot currently fire (its own comment
+  says so). What *is* real, re-pinned 2026-09-18: `delegate` at depth 0 only
+  (throws at depth 1 + the tool is stripped from the child's set), max **5**
+  children per task (`subagent_count_limit` default 5, `settings.ts:315`,
+  enforced by `TaskBudget.claimSubagent`), child inherits the parent's mode
+  (D7), denial-inheritance (test-pinned), `subagent_runs` persistence with
+  sequence slots and bounded terminal results, and the tested path-reservation
+  guard waiting for the day dispatch parallelises.
+- **"Confirmed parallel" is a direction, not a fact — corrected.** v4 §5's
+  "confirmed parallel via batch `delegate`", the matching "confirmed parallel
+  execution" in the external Doc 18 §1, and the old lead sentence of the
+  `code/agent.ts` reservation comment all overstate: what is confirmed is
+  that batch `delegate` is the parallelisation *direction*; current dispatch
+  is serial. CONTRACTS.md's full paragraph was already accurate ("the day
+  batch delegation actually parallelises… under the loop's current serial
+  tool dispatch"); the comment's lead sentence is tightened in the same
+  commit as this entry. Do not cite parallel delegation as existing.
+- **The shared compression hook is one mechanism, and its chain is not the
+  v4 §4 "full 4-step" wording.** Implemented in `compaction.ts` and shared
+  by all three agents: **gate** (estimate, 80% trigger, 50% target) →
+  **prune** (oldest-first, group-atomic so a tool result never leaves its
+  call; pinned: system messages, the latest tool-result group, the last two
+  groups) → **receipt digest** (deterministic role/count/tool-name receipt as
+  a `system` message at the drop point — deliberately *not* a model-written
+  summary; the module docstring rejects that) → **escalate** (nothing
+  droppable → `compacted:false` → the loop parks `context_exhausted`, a
+  user-actionable state). Of the spec's four named steps: **prune** ✓ and
+  **escalate** ✓ exist; **summarize** exists only as the deterministic
+  receipt, by design; **truncate** has no stage in the chain (agent-side
+  output caps like `MAX_TOOL_OUTPUT` are ingest bounds, not compaction).
+
 ## Open decisions
 
 - **Open #3 — who builds Design.** Whether Design's Slice 5 output is worth
