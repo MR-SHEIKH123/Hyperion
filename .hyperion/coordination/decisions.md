@@ -54,8 +54,25 @@ content to fill holes.
 - **S-3 — provenance rule.** Decisions land in commits (this register), not
   in conversation or code comments alone. Conversation-only items are treated
   as undecided until committed.
+- **S-4 — one canonical register (locked 2026-09-18).** This file is the only
+  coordination record for the repo. The 1.32-spec three-file set
+  (`STATUS.md`/`QUESTIONS.md`/`HANDOFF-LOG.md`) has never existed in this
+  repo's tree or history (audited 2026-09-18: single-commit history, no such
+  paths anywhere on the machine), so there is no second live system and
+  nothing was lost folding — by S-3 it was never real here. If those files
+  ever land from another workspace, their content folds into this register
+  and the parallel files are deleted in the same commit. No second
+  coordination convention may coexist with this one.
 
 ## Landed since this register opened
+
+- **Full suite + typecheck, first run this cycle** (2026-09-18): `npm test`
+  green, 854/854 across 149 suites (13.5s); `tsc --noEmit` clean. This
+  retires the v4 §7 checklist line "4 | Full suite run | ⬜ Never started" —
+  that checklist is the verbatim 2026-09-11 snapshot, not live status; live
+  status is this section and "Resolved verifications". Prompt-3's two
+  verification claims were re-audited against the code in the same session
+  and hold as written below.
 
 - **v4 §6.1 — model-aware context windows** (2026-09-12): `findCachedModel`
   (cache-only, active provider then failover order, never fetches) and all
