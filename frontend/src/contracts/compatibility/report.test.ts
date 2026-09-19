@@ -1,0 +1,2 @@
+import{describe,expect,it}from'vitest';import{createDeveloperContractReport}from'./report';
+describe('developer contract report',()=>{it('is deterministic when given a clock',()=>{const report=createDeveloperContractReport(new Date('2026-09-19T00:00:00Z'));expect(report.generatedAt).toBe('2026-09-19T00:00:00.000Z');expect(report.backendRouteCount).toBeGreaterThan(100);expect(report.statuses.missing).toBeGreaterThan(0);});});

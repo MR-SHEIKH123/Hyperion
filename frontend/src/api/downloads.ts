@@ -1,0 +1,2 @@
+import { responseError, networkError } from './errors';
+export async function download(path:string,signal?:AbortSignal):Promise<Blob>{if(!path.startsWith('/api/'))throw new Error('Download paths must start with /api/.');let response:Response;try{response=await fetch(path,{...(signal===undefined?{}:{signal})});}catch(error){throw networkError(error);}if(!response.ok)throw await responseError(response);return response.blob();}

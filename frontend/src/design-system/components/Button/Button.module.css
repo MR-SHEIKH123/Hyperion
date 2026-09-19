@@ -1,0 +1,6 @@
+.button { display:inline-flex; align-items:center; justify-content:center; gap:var(--space-2); min-height:36px; padding:0 var(--space-3); border:1px solid var(--border-subtle); border-radius:var(--radius-sm); background:var(--surface-interactive); color:var(--text-primary); cursor:pointer; transition:background var(--motion-fast) var(--ease-standard),border-color var(--motion-fast) var(--ease-standard); }
+.button:hover:not(:disabled) { border-color:var(--border-strong); background:var(--surface-overlay); }
+.button:disabled { color:var(--text-muted); cursor:not-allowed; opacity:.65; }
+.primary { border-color:transparent; background:var(--accent-primary); color:var(--surface-canvas); font-weight:600; }
+.primary:hover:not(:disabled) { background:var(--focus-ring); }
+.quiet { background:transparent; }

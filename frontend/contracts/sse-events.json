@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "protocols": {
+    "chat": {
+      "transport": "named-event",
+      "events": ["open", "token", "paused", "resumed", "usage", "done", "error"]
+    },
+    "agent": {
+      "transport": "named-event-with-channel",
+      "event": "agent",
+      "channels": [
+        "started", "partial", "artifact", "provider", "switched",
+        "approval_required", "task_parked", "ceiling_reached",
+        "context_compacted", "subagent_started", "subagent_finished",
+        "stopped", "result"
+      ],
+      "additionalEvents": ["error"]
+    }
+  }
+}

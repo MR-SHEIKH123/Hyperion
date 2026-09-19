@@ -1,0 +1,9 @@
+.mark { display: inline-block; color: var(--accent-primary); transform-origin: center; }
+.idle { animation: breathe-idle 3.8s var(--ease-standard) infinite; }
+.running { animation: breathe-running 1.5s var(--ease-standard) infinite; }
+.degraded { opacity: .72; }
+.blink .dot { animation: aperture-blink 250ms ease-out 1; transform-origin: center; }
+@keyframes breathe-idle { 50% { opacity: .82; transform: scale(.985); } }
+@keyframes breathe-running { 50% { opacity: .68; transform: scale(.965); } }
+@keyframes aperture-blink { 50% { opacity: .18; transform: scale(.35); } }
+@media (prefers-reduced-motion: reduce) { .idle { animation: none; opacity: .9; } .running { animation: none; opacity: .72; } .blink .dot { animation: none; } }

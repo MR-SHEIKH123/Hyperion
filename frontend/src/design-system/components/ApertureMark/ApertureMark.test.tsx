@@ -1,0 +1,2 @@
+import{render,screen}from'@testing-library/react';import{describe,expect,it}from'vitest';import{ApertureMark}from'./ApertureMark';
+describe('aperture mark',()=>{it('has one accessible identity across runtime states',()=>{const{rerender}=render(<ApertureMark state="idle"/>);expect(screen.getByRole('img',{name:'Hyperion'})).toBeInTheDocument();rerender(<ApertureMark state="running" meaningfulCompletionRevision={1}/>);expect(screen.getByRole('img',{name:'Hyperion'})).toBeInTheDocument();});});
