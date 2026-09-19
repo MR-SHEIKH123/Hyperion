@@ -16,24 +16,20 @@ is active at a time, with standby failover to alternates.
 
 ## Build status
 
-The build was split into three prompts (the split and the contract are in
-`docs/SPEC.md`):
-
-- **Prompt 1 — backend core: complete.** Providers, failover, security,
+- **Backend core: complete.** Providers, failover, security,
   storage, orchestration, configuration.
-- **Prompt 3 — agentic layer: complete.** Code (multi-file editing loop),
+- **Agentic layer: complete.** Code (multi-file editing loop),
   Cowork (knowledge-first research loop), Design (iterative HTML/CSS + SVG
   loop) and the MCP process lifecycle, all on one shared agent loop.
-- **Prompt 2 — frontend: Milestone B in progress.** The Milestone-A foundation
-  (checked API contracts, Zod wire validation, SSE parsing and reconnection,
-  safe local persistence, task-state reconciliation, the shared
-  agent-workspace frame, design-system primitives, development state harness)
-  now carries the operational shell — eight-tool sidebar, backend health
-  indicator, per-tool routes — and the **Chat tool wired end-to-end**:
-  conversation list, transcript, streaming with pause/resume, busy handling,
-  and the model picker against the active provider. The Code, Cowork, and
-  Design tool workflows, plus Playground, Plugins, Skills, and Settings,
-  remain later increments.
+- **Frontend: in progress.** The foundation (checked API contracts, Zod wire
+  validation, SSE parsing and reconnection, safe local persistence,
+  task-state reconciliation, the shared agent-workspace frame, design-system
+  primitives, development state harness) now carries the operational shell —
+  eight-tool sidebar, backend health indicator, per-tool routes — and the
+  **Chat tool wired end-to-end**: conversation list, transcript, streaming
+  with pause/resume, busy handling, and the model picker against the active
+  provider. The Code, Cowork, and Design tool workflows, plus Playground,
+  Plugins, Skills, and Settings, remain.
 
 ## The agent architecture
 
@@ -67,7 +63,7 @@ npm run typecheck  # tsc --noEmit, must be clean
 npm test           # full suite: real servers, no stubs
 ```
 
-The frontend remains a separate development package during Prompt 2. Start the
+The frontend remains a separate development package for now. Start the
 backend as above, then run Vite in another terminal; browser requests stay on
 relative `/api` URLs and Vite proxies them to port 4317.
 
@@ -83,11 +79,12 @@ npm run lint
 npm run build
 ```
 
-Static frontend serving from Express is intentionally not part of Milestone A.
+Static frontend serving from Express is intentionally not part of the current
+scope.
 
 ## Where the real depth lives
 
-- `docs/SPEC.md` — the original scope document and the three-way build split.
+- `docs/SPEC.md` — the original scope document.
 - `docs/API.md` — every endpoint, with request/response shapes and error codes.
 - `docs/CONTRACTS.md` — the cross-cutting invariants and *why* they exist.
   Read this before changing anything structural.

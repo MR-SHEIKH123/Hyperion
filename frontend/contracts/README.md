@@ -1,7 +1,7 @@
 # Frontend contract snapshot
 
-This directory is the checked Milestone-A boundary between Hyperion's existing
-backend and its frontend. It is deliberately not generated into an API client:
+This directory is the checked boundary between Hyperion's existing backend and
+its frontend. It is deliberately not generated into an API client:
 the Express handlers do not carry enough schema metadata for trustworthy client
 generation.
 

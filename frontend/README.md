@@ -1,7 +1,7 @@
 # Hyperion frontend
 
-React/TypeScript frontend package. Milestone A uses Vite's development proxy and
-does not change the backend to serve static files.
+React/TypeScript frontend package. The development setup uses Vite's
+development proxy and does not change the backend to serve static files.
 
 ## Development
 
@@ -29,7 +29,7 @@ npm run lint
 npm run build
 ```
 
-## Milestone A architecture
+## Architecture
 
 - `contracts/` is the checked route, frontend-contract, SSE, and known-gap
   snapshot. Known gaps stay visible without failing development; regressions to
@@ -53,7 +53,7 @@ npm run build
   components. `/__dev/states` exists only under Vite development and is removed
   from production output.
 
-## Milestone B — operational shell + Chat tool (in progress)
+## Operational shell + Chat tool (in progress)
 
 - `src/shell/` — `AppShell`: the eight-tool sidebar rail (Chat, Code, Cowork,
   Design, Playground, Plugins, Skills, Settings), brand mark, and the polling
@@ -90,6 +90,6 @@ Playground, Plugins, Skills, and Settings.
 
 ## Confirmed contract limitation
 
-The current backend TaskRun union does not contain `interrupted`. Milestone A
+The current backend TaskRun union does not contain `interrupted`. The frontend
 therefore does not invent that lifecycle state. The development harness shows it
 as an unavailable contract fixture until backend support exists.
