@@ -467,9 +467,10 @@ function childContext(parent: AgentContext, childTaskId: string): AgentContext {
 /**
  * Path reservation between delegated children (Master Plan v4 §6.6).
  *
- * Batch `delegate` is confirmed to parallelise, and every child shares the
- * parent's worktree, so two children told to edit the same file would race
- * each other's writes. The map lives in `SharedRunState`, keyed per parent
+ * Batch `delegate` is the confirmed parallelisation *direction* — not the
+ * current behaviour: the loop's tool dispatch is strictly serial today. When
+ * it parallelises, every child shares the parent's worktree, so two children
+ * told to edit the same file would race each other's writes. The map lives in `SharedRunState`, keyed per parent
  * run, and records which child task id currently owns a path. It is
  * deliberately detection, not prevention: the second writer's `write` fails
  * with a coded `conflict` naming the holder, that child stops, and the

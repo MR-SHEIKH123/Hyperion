@@ -54,8 +54,25 @@ content to fill holes.
 - **S-3 — provenance rule.** Decisions land in commits (this register), not
   in conversation or code comments alone. Conversation-only items are treated
   as undecided until committed.
+- **S-4 — one canonical register (locked 2026-09-18).** This file is the only
+  coordination record for the repo. The 1.32-spec three-file set
+  (`STATUS.md`/`QUESTIONS.md`/`HANDOFF-LOG.md`) has never existed in this
+  repo's tree or history (audited 2026-09-18: single-commit history, no such
+  paths anywhere on the machine), so there is no second live system and
+  nothing was lost folding — by S-3 it was never real here. If those files
+  ever land from another workspace, their content folds into this register
+  and the parallel files are deleted in the same commit. No second
+  coordination convention may coexist with this one.
 
 ## Landed since this register opened
+
+- **Full suite + typecheck, first run this cycle** (2026-09-18): `npm test`
+  green, 854/854 across 149 suites (13.5s); `tsc --noEmit` clean. This
+  retires the v4 §7 checklist line "4 | Full suite run | ⬜ Never started" —
+  that checklist is the verbatim 2026-09-11 snapshot, not live status; live
+  status is this section and "Resolved verifications". Prompt-3's two
+  verification claims were re-audited against the code in the same session
+  and hold as written below.
 
 - **v4 §6.1 — model-aware context windows** (2026-09-12): `findCachedModel`
   (cache-only, active provider then failover order, never fetches) and all
@@ -96,6 +113,82 @@ content to fill holes.
   question, not an implementation gap: when wigolo is absent there is no
   fallback research path at all — the absence is reported honestly. Whether
   a fallback should exist is the owner's call.
+
+## Corrections to inherited claims (2026-09-18)
+
+Direct re-verifications against the code, recorded so stale plan wording stops
+being inherited as background fact. The v4 text below stays verbatim (it is
+the record of what was said); this section is the correction layer.
+
+- **MCP process manager — re-verified directly, not via Cowork's wigolo
+  check.** `processManager.ts` / `registry.ts` / `supervisor.ts` all present;
+  the entrypoint calls `startMcpSupervisor()` at boot (`src/index.ts:267`)
+  which registers the manager synchronously (`supervisor.ts:91`) before any
+  server connects, and the shutdown path unregisters it (`supervisor.ts:157`)
+  so status cannot outlive the servers. Focused suite green: mcpprocesses,
+  mcpsupervisor, mcpsupervisordisabled, mcpdefaults — 31/31. The supervisor's
+  own module comment records the pre-fix state (registered nowhere) as
+  history, not current truth.
+- **Subagent dispatch is strictly serial — D7's finding confirmed against
+  this tree.** `loop.ts:761` runs `for (const call of calls) { await
+  dispatchToolCall(...) }` — no `Promise.all`, no interleaving. So yes:
+  parallel delegation genuinely is not real yet, and that is exactly why the
+  §6.6 path-reservation `conflict` cannot currently fire (its own comment
+  says so). What *is* real, re-pinned 2026-09-18: `delegate` at depth 0 only
+  (throws at depth 1 + the tool is stripped from the child's set), max **5**
+  children per task (`subagent_count_limit` default 5, `settings.ts:315`,
+  enforced by `TaskBudget.claimSubagent`), child inherits the parent's mode
+  (D7), denial-inheritance (test-pinned), `subagent_runs` persistence with
+  sequence slots and bounded terminal results, and the tested path-reservation
+  guard waiting for the day dispatch parallelises.
+- **"Confirmed parallel" is a direction, not a fact — corrected.** v4 §5's
+  "confirmed parallel via batch `delegate`", the matching "confirmed parallel
+  execution" in the external Doc 18 §1, and the old lead sentence of the
+  `code/agent.ts` reservation comment all overstate: what is confirmed is
+  that batch `delegate` is the parallelisation *direction*; current dispatch
+  is serial. CONTRACTS.md's full paragraph was already accurate ("the day
+  batch delegation actually parallelises… under the loop's current serial
+  tool dispatch"); the comment's lead sentence is tightened in the same
+  commit as this entry. Do not cite parallel delegation as existing.
+- **The shared compression hook is one mechanism, and its chain is not the
+  v4 §4 "full 4-step" wording.** Implemented in `compaction.ts` and shared
+  by all three agents: **gate** (estimate, 80% trigger, 50% target) →
+  **prune** (oldest-first, group-atomic so a tool result never leaves its
+  call; pinned: system messages, the latest tool-result group, the last two
+  groups) → **receipt digest** (deterministic role/count/tool-name receipt as
+  a `system` message at the drop point — deliberately *not* a model-written
+  summary; the module docstring rejects that) → **escalate** (nothing
+  droppable → `compacted:false` → the loop parks `context_exhausted`, a
+  user-actionable state). Of the spec's four named steps: **prune** ✓ and
+  **escalate** ✓ exist; **summarize** exists only as the deterministic
+  receipt, by design; **truncate** has no stage in the chain (agent-side
+  output caps like `MAX_TOOL_OUTPUT` are ingest bounds, not compaction).
+  The receipt-for-summary swap is owner-signed as **AD-1** below.
+
+## Accepted deviations (owner-signed)
+
+- **AD-1 — the compaction digest is a deterministic receipt, not a model
+  summary (accepted 2026-09-18).** This deviates from the v4 §4 wording
+  ("full 4-step compression chain": prune → truncate → summarize → escalate);
+  the shipped chain is gate → prune → receipt → escalate. Reasoning, also
+  carried at the definition site (`compaction.ts` module docstring) and in
+  CONTRACTS.md "Context compaction": a model-written summary (a) needs an
+  extra provider request at exactly the moment the run is already in trouble,
+  so the recovery path acquires its own failure mode; (b) can fail, and then
+  compaction fails, and the run dies for a reason unrelated to the user's
+  task; (c) can hallucinate — an invented file edit in a summary is worse
+  than no summary, because the agent acts on it. The receipt is always
+  correct, always cheap, and never quotes dropped content. **Do not "fix" the
+  digest into a model summary without an explicit owner decision** — same
+  standing as the 120-day retention note in SPEC.md. Migration audit behind
+  this entry: of the original `truncate-oldest → summarize → escalate`
+  design, `truncate-oldest`'s job (shorten from the oldest end when over the
+  window) is performed by `prune` — hardened, not lost (group-atomic so a
+  tool result never leaves its call; pinned system messages, latest tool
+  result, last two groups; 80%-trigger/50%-target so it doesn't stutter) —
+  and `escalate` survives as the `nothing_droppable` → parked
+  `context_exhausted` path. `summarize` is the only stage whose *mechanism*
+  changed, and that change is this signed deviation, not drift.
 
 ## Open decisions
 
