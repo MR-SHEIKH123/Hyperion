@@ -98,6 +98,28 @@ content to fill holes.
   provider). Closed toolset, `design:` artifact namespace, brand proposals
   unapproved by construction, vision stub, guidance-not-fatal state errors.
 
+- **Queue-wait timeout could never fire — fixed (2026-09-19).** Both queue
+  waiters in `src/orchestrator/lock.ts` (`acquire` and `acquireCodeLane`)
+  called `waiter.timer.unref?.()` on their wait-timeout, with the stated
+  intent of not holding the event loop open during shutdown. That intent
+  conflicts with the wait-give-up contract (CONTRACTS.md: a queued task is
+  only skipped "after `waitMs` expires"): the timeout is the *only* mechanism
+  that moves a parked waiter forward, so if the waiter was the only pending
+  work, an unref'd timer never fired and the waiter hung forever — the event
+  loop drained and the process exited out from under the promise. Symptom on
+  2026-09-19: full suite reported 823 pass / 31 *cancelled* (not 854/854),
+  all of them in the queue-timeout tests (`test/codetasks.test.ts` "the Code
+  lane" + the worktree suites, `test/scheduledtasks.test.ts` lock-skip
+  tests). The unref was removed from both sites. Shutdown stays bounded
+  without it: a client disconnect aborts the waiter (its `cleanup()` clears
+  the timer), the running server's socket already holds the loop, and the
+  6 s force-exit timer in `installShutdownHandlers` caps anything left
+  behind. The pre-existing tests that pin the contract
+  (`waitMs: 40` give-up in `codetasks.test.ts`, the scheduler's
+  `scheduledTaskWaitMs` skip) are the failing tests this fix ships with;
+  post-fix the full suite is 854/854 pass / 0 fail / 0 cancelled and
+  `tsc --noEmit` is clean.
+
 ## Resolved verifications
 
 - **Cowork: complete against Slice 4, not a stub** (verified against the code
