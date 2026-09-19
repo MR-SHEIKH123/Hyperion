@@ -24,11 +24,16 @@ The build was split into three prompts (the split and the contract are in
 - **Prompt 3 — agentic layer: complete.** Code (multi-file editing loop),
   Cowork (knowledge-first research loop), Design (iterative HTML/CSS + SVG
   loop) and the MCP process lifecycle, all on one shared agent loop.
-- **Prompt 2 — frontend: Milestone A complete.** The React/TypeScript foundation
-  now includes checked API contracts, Zod wire validation, SSE parsing and
-  reconnection, safe local persistence, task-state reconciliation, the shared
-  agent-workspace frame, design-system primitives, and a development state
-  harness. The operational shell and tool workflows remain later milestones.
+- **Prompt 2 — frontend: Milestone B in progress.** The Milestone-A foundation
+  (checked API contracts, Zod wire validation, SSE parsing and reconnection,
+  safe local persistence, task-state reconciliation, the shared
+  agent-workspace frame, design-system primitives, development state harness)
+  now carries the operational shell — eight-tool sidebar, backend health
+  indicator, per-tool routes — and the **Chat tool wired end-to-end**:
+  conversation list, transcript, streaming with pause/resume, busy handling,
+  and the model picker against the active provider. The Code, Cowork, and
+  Design tool workflows, plus Playground, Plugins, Skills, and Settings,
+  remain later increments.
 
 ## The agent architecture
 
