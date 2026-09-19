@@ -21,6 +21,10 @@
  * how many messages, from which roles, which tools — is honest, free and cannot
  * fail mid-run. It is a *receipt*, not a substitute.
  *
+ * Owner-accepted deviation (register AD-1, 2026-09-18): the spec's
+ * "summarize" step ships as this receipt by owner decision. Do not replace
+ * it with a model-written summary without an explicit owner decision.
+ *
  * **The digest is a `system` message.** Attributing it to the assistant would put
  * words in the model's mouth that it never said and that it will then treat as
  * its own reasoning. A system note reads as context supplied by the harness,

@@ -3131,6 +3131,15 @@ A deterministic digest cannot do any of those three things. It is a weaker summa
 that is always correct and always cheap, which is the right trade for a mechanism
 that only runs when things are going badly.
 
+> **Implementation note — the digest is an owner-accepted deviation.**
+> The v4 §4 spec wording asks for a "summarize" step in a four-step
+> compression chain. The shipped digest *is* that step, implemented as a
+> deterministic receipt rather than a model-written summary by explicit owner
+> decision (2026-09-18, register AD-1 in `.hyperion/coordination/decisions.md`),
+> for the reasons above. **Do not "fix" it into a model summary without an
+> owner decision** — same standing as the 120-day retention note in SPEC.md.
+
+
 ### The digest never quotes what it dropped
 
 `describeDropped` emits counts and tool names and nothing else. Quoting content
