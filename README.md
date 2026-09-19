@@ -24,8 +24,11 @@ The build was split into three prompts (the split and the contract are in
 - **Prompt 3 — agentic layer: complete.** Code (multi-file editing loop),
   Cowork (knowledge-first research loop), Design (iterative HTML/CSS + SVG
   loop) and the MCP process lifecycle, all on one shared agent loop.
-- **Prompt 2 — frontend: not started.** Until it lands, the HTTP/SSE API is
-  the interface (see `docs/API.md`).
+- **Prompt 2 — frontend: Milestone A complete.** The React/TypeScript foundation
+  now includes checked API contracts, Zod wire validation, SSE parsing and
+  reconnection, safe local persistence, task-state reconciliation, the shared
+  agent-workspace frame, design-system primitives, and a development state
+  harness. The operational shell and tool workflows remain later milestones.
 
 ## The agent architecture
 
@@ -58,6 +61,24 @@ long-running install, `ecosystem.config.cjs` is the PM2 entry point.
 npm run typecheck  # tsc --noEmit, must be clean
 npm test           # full suite: real servers, no stubs
 ```
+
+The frontend remains a separate development package during Prompt 2. Start the
+backend as above, then run Vite in another terminal; browser requests stay on
+relative `/api` URLs and Vite proxies them to port 4317.
+
+```bash
+cd frontend
+npm install
+npm run dev        # http://localhost:4318
+
+npm run contracts
+npm run typecheck
+npm run test
+npm run lint
+npm run build
+```
+
+Static frontend serving from Express is intentionally not part of Milestone A.
 
 ## Where the real depth lives
 

@@ -1,0 +1,4 @@
+.backdrop { position:fixed; inset:0; display:grid; place-items:center; padding:var(--space-4); background:var(--backdrop-overlay); z-index:100; }
+.dialog { width:min(520px,100%); max-height:min(80vh,720px); overflow:auto; padding:var(--space-5); border:1px solid var(--border-subtle); border-radius:var(--radius-lg); background:var(--surface-raised); box-shadow:var(--shadow-overlay); }
+.header { display:flex; align-items:start; justify-content:space-between; gap:var(--space-3); margin-bottom:var(--space-4); }
+.title { margin:0; font-size:var(--text-lg); }

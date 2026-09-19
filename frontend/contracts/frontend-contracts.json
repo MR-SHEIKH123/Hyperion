@@ -1,0 +1,245 @@
+{
+  "schemaVersion": 1,
+  "statuses": [
+    "implemented",
+    "partial",
+    "route-mismatch",
+    "missing",
+    "intentionally-unsupported"
+  ],
+  "contracts": [
+    {
+      "id": "compatibility.meta",
+      "method": "GET",
+      "expectedPath": "/api/meta",
+      "status": "intentionally-unsupported",
+      "milestone": "A",
+      "reason": "Explicitly excluded from frontend Milestone A; no backend compatibility endpoint exists."
+    },
+    {
+      "id": "chat.list",
+      "method": "GET",
+      "expectedPath": "/api/chat",
+      "status": "implemented"
+    },
+    {
+      "id": "chat.messages",
+      "method": "GET",
+      "expectedPath": "/api/chat/:id/messages",
+      "status": "route-mismatch",
+      "specifiedPath": "/api/chats/:id/messages",
+      "reason": "The implemented API consistently uses singular /api/chat."
+    },
+    {
+      "id": "chat.state",
+      "method": "GET",
+      "expectedPath": "/api/chat/:id/state",
+      "status": "missing",
+      "reason": "Chat exposes runs and paused runs, but no chat state route."
+    },
+    {
+      "id": "chat.fork",
+      "method": "POST",
+      "expectedPath": "/api/chat/:id/fork",
+      "status": "missing"
+    },
+    {
+      "id": "chat.stream",
+      "method": "POST",
+      "expectedPath": "/api/chat/stream",
+      "status": "implemented"
+    },
+    {
+      "id": "chat.resume",
+      "method": "POST",
+      "expectedPath": "/api/chat/resume",
+      "status": "implemented"
+    },
+    {
+      "id": "tasks.code.state",
+      "method": "GET",
+      "expectedPath": "/api/code/tasks/:taskId/state",
+      "status": "implemented"
+    },
+    {
+      "id": "tasks.cowork.state",
+      "method": "GET",
+      "expectedPath": "/api/cowork/tasks/:taskId/state",
+      "status": "implemented"
+    },
+    {
+      "id": "tasks.design.state",
+      "method": "GET",
+      "expectedPath": "/api/design/tasks/:taskId/state",
+      "status": "implemented"
+    },
+    {
+      "id": "tasks.continue",
+      "method": "POST",
+      "expectedPath": "/api/{tool}/tasks/:taskId/continue",
+      "status": "route-mismatch",
+      "specifiedPath": "/api/{tool}/tasks/:taskId/resume",
+      "reason": "All three implemented agent tools use /continue."
+    },
+    {
+      "id": "attention.approvals",
+      "method": "GET",
+      "expectedPath": "/api/attention/approvals",
+      "status": "partial",
+      "reason": "Approvals can only be listed for a known tool and task id."
+    },
+    {
+      "id": "attention.interrupted",
+      "method": "GET",
+      "expectedPath": "/api/attention/interrupted",
+      "status": "missing",
+      "reason": "The implemented TaskRun state union has no interrupted state and there is no discovery route."
+    },
+    {
+      "id": "providers.registry",
+      "method": "GET",
+      "expectedPath": "/api/providers",
+      "status": "implemented"
+    },
+    {
+      "id": "providers.models",
+      "method": "GET",
+      "expectedPath": "/api/providers/active/models",
+      "status": "implemented"
+    },
+    {
+      "id": "providers.zdr",
+      "method": "PUT",
+      "expectedPath": "/api/providers/:id/zdr",
+      "status": "implemented"
+    },
+    {
+      "id": "providers.cooldown",
+      "method": "GET",
+      "expectedPath": "/api/providers",
+      "status": "partial",
+      "reason": "Registry exists but does not expose explicit failover cooldown reason and duration."
+    },
+    {
+      "id": "providers.egress-proxy",
+      "method": "PUT",
+      "expectedPath": "/api/providers/:id/proxy",
+      "status": "missing"
+    },
+    {
+      "id": "providers.puter",
+      "method": "POST",
+      "expectedPath": "/api/providers",
+      "status": "missing",
+      "reason": "Puter is not an accepted provider type."
+    },
+    {
+      "id": "projects.registry",
+      "method": "GET",
+      "expectedPath": "/api/projects",
+      "status": "implemented"
+    },
+    {
+      "id": "projects.open",
+      "method": "POST",
+      "expectedPath": "/api/projects/:id/open",
+      "status": "implemented"
+    },
+    {
+      "id": "projects.active-tasks",
+      "method": "GET",
+      "expectedPath": "/api/projects/:id/tasks",
+      "status": "partial",
+      "reason": "Code tasks can be listed globally; Cowork and Design have no task list."
+    },
+    {
+      "id": "health.summary",
+      "method": "GET",
+      "expectedPath": "/api/health/summary",
+      "status": "implemented"
+    },
+    {
+      "id": "health.backup",
+      "method": "GET",
+      "expectedPath": "/api/health/summary",
+      "status": "partial",
+      "reason": "Health summary has providers, MCP and errors but no backup component."
+    },
+    {
+      "id": "activity.feed",
+      "method": "GET",
+      "expectedPath": "/api/activity",
+      "status": "implemented"
+    },
+    {
+      "id": "plugins.unified",
+      "method": "GET",
+      "expectedPath": "/api/plugins",
+      "status": "missing"
+    },
+    {
+      "id": "plugins.availability",
+      "method": "PATCH",
+      "expectedPath": "/api/plugins/:id/availability",
+      "status": "missing"
+    },
+    {
+      "id": "design.diff",
+      "method": "GET",
+      "expectedPath": "/api/design/tasks/:taskId/diff",
+      "status": "missing"
+    },
+    {
+      "id": "design.preview",
+      "method": "GET",
+      "expectedPath": "/api/design/preview/:versionId",
+      "status": "implemented"
+    },
+    {
+      "id": "artifacts.lineage",
+      "method": "GET",
+      "expectedPath": "/api/artifacts/:id/versions",
+      "status": "missing"
+    },
+    {
+      "id": "settings.spending-cap",
+      "method": "GET",
+      "expectedPath": "/api/settings/limits",
+      "status": "route-mismatch",
+      "specifiedPath": "/api/settings/spending-cap",
+      "reason": "Spending cap is part of the implemented limits contract."
+    },
+    {
+      "id": "settings.reload",
+      "method": "POST",
+      "expectedPath": "/api/settings/reload-config",
+      "status": "route-mismatch",
+      "specifiedPath": "GET|PUT /api/settings/reload-config"
+    },
+    {
+      "id": "backup.inspect",
+      "method": "POST",
+      "expectedPath": "/api/backup/inspect",
+      "status": "implemented"
+    },
+    {
+      "id": "backup.encrypted-destinations",
+      "method": "GET",
+      "expectedPath": "/api/backup/destinations",
+      "status": "missing"
+    },
+    {
+      "id": "cowork.pulse",
+      "method": "POST",
+      "expectedPath": "/api/cowork/pulse",
+      "status": "missing"
+    },
+    {
+      "id": "search.global",
+      "method": "GET",
+      "expectedPath": "/api/search",
+      "status": "partial",
+      "reason": "Milestone B can federate list endpoints, but there is no global content-search contract."
+    }
+  ]
+}

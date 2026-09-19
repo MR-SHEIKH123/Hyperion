@@ -1,0 +1,2 @@
+import{Button}from'../../design-system/components/Button/Button';import styles from'./ErrorNotice.module.css';
+export function ErrorNotice({onRetry}: {onRetry?:()=>void}){return <section className={styles.notice} role="alert"><h2 className={styles.title}>Something went wrong here</h2><p>This section could not be displayed. The rest of Hyperion is still available.</p>{onRetry&&<Button onClick={onRetry}>Reload this section</Button>}</section>}

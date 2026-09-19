@@ -1,0 +1,4 @@
+import{Component,type ErrorInfo,type PropsWithChildren,type ReactNode}from'react';import{ErrorNotice}from'../ErrorNotice/ErrorNotice';
+interface State{error:Error|null;revision:number;}
+export interface ErrorBoundaryProps extends PropsWithChildren{fallback?:(reset:()=>void,error:Error)=>ReactNode;onError?:(error:Error,info:ErrorInfo)=>void;}
+export class ErrorBoundary extends Component<ErrorBoundaryProps,State>{state:State={error:null,revision:0};static getDerivedStateFromError(error:Error):Partial<State>{return{error};}componentDidCatch(error:Error,info:ErrorInfo){this.props.onError?.(error,info);}private reset=()=>this.setState(state=>({error:null,revision:state.revision+1}));render(){if(this.state.error)return this.props.fallback?.(this.reset,this.state.error)??<ErrorNotice onRetry={this.reset}/>;return <div key={this.state.revision}>{this.props.children}</div>;}}

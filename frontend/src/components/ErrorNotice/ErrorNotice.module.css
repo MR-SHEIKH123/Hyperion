@@ -1,0 +1,2 @@
+.notice { padding:var(--space-4); border:1px solid var(--border-subtle); border-left-color:var(--status-error); border-radius:var(--radius-md); background:var(--surface-raised); color:var(--text-secondary); }
+.title { margin:0 0 var(--space-2); color:var(--text-primary); font-size:var(--text-md); }

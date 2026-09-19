@@ -1,0 +1,5 @@
+import{render,screen}from'@testing-library/react';import{describe,expect,it,vi}from'vitest';import{Component}from'./HarnessRouter';
+describe('development state harness',()=>{
+ it('renders real production state components without network calls',()=>{const fetch=vi.spyOn(globalThis,'fetch');render(<Component/>);expect(screen.getByRole('heading',{name:'Hyperion state harness'})).toBeInTheDocument();expect(screen.getAllByText('Approval required').length).toBeGreaterThan(0);expect(screen.getByText('Interrupted task unavailable')).toBeInTheDocument();expect(fetch).not.toHaveBeenCalled();fetch.mockRestore();});
+ it('contains every approved existing-state fixture',()=>{render(<Component/>);for(const name of['Running','Paused','Approval required','Ready for review','Reconnecting','Stopped','Complete','Error'])expect(screen.getAllByText(name).length).toBeGreaterThan(0);for(const id of['provider-cooldown','code-lane-full','mcp-disconnected','backup-diff','interrupted-gap'])expect(document.querySelector(`[data-fixture="${id}"]`)).not.toBeNull();});
+});
