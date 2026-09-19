@@ -44,13 +44,10 @@ secret.key
 # directory changes nothing about how Hyperion builds or runs, so it does not
 # belong in the project's history. The canonical copy lives in the user's global
 # Cline rules directory — keeping a second one here only lets the two drift.
-#
 # Anchored, per the note above: unanchored it would also hide a source
 # directory that happened to share the name.
 /.clinerules/
 
-# Kilo agent tooling state — contains local MCP config with secrets
-/.kilo/
 
 .DS_Store
 Thumbs.db
