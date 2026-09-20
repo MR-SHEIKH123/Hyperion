@@ -19,3 +19,4 @@ export const activeProviderResponseSchema = z.object({
   zdr:z.object({ status:z.unknown().nullable(), requirement:z.unknown() }).passthrough().optional(),
 }).passthrough();
 export type ProviderWire = z.infer<typeof providerSchema>;
+export type ModelWire = z.infer<typeof modelSchema>;

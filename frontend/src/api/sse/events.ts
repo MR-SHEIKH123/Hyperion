@@ -1,16 +1,32 @@
 import { z } from 'zod';
 import { errorEnvelopeSchema } from '../../contracts/wire/common';
+import {
+  chatSseDoneSchema,
+  chatSseErrorSchema,
+  chatSseOpenSchema,
+  chatSsePausedSchema,
+  chatSseResumedSchema,
+  chatSseTokenSchema,
+  chatSseUsageSchema,
+} from '../../contracts/wire/chat';
 import type { ParsedSseEvent } from './parser';
 
-const token = z.object({ text: z.string() }).passthrough();
-const usage = z.object({ tokensIn:z.number().optional(), tokensOut:z.number().optional() }).passthrough();
-const open = z.object({ chatId:z.string().optional(), runId:z.string().optional() }).passthrough();
-const paused = z.object({ reason:z.string().optional(), message:z.string().optional() }).passthrough();
-const resumed = z.object({}).passthrough();
-const done = z.object({}).passthrough();
-
-const chatSchemas = { open, token, paused, resumed, usage, done, error:errorEnvelopeSchema } as const;
-export type ChatSseEvent = { [K in keyof typeof chatSchemas]: { type:K; data:z.infer<(typeof chatSchemas)[K]> } }[keyof typeof chatSchemas];
+/**
+ * Chat stream payloads (docs/API.md §4.3). Note the `error` event carries the
+ * run's error shape, NOT the HTTP error envelope — the envelope is what
+ * pre-stream JSON failures look like; once the stream is open, errors are
+ * events on a 200.
+ */
+const chatSchemas = {
+  open: chatSseOpenSchema,
+  token: chatSseTokenSchema,
+  paused: chatSsePausedSchema,
+  resumed: chatSseResumedSchema,
+  usage: chatSseUsageSchema,
+  done: chatSseDoneSchema,
+  error: chatSseErrorSchema,
+} as const;
+export type ChatSseEvent = { [K in keyof typeof chatSchemas]: { type: K; data: z.infer<(typeof chatSchemas)[K]> } }[keyof typeof chatSchemas];
 
 const agentChannels = z.enum(['started','partial','artifact','provider','switched','approval_required','task_parked','ceiling_reached','context_compacted','subagent_started','subagent_finished','stopped','result']);
 const agentEnvelope = z.object({ channel:agentChannels, tool:z.enum(['code','cowork','design']), chatId:z.string() }).passthrough();

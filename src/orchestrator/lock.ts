@@ -182,8 +182,12 @@ export async function acquire(options: AcquireOptions): Promise<JobHandle> {
         ),
       );
     }, options.waitMs ?? DEFAULT_WAIT_MS);
-    // Do not let a queued waiter hold the event loop open during shutdown.
-    waiter.timer.unref?.();
+    // Deliberately not unref'd: this timeout is the only mechanism that moves a
+    // parked waiter forward, so if nothing else held the event loop, an unref'd
+    // timer would never fire and the waiter would hang forever (the process
+    // would simply exit out from under it). Shutdown stays bounded without it:
+    // a client disconnect aborts the waiter, clearing the timer, and the
+    // force-exit timer in installShutdownHandlers caps anything left behind.
 
     options.signal?.addEventListener('abort', onAbort, { once: true });
     waiters.push(waiter);
@@ -389,7 +393,9 @@ export async function acquireCodeLane(options: AcquireOptions): Promise<JobHandl
         ),
       );
     }, options.waitMs ?? DEFAULT_WAIT_MS);
-    waiter.timer.unref?.();
+    // Not unref'd, for the same reason as the global lock's waiter timer: an
+    // unref'd timeout would never fire when the waiter is the only pending
+    // work, and the wait-give-up contract (CONTRACTS.md) requires it to.
 
     options.signal?.addEventListener('abort', onAbort, { once: true });
     laneWaiters.push(waiter);

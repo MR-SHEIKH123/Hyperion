@@ -1,7 +1,7 @@
 # Hyperion frontend
 
-React/TypeScript frontend package. Milestone A uses Vite's development proxy and
-does not change the backend to serve static files.
+React/TypeScript frontend package. The development setup uses Vite's
+development proxy and does not change the backend to serve static files.
 
 ## Development
 
@@ -29,7 +29,7 @@ npm run lint
 npm run build
 ```
 
-## Milestone A architecture
+## Architecture
 
 - `contracts/` is the checked route, frontend-contract, SSE, and known-gap
   snapshot. Known gaps stay visible without failing development; regressions to
@@ -53,8 +53,43 @@ npm run build
   components. `/__dev/states` exists only under Vite development and is removed
   from production output.
 
+## Operational shell + Chat tool (in progress)
+
+- `src/shell/` — `AppShell`: the eight-tool sidebar rail (Chat, Code, Cowork,
+  Design, Playground, Plugins, Skills, Settings), brand mark, and the polling
+  health indicator (worst-of-three verdict from `GET /api/health/summary`).
+  Tools without a frontend yet resolve to an honest placeholder
+  (`ToolPlaceholder`), never a fake panel.
+- `src/tools/chat/` — the Chat tool, end-to-end:
+  - conversation list: pin, archive/unarchive (archived is a separate view;
+    archiving is never a step toward deletion), delete with confirmation;
+  - transcript rendered from persisted truth; the stream hook contributes only
+    the live rows (optimistic user prompt, rAF-batched assistant text);
+  - pause banner with the run's pause reason and a Resume action (a fresh
+    prompt on a paused run is a switch-and-resume);
+  - pre-stream refusals (`busy` 409, no provider) keep the composer's draft —
+    a refused send never swallows the user's text;
+  - model picker against the active provider's live model list
+    (`GET /api/providers/active/models`); a switched model persists to the
+    chat.
+- New-chat fast path: `/chat` accepts a prompt and creates the chat on first
+  send; the pending prompt rides on location state into the created
+  conversation and is cleared on consumption, so a reload cannot double-send.
+- `src/contracts/wire/chat.ts` — Chat wire contracts: records, run snapshots,
+  the cursor-paginated transcript page, and the stream payloads. The SSE
+  decoders (`src/api/sse/events.ts`) validate the full documented payloads;
+  note the chat `error` event carries the run error shape, not the HTTP error
+  envelope.
+- Stream settlement (`useChatStream`): a terminal frame settles by refetch;
+  a non-terminal close settles from the reconciliation the api layer fetched
+  (applied to the cache when it is a single page, refetch when the transcript
+  is longer). A dropped stream is never replayed.
+
+Remaining increments: the Code, Cowork, and Design tool workflows, then
+Playground, Plugins, Skills, and Settings.
+
 ## Confirmed contract limitation
 
-The current backend TaskRun union does not contain `interrupted`. Milestone A
+The current backend TaskRun union does not contain `interrupted`. The frontend
 therefore does not invent that lifecycle state. The development harness shows it
 as an unavailable contract fixture until backend support exists.

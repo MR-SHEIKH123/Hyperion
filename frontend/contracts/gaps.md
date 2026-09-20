@@ -3,7 +3,7 @@
 This is a visibility list, not a request to silently emulate missing backend
 behavior in the browser.
 
-## Milestones A–B
+## Near term
 
 - No API metadata/version endpoint. Explicitly out of frontend scope.
 - No cross-tool pending-approval endpoint. The implemented TaskRun union also has no `interrupted` state or interrupted-task discovery endpoint.
@@ -12,7 +12,7 @@ behavior in the browser.
 - No Puter provider type and no per-provider egress-proxy contract.
 - No global search endpoint; later shell search must report federated partial coverage.
 
-## Later milestones
+## Later
 
 - No unified `/api/plugins` surface or durable per-tool plugin availability.
 - No Chat fork endpoint or dedicated Chat state endpoint.

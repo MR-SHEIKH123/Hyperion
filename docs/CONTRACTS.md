@@ -1,13 +1,13 @@
-# Cross-prompt contracts
+# Cross-cutting contracts
 
 Behaviour that more than one part of the system depends on. If you change
 something described here, the other side breaks — so change both.
 
 ---
 
-## Skill dependency status (added by Prompt 1.6)
+## Skill dependency status (added in 1.6)
 
-**Who depends on this:** Kimi's agentic layer (Prompt 3, skill-consumption) must
+**Who depends on this:** the agentic layer (skill-consumption) must
 check a skill's dependency status *before* running any of that skill's scripts.
 The frontend depends on it to explain a failure the user can act on.
 
@@ -59,7 +59,7 @@ Exposed as `dependencies` on every skill object from `GET|POST|PATCH|DELETE
 | `ready` | Everything declared is installed. Runnable. |
 | `partial` | Some installed, some failed. **Not runnable** — `failed[]` says which and why. |
 | `failed` | Nothing installed. **Not runnable** — `error` says why. |
-| `needs-user-approval` | Packages are fine; a system binary is missing and needs the user's go-ahead. **Not runnable**, but nothing has failed — see Prompt 1.8(a) below. |
+| `needs-user-approval` | Packages are fine; a system binary is missing and needs the user's go-ahead. **Not runnable**, but nothing has failed — see 1.8(a) below. |
 
 **Read `dependencies.runnable`, not `status`.** It is the single boolean the
 agentic layer should branch on, and it folds in three things `status` alone
@@ -121,9 +121,9 @@ run. `POST /api/skills/:id/provision` forces a retry, which is the path for
 
 ---
 
-## Code task parallelism (added by Prompt 1.9)
+## Code task parallelism (added in 1.9)
 
-**Who depends on this:** Kimi's agentic layer (Prompt 3) when it drives the Code
+**Who depends on this:** the agentic layer when it drives the Code
 tool, and the frontend, which has to explain a refusal the user can act on. Two
 things changed that any caller must know about: **Code no longer shares the
 app-wide job lock**, and **a Code task no longer runs where you told it to run**.
@@ -307,7 +307,7 @@ of batch `delegate` cannot ship without it.
 ---
 
 
-## Recommended skills (added by Prompt 1.7)
+## Recommended skills (added in 1.7)
 
 **Not installed by anything.** This section is documentation: two third-party
 skills worth having. Nothing in the codebase fetches, installs, or enables them,
@@ -429,7 +429,7 @@ re-extracts only changed files.
 
 ---
 
-## Recommended MCP servers (added by Prompt 1.7)
+## Recommended MCP servers (added in 1.7)
 
 ### graphify
 
@@ -666,7 +666,7 @@ nothing about what broke.
 
 ---
 
-## Task step history (added by Prompt 6c)
+## Task step history (added in 6c)
 
 **Who depends on this:** the agent loop, which records a row per decision, and
 anything that later explains what a run did — a run summary, the debug console,
@@ -759,7 +759,7 @@ what the run did.
 
 ---
 
-## Resource link detection (added by Prompt 1.10)
+## Resource link detection (added in 1.10)
 
 **Who depends on this:** the frontend paste-a-link flow, and the agentic layer if
 it ever offers to install something a user mentioned. Both must treat the result
@@ -862,7 +862,7 @@ can change both, and `POST /api/mcp/servers` re-validates independently.
 
 ---
 
-## Legacy data directory (added by Prompt 1.11)
+## Legacy data directory (added in 1.11)
 
 **Who depends on this:** anyone who ran the app when it was called AIStudio.
 Nothing in the running system reads the old location — this is a one-time
@@ -919,7 +919,7 @@ These paths are unreachable from module-level tests, which is why they shipped
 returning 500. `test/httperrors.test.ts` boots the real app on an ephemeral port
 and drives it with `fetch` — the only way to make Express throw these itself.
 
-## Colibrì providers (added by Prompt 1.12)
+## Colibrì providers (added in 1.12)
 
 
 **Who depends on this:** the frontend's provider settings screen, which must
@@ -999,7 +999,7 @@ a cold start, and retrying it three times only delays telling the user so.
 
 ---
 
-## Project rules, agents and commands (added by Prompt 1.13)
+## Project rules, agents and commands (added in 1.13)
 
 **Who depends on this:** the frontend, and only the frontend. `GET
 /api/code/rules`, `/api/code/agents` and `/api/code/commands` exist so the UI can
@@ -1166,7 +1166,7 @@ secret, so a future serializer that nests it somewhere new still fails the test.
 
 ---
 
-## Error log and task state recovery (added by Prompt 1.15)
+## Error log and task state recovery (added in 1.15)
 
 **Who depends on this:** the debug console, which is the user's only view of what
 went wrong an hour ago; and any client driving a Code, Cowork or Design task,
@@ -1259,7 +1259,7 @@ state, the agent's own progress and the lane slot all died with it. Marking it
 `paused` would advertise a recovery that does not exist, which is the same lie in
 a different shape.
 
-### `blocked` is reconciled, `ready_for_review` is not (added by Prompt 1.21)
+### `blocked` is reconciled, `ready_for_review` is not (added in 1.21)
 
 These two arrived together and are both non-terminal, so the tempting reading is
 that reconciliation should treat them alike. It must not, and the dividing line is
@@ -1301,7 +1301,7 @@ Code task refused by the lane never reached `startTaskRun`, and writing a
 terminal state for a run that was never recorded would create a phantom row.
 
 
-## Project scoping (added by Prompt 1.16)
+## Project scoping (added in 1.16)
 
 **Who depends on this:** every path the app resolves. `fsScope`, worktree
 provisioning, `.hyperion/rules|agents|commands/` discovery and the default
@@ -1440,7 +1440,7 @@ the default root into the argv of a server that then never follows the active
 project again.
 
 
-## Scheduled tasks and the knowledge library (added by Prompt 1.8)
+## Scheduled tasks and the knowledge library (added in 1.8)
 
 **Who depends on this:** the Cowork UI, which has to explain a run that did not
 happen; the storage cleanup sweep, which must leave knowledge sources alone; and
@@ -1554,9 +1554,9 @@ interval is measured in hours — and it respects the same one-at-a-time rule as
 timed tick.
 
 
-## Browser push notifications (added by Prompt 1.14)
+## Browser push notifications (added in 1.14)
 
-**Who depends on this:** Sol's service worker, which receives `PushPayload` and
+**Who depends on this:** the frontend's service worker, which receives `PushPayload` and
 must keep treating its shape as stable; and every background job that might want
 to tell the user something while the tab is closed.
 
@@ -1635,12 +1635,12 @@ only an explicit "this is gone" from the service is allowed to be destructive.
 
 ---
 
-## Chat transcripts are cursor-paginated (added by Prompt 1.8, found missing by the 1.17 audit)
+## Chat transcripts are cursor-paginated (added in 1.8, found missing by the 1.17 audit)
 
 `GET /api/chat/:id/messages` takes `before=<message_id>`, never `?offset=`, and
 returns `nextBefore` for the next page up.
 
-This was specified in Prompt 1.8 and then not built; the 1.17 audit caught it
+This was specified in 1.8 and then not built; the 1.17 audit caught it
 because 1.17 asked whether the activity feed's cursor convention matched the
 chat endpoint's. It did not — the feed paginated and the transcript did not.
 Recording it here so the reasoning does not have to be rediscovered a third time.
@@ -1672,7 +1672,7 @@ change what the model is sent, which is a much larger blast radius than a UI
 pagination change. `listMessagePage` is additive, and `GET /api/chat/:id` and
 `POST /api/chat/:id/open` still return the oldest-first whole-chat shape.
 
-## Automatic backups can be mirrored off the machine (added by Prompt 1.8)
+## Automatic backups can be mirrored off the machine (added in 1.8)
 
 `HYPERION_BACKUP_DEST` names an extra directory each automatic backup is
 **copied** into — typically a Drive or OneDrive sync folder.
@@ -1696,7 +1696,7 @@ full sync folder makes the *mirror* unavailable, not the backup, so the run
 reports `mirrored: null` and logs a warning rather than failing a backup that
 actually succeeded.
 
-**How the test avoids proving nothing** (added by Prompt 1.18's session). All
+**How the test avoids proving nothing** (added in 1.18). All
 three properties above are now covered by `test/backupmirror.test.ts`, driven
 through the exported `runAutoBackup` because `mirrorBackup` is module-private.
 
@@ -1716,7 +1716,7 @@ The unwritable destination is simulated by replacing the directory with a
 largely ignores them on directories, so a chmod-based test would pass on CI and
 silently do nothing locally.
 
-## Health summary and activity feed (added by Prompt 1.17)
+## Health summary and activity feed (added in 1.17)
 
 
 ### `enabled` is a single active flag, not a set — and the health verdict is built on that
@@ -1785,7 +1785,7 @@ not survive a silent change during a refactor.
 
 ### The activity feed is not the debug console
 
-`GET /api/errors` (Prompt 1.15) already serves raw records with stack traces,
+`GET /api/errors` (1.15) already serves raw records with stack traces,
 error codes and sanitized request context. The feed answers a different question
 — "what has this thing been doing while I was away?" — so every entry is a whole
 sentence with a status and a link, and **no entry carries a stack frame or an
@@ -1828,7 +1828,7 @@ here because the wrong reason would have justified changing the join.)
 
 ### Subagent delegation is absent because there is no writer
 
-Prompt 1.17 named three sources for the feed. Only two exist: nothing in the
+The 1.17 design named three sources for the feed. Only two exist: nothing in the
 backend records a delegation event — no table, no writer, and a search for
 `subagent` / `delegat` across `src/` turns up only project configuration and two
 unrelated comments.
@@ -1848,11 +1848,11 @@ on a difference they cannot see.
 
 ---
 
-## System binaries and user approval (added by Prompt 1.8(a))
+## System binaries and user approval (added in 1.8(a))
 
 **Who depends on this:** the agentic layer, which must ask rather than retry when
 a skill is waiting on a person; and the frontend, which needs to tell "this skill
-is broken" apart from "this skill needs your permission". Extends the Prompt 1.6
+is broken" apart from "this skill needs your permission". Extends the 1.6
 dependency contract at the top of this file.
 
 ### Waiting on a person is not a failure
@@ -1958,7 +1958,7 @@ summary entry for the same reason. An agent that reads only the prompt block sti
 has to be able to tell the two apart — otherwise the distinction this status
 exists to draw dies at the last step before it reaches the user.
 
-## Per-item export (added by Prompt 1.18)
+## Per-item export (added in 1.18)
 
 **Who depends on this:** the frontend's save/share buttons, which receive a file
 rather than an envelope; and anyone adding a fourth export later, who will copy
@@ -2025,15 +2025,15 @@ user gets matches the one in the `started` event.
 
 ### `/api/chat`, singular
 
-The prompt specified `/api/chats/:id/export`. The router has been mounted at
-`/api/chat` since `001` and every endpoint in API.md §4 lives under it, so a
+The original spec specified `/api/chats/:id/export`. The router has been mounted
+at `/api/chat` since `001` and every endpoint in API.md §4 lives under it, so a
 plural sibling for this one route would leave two spellings of the same resource
 in the API. The mount won; the deviation is recorded in API.md §19 so the next
-reader of the prompt does not "fix" it back.
+reader of the spec does not "fix" it back.
 
 ---
 
-## Settings depth (added by Prompt 1.19 / 1.20)
+## Settings depth (added in 1.19 / 1.20)
 
 ### The spend cap exempts live work structurally, not with a branch
 
@@ -2160,7 +2160,7 @@ not be relaxed to make a validation error go away.
 
 ---
 
-## Temporary chats (added by Prompt 1.20)
+## Temporary chats (added in 1.20)
 
 ### A temporary chat is never inserted, not even briefly
 
@@ -2231,7 +2231,7 @@ gone" from "just now deleted" if it cares, and most will not.
 
 ---
 
-## Brand-approved design assets (added by Prompt 1.22)
+## Brand-approved design assets (added in 1.22)
 
 ### Approval is a second cleanup exemption, independent of `pinned`
 
@@ -2274,7 +2274,7 @@ idempotent endpoint.
 
 ---
 
-## Outbound data safety (added by Prompt 1.23)
+## Outbound data safety (added in 1.23)
 
 ### `looksRedacted` is not a "contains a secret" predicate
 
@@ -2286,7 +2286,7 @@ clean.
 Reaching for it as the outbound check would invert the gate — every payload
 carrying a key would return `false` and be waved through, and the feature would
 appear to work because clean payloads would still pass. The doc comment on it was
-itself inverted until this prompt, so the trap was documented backwards as well
+itself inverted until this change, so the trap was documented backwards as well
 as named badly.
 
 The detector is `containsSensitive` / `findSensitive`. There is a test asserting
@@ -2471,7 +2471,7 @@ returns `404 not_found` — `No provider with id "active"`. The same trap as
 `/bulk-delete` and `/assets/approved`. There is an HTTP-level test asserting the
 200, because no module-level call can reach a route-ordering bug.
 
-## Zero data retention (added by Prompt 1.26)
+## Zero data retention (added in 1.26)
 
 1.23 answered "where did the bytes go". This answers "and does whoever received
 them keep it". The two are deliberately separate features: one is a check on
@@ -2673,7 +2673,7 @@ The wording differs per reason and that is deliberate: `redaction_blocked` invit
 user to review and approve, while `zdr_blocked` must not — there is nothing to
 approve, and the block lifts only when a setting or a recorded provider fact changes.
 
-## Stopping a run is not the same as losing the client (groundwork for Prompt 1.24)
+## Stopping a run is not the same as losing the client (groundwork for 1.24)
 
 ### `ctx.signal` combines disconnect with cancellation
 
@@ -2710,13 +2710,13 @@ captures the signal first and aborts afterwards for exactly this reason.
 
 ### Why this landed before the cancel endpoint
 
-This was committed on its own, ahead of Prompt 1.24. An earlier claim that cancel
+This was committed on its own, ahead of 1.24. An earlier claim that cancel
 needed "only a registry and a route" was wrong — it rested on `ctx.signal`
 already being a general-purpose stop signal, and it was not. Separating the
 signal change from the endpoint keeps the part that touches every existing agent
 call path in a commit whose whole diff can be read against the old behaviour.
 
-## Task cancellation  *(added by Prompt 1.24)*
+## Task cancellation  *(added in 1.24)*
 
 ### Every cancel outcome is a 200, including "there was nothing to signal"
 
@@ -2993,10 +2993,10 @@ UI that knows how to offer acknowledgement. Anything that is not a
 function must never become a general-purpose catch that turns unrelated bugs into
 parked runs.
 
-### Cancellation is checked between iterations, not only around the model call
+### Cancellation is checked between iterations, not only around the external request
 
 `ctx.signal.aborted` is tested at the top of every iteration, before the turn is
-requested. A loop that only checks the signal around the LLM call keeps executing
+requested. A loop that only checks the signal around the external request keeps executing
 tools after the user has clicked stop, which is the visible-but-wrong behaviour:
 the UI says stopped and the filesystem keeps changing.
 
@@ -3353,7 +3353,7 @@ fits emits nothing at all. Silence means no compaction happened, not that
 compaction is disabled.
 
 
-## The permission engine (added by Prompt 1.27)
+## The permission engine (added in 1.27)
 
 Ask, Plan and Act stopped being modes and became **profiles**. The three names still
 work and still mean what they meant; what changed is that they are now the first
@@ -3675,7 +3675,7 @@ valid schema — and per `014`'s header that clause is what makes `startTaskRun`
 `INSERT OR REPLACE` clear a superseded attempt's steps. `test/migration017.test.ts`
 is the only guard, and it asserts both the clause and the end-to-end property.
 
-## Task-run continuation (added by Prompt 1.27)
+## Task-run continuation (added in 1.27)
 
 Before this, a parked task run was a dead end. `db/taskRuns.ts` said so outright —
 *"unlike a chat run there is no resume path"* — and yet three park reasons already
@@ -3973,7 +3973,7 @@ overrun would already be paid for.
 
 ---
 
-## The Design agent (added by Prompt 3 — the Design slice)
+## The Design agent (added in the Design slice)
 
 **Who depends on this:** the frontend embedding the preview iframe, anyone
 touching the permission engine's unknown-tool rule, and whoever is tempted to

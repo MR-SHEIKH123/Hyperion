@@ -98,6 +98,57 @@ content to fill holes.
   provider). Closed toolset, `design:` artifact namespace, brand proposals
   unapproved by construction, vision stub, guidance-not-fatal state errors.
 
+- **Queue-wait timeout could never fire — fixed (2026-09-19).** Both queue
+  waiters in `src/orchestrator/lock.ts` (`acquire` and `acquireCodeLane`)
+  called `waiter.timer.unref?.()` on their wait-timeout, with the stated
+  intent of not holding the event loop open during shutdown. That intent
+  conflicts with the wait-give-up contract (CONTRACTS.md: a queued task is
+  only skipped "after `waitMs` expires"): the timeout is the *only* mechanism
+  that moves a parked waiter forward, so if the waiter was the only pending
+  work, an unref'd timer never fired and the waiter hung forever — the event
+  loop drained and the process exited out from under the promise. Symptom on
+  2026-09-19: full suite reported 823 pass / 31 *cancelled* (not 854/854),
+  all of them in the queue-timeout tests (`test/codetasks.test.ts` "the Code
+  lane" + the worktree suites, `test/scheduledtasks.test.ts` lock-skip
+  tests). The unref was removed from both sites. Shutdown stays bounded
+  without it: a client disconnect aborts the waiter (its `cleanup()` clears
+  the timer), the running server's socket already holds the loop, and the
+  6 s force-exit timer in `installShutdownHandlers` caps anything left
+  behind. The pre-existing tests that pin the contract
+  (`waitMs: 40` give-up in `codetasks.test.ts`, the scheduler's
+  `scheduledTaskWaitMs` skip) are the failing tests this fix ships with;
+  post-fix the full suite is 854/854 pass / 0 fail / 0 cancelled and
+  `tsc --noEmit` is clean.
+
+- **Milestone B, increment 1 — operational shell + Chat tool (frontend),
+  landed (2026-09-19).** The Milestone-A foundation now carries the
+  operational shell (`src/shell/`: eight-tool sidebar, polling health
+  indicator over `GET /api/health/summary`, per-tool routes, honest
+  `ToolPlaceholder` for unbuilt tools) and the Chat tool end-to-end
+  (`src/tools/chat/`): conversation list (pin / archive / delete-with-
+  confirmation, archived view), transcript rendered from persisted truth with
+  live rows from the stream hook, pause banner + resume (fresh prompt on a
+  paused run = switch-and-resume), busy/refusal handling that keeps the
+  composer's draft, and the model picker against the active provider. New
+  Chat wire contracts in `src/contracts/wire/chat.ts` (records, run
+  snapshots, cursor page, stream payloads); the SSE chat decoders in
+  `src/api/sse/events.ts` now validate the full documented payloads — the
+  chat `error` event carries the run error shape, not the HTTP error
+  envelope, which the schema and a comment now pin. Stream settlement:
+  terminal frame → refetch; non-terminal close → apply the reconciliation
+  the api layer fetched (cache when one page, refetch when longer); a dropped
+  stream is never replayed. New-chat fast path: the chat is created on first
+  send and the pending prompt rides on location state, cleared on
+  consumption so a reload cannot double-send. Verified: all five frontend
+  gates green (contracts, typecheck, 84/84 tests incl. new wire/module/hook/
+  composer suites, lint `--max-warnings 0`, build with per-tool code
+  splitting), and a live smoke test against the real backend through the Vite
+  proxy — with no provider configured, `POST /api/chat/stream` returned the
+  contract-correct SSE `paused` (`no_healthy_provider`) and the run persisted
+  paused, which is exactly what the frontend's resume banner consumes.
+  Remaining increments: the Code, Cowork, and Design tool workflows, then
+  Playground, Plugins, Skills, and Settings.
+
 ## Resolved verifications
 
 - **Cowork: complete against Slice 4, not a stub** (verified against the code

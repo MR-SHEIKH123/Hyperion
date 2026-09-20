@@ -1,26 +1,24 @@
-# Build Prompt 1 of 3 — Backend Core, Orchestration & Security
+# Scope — Backend Core, Orchestration & Security
 
-> Saved verbatim into the repo on 2026-07-29. This is the authoritative scope
-> document for the backend core. It was originally supplied as a chat prompt and
-> nearly lost; keep it here so scope is reviewable and diffable next to the code.
-
-**Target model: Claude Opus 5** (Anthropic's current flagship, released July 24, 2026, replacing Opus 4.8 — assigned here for its verified self-verification and error-recovery behavior and strong coding/knowledge-task results, which matter most on correctness-critical infrastructure)
+> Saved into the repo on 2026-07-29. This is the authoritative scope document
+> for the backend core; keep it here so the scope is reviewable and diffable
+> next to the code.
 ---
 
-## Project Overview (read this even though it's not all your scope)
+## Project Overview (context — not all of it is the backend's scope)
 We're building **Hyperion** — a personal, web-based AI workbench, similar in spirit to Cline but running in a browser instead of VS Code. It's for one user (the owner), runs entirely on their own desktop, has no usage caps, and can talk to any LLM provider through a swappable gateway system rather than being locked to one vendor.
 
-The app has a sidebar with these tools: **Chat, Code, Cowork, Design, Playground, Plugins, Skills, Settings**. Each tool has its own independent model selection (Chat could run GPT while Code runs Claude, simultaneously configured though only one runs a request at a time). The whole app is dark-mode-only, styled in a clean, card-based "serious engineering tool" aesthetic inspired by arize.com — but the actual visual build is not your job (see Prompt 2).
+The app has a sidebar with these tools: **Chat, Code, Cowork, Design, Playground, Plugins, Skills, Settings**. Each tool has its own independent model selection (configured per tool, though only one runs a request at a time). The whole app is dark-mode-only, styled in a clean, card-based "serious engineering tool" aesthetic inspired by arize.com — the visual build is covered by the frontend scope.
 
-**Three-way build split:**
-- **You (Claude Opus 5)** — backend core: providers, failover, security, storage, config logic. This document.
-- **GPT-5.6 Sol** — entire frontend/UI, the Design tool's full agentic loop, and the Code tool's terminal/shell execution logic.
-- **Kimi K3** — the Code tool's multi-file agentic editing loop, the Cowork tool's full agentic loop, and MCP process lifecycle management.
+**Work split (how the build was divided):**
+- **Backend core** — providers, failover, security, storage, config logic. This document.
+- **Frontend** — the entire UI, the Design tool's agentic loop, and the Code tool's terminal/shell execution logic.
+- **Agentic layer** — the Code tool's multi-file agentic editing loop, the Cowork tool's full agentic loop, and MCP process lifecycle management.
 
-You are building **the backbone all three depend on**: the API server, the database, the provider system, and every piece of logic where correctness matters more than visual polish. Sol's frontend and Kimi's agentic modules both call into the API surface you build — treat this as the contract other people's code depends on, and design it to be stable and predictable.
+The backend is **the backbone everything else depends on**: the API server, the database, the provider system, and every piece of logic where correctness matters more than visual polish. The frontend and the agentic modules both call into the API surface it provides — treat this as the contract other code depends on, and design it to be stable and predictable.
 
 > **Implementation note — current Phase 1/2 composition.** The ownership split
-> above is retained as the historical allocation from the original prompt. The
+> above is retained as the historical allocation. The
 > shipped backend now composes Cowork, Code and a local terminal executor itself
 > before HTTP and schedulers start, and MCP process lifecycle is already
 > implemented by the backend supervisor. Design remains the one genuinely
@@ -29,13 +27,13 @@ You are building **the backbone all three depend on**: the API server, the datab
 > Code as unregistered; the Code agent has since shipped and
 > `test/composition.test.ts` asserts the set.)
 
-**Tech stack**: Node.js backend (Express or Fastify — your choice), SQLite via `better-sqlite3`, runs as a plain local web server (no Electron/Tauri — just a browser tab). No authentication (single trusted user) — this is intentional and must not change; remote access is handled separately via Tailscale (a private mesh VPN the user installs on their own devices), not by adding public auth to the app itself.
+**Tech stack**: Node.js backend (Express or Fastify — either is fine), SQLite via `better-sqlite3`, runs as a plain local web server (no Electron/Tauri — just a browser tab). No authentication (single trusted user) — this is intentional and must not change; remote access is handled separately via Tailscale (a private mesh VPN the user installs on their own devices), not by adding public auth to the app itself.
 
 **Runtime persistence**: the server should run continuously in the background (like a XAMPP stack), not something manually started each session. Structure it so it can be run under **PM2** (or an equivalent Node process manager) for auto-restart-on-crash and start-on-boot behavior. Bind to `127.0.0.1` by default, but keep the bind address configurable (env var) since Tailscale exposes the machine on a private virtual network interface — the user may want to bind there instead of strictly `127.0.0.1` to allow their other devices (over Tailscale) to reach it. Do not build any public-facing hardening (rate limiting, login, HTTPS) — this app is never meant to be reachable from the open internet.
 
 ---
 
-## Your Scope
+## Scope
 
 ### 1. Multi-provider registry & failover
 
@@ -55,7 +53,7 @@ Build a provider registry, not a single hardcoded gateway integration:
 
 - **On provider failure mid-chat**: the conversation **pauses, never crashes**. Message history stays completely intact. Show a clear error reason. Do **not** auto-retry into the same broken state — it stays paused until the provider recovers or the user manually intervenes (retry / switch provider).
 - **On a manual model/provider switch mid-chat**: pause the current exchange, reconfigure to the new model/provider, then **automatically resume** the conversation once the switch succeeds. If the switch itself fails, remain paused (don't fall back silently).
-- Expose this as clear state your API surface emits (e.g. SSE events: `paused`, `resumed`, `error`) so the frontend (Sol's layer) can render the paused banner without needing to infer state from HTTP status codes alone.
+- Expose this as clear state the API surface emits (e.g. SSE events: `paused`, `resumed`, `error`) so the frontend can render the paused banner without needing to infer state from HTTP status codes alone.
 
 ### 3. Storage layer (SQLite)
 
@@ -66,16 +64,16 @@ Design a schema covering at minimum:
 - `mcp_servers` (mirrors `mcp_config.json` — name, type [local/remote], command-or-url, optional token, last test-connection result)
 - `skills` (name, description, source path, optional token/key, parsed from the skill's own `SKILL.md`)
 - `settings` (theme — fixed to dark, no toggle needed — cost tracking config, etc.)
-- `artifact_versions` (snapshot stack per artifact — see Code/Design/Cowork undo history; you own the storage table, the agentic loops that populate it live in Kimi's/Sol's layers)
+- `artifact_versions` (snapshot stack per artifact — see Code/Design/Cowork undo history; the backend owns the storage table, the agentic loops that populate it live in the agentic layers)
 - `usage_log` (tokens in/out, tool, model, provider, timestamp — powers the cost dashboard)
 
 ### 4. Security
 
 - **Encrypt API keys at rest.** Use Node's `crypto` module; the encryption key itself should live outside the database (e.g. a separate file with restricted OS permissions), not alongside the encrypted data.
 - **Bind the server to `127.0.0.1` only** — never `0.0.0.0`. This is the single most important setting; without it, anyone on the same network could reach the app and its stored keys.
-- **Never send provider API keys to the frontend**, even transiently. The browser talks only to your backend; your backend attaches real keys server-side before calling any provider.
+- **Never send provider API keys to the frontend**, even transiently. The browser talks only to the backend; the backend attaches real keys server-side before calling any provider.
 - **Scope filesystem access for MCP/Code** to a specific root directory (e.g. `~/Hyperion/projects/`), not the whole filesystem — this bounds the blast radius of anything the Code tool or filesystem MCP server does.
-  - *Since Prompt 1.16 that root is the **active project's** directory, not one fixed path.* `~/Hyperion/projects/` is the default and the fallback when no project is open; opening a project repoints the `projects` scope at it, and a project may be an existing directory anywhere on disk. Containment itself is unchanged — there is still exactly one project root at a time, and everything still resolves through `resolveInScope`. See *Projects* in `docs/API.md` and *Project scoping* in `docs/CONTRACTS.md`.
+  - *Since 1.16 that root is the **active project's** directory, not one fixed path.* `~/Hyperion/projects/` is the default and the fallback when no project is open; opening a project repoints the `projects` scope at it, and a project may be an existing directory anywhere on disk. Containment itself is unchanged — there is still exactly one project root at a time, and everything still resolves through `resolveInScope`. See *Projects* in `docs/API.md` and *Project scoping* in `docs/CONTRACTS.md`.
 
 
 ### 5. MCP config-writer backend logic
@@ -84,7 +82,7 @@ Design a schema covering at minimum:
 - Support both **local/stdio** servers (a `command` field, e.g. `npx -y @modelcontextprotocol/server-filesystem /scoped/path`) and **remote/URL** servers (a `url` + optional auth token/header).
 - **Editing an existing server reuses the same entry** (update-by-name), not delete-and-recreate.
 - Expose a **non-blocking test-connection** endpoint: attempting to save a config should succeed regardless of whether the live test passes — the test is informational, not a gate.
-- You write the config file and expose CRUD endpoints; **actually spawning and monitoring the MCP server processes is Kimi's responsibility** (see integration contract below) — don't implement process spawning yourself, just the config persistence and the API surface around it.
+- Own the config file and expose CRUD endpoints; **actually spawning and monitoring the MCP server processes is the agentic layer's responsibility** (see integration contract below) — the backend owns the config persistence and the API surface around it, not process spawning.
 
 ### 6. Skills backend logic
 
@@ -93,13 +91,13 @@ Design a schema covering at minimum:
 - Support an **optional token/API key field** per skill (encrypted the same way provider keys are), for skills that need their own credentials.
 - **Recommendation check**: if the parsed `SKILL.md` (or an accompanying manifest field) indicates the skill expects a credential, surface that in the intake response so the frontend can prompt the user to fill in the token field before finalizing.
 - **Basic risk-scan check**: before finalizing registration of any externally-sourced skill (uploaded file/folder or URL-fetched — not a small hand-authored default set), run a lightweight heuristic scan over its files and flag: unexpected binary/executable files, obfuscated/minified code where plain text is expected, embedded network calls in scripts, or prompt-injection-style phrasing in the instructions (text attempting to override system instructions). Return these flags (if any) in the intake response for the frontend to display as a warning. **Be explicit in the API response wording that this is a heuristic check, not a guarantee of safety** — the frontend will surface this caveat directly to the user, not imply a clean scan means the skill is safe.
-- Expose an endpoint that assembles a **summary of all registered skills** (name + description only, not full content) for injection into an active model's system prompt — this is what makes skill relevance-detection possible without a separate AI call. The actual decision of "is this skill relevant right now" happens in whichever model is running the live task (Kimi's or Sol's layer, depending on the tool) — your job is just to supply the list.
+- Expose an endpoint that assembles a **summary of all registered skills** (name + description only, not full content) for injection into the running model's system prompt — this is what makes skill relevance-detection possible without a separate AI call. The actual decision of "is this skill relevant right now" happens in whichever model is running the live task (in the agentic layer, depending on the tool) — the backend's job is just to supply the list.
 
 ### 7. Storage/cleanup engine
 
 - Background job: auto-delete **assets untouched for 3 months**, auto-delete **chats not opened for 1 month**.
 - Respect a **pin/keep flag** on both chats and assets — pinned items are exempt from the timer entirely.
-- The Storage/Gallery view's data (list all uploaded/generated files with metadata) is served by you; the actual gallery UI is Sol's.
+- The Storage/Gallery view's data (list all uploaded/generated files with metadata) is served by the backend; the gallery UI is the frontend's.
 
 > **Implementation note — chat retention is 120 days, not 30.**
 > The bullet above is the original requirement and is left as written. The
@@ -122,7 +120,7 @@ Design a schema covering at minimum:
 ### 8. Cost/usage tracking & backup
 
 - Log every request's token usage (input/output), tool, model, and provider to `usage_log`.
-- Expose an aggregated usage/cost endpoint (by tool, by provider, by time range) for the cost dashboard UI (Sol builds the UI, you supply the data).
+- Expose an aggregated usage/cost endpoint (by tool, by provider, by time range) for the cost dashboard UI (the frontend builds the UI, the backend supplies the data).
 - **Export/import backup**: package the SQLite database + `mcp_config.json` + skill registry into a single downloadable archive; support restoring from that same archive.
 
 ### 9. Single-active-job lock
@@ -131,11 +129,11 @@ Design a schema covering at minimum:
 
 ---
 
-## Integration Contract (what Sol's frontend and Kimi's agent modules expect from you)
+## Integration Contract (what the frontend and the agent modules expect from the backend)
 
-Design your HTTP/SSE API as the **single spine** of the application. Sol's frontend talks only to this API — never directly to Kimi's internals. Kimi's agentic modules are backend services that your API layer invokes for long-running tool tasks (Code, Cowork) — they are not separate HTTP servers.
+The HTTP/SSE API is the **single spine** of the application. The frontend talks only to this API — never directly to the agents' internals. The agentic modules are backend services that the API layer invokes for long-running tool tasks (Code, Cowork) — they are not separate HTTP servers.
 
-Suggested endpoint surface (adjust naming as you see fit, but keep the shape):
+Suggested endpoint surface (naming may adjust, but keep the shape):
 
 ```
 GET  /api/providers                    — list registry (enabled/disabled, health)
@@ -148,7 +146,7 @@ POST /api/chat/stream                  — {tool, modelId, messages, attachments
 GET|POST|PUT|DELETE /api/mcp/servers   — CRUD for mcp_config.json entries
 POST /api/mcp/servers/:id/test         — non-blocking connection test
 GET  /api/mcp/status                   — live running-server status (populated by
-                                          Kimi's process manager, exposed by you)
+                                          the MCP process manager, exposed by the backend)
 
 GET|POST|DELETE /api/skills            — CRUD, upload or URL-fetch intake
 GET  /api/skills/summary               — name+description list for context injection
@@ -160,25 +158,25 @@ GET  /api/usage                        — aggregated cost/usage data
 GET  /api/backup/export                — download full backup archive
 POST /api/backup/import                — restore from archive
 
-POST /api/code/run-task                — invokes Kimi's code agent module
-POST /api/cowork/run-task              — invokes Kimi's cowork agent module
-POST /api/design/run-task              — invokes Sol's design agent module
-POST /api/code/execute-command         — invokes Sol's terminal-execution module
-                                          (called BY Kimi's code agent when it
+POST /api/code/run-task                — invokes the code agent module
+POST /api/cowork/run-task              — invokes the cowork agent module
+POST /api/design/run-task              — invokes the design agent module
+POST /api/code/execute-command         — invokes the terminal-execution module
+                                          (called by the code agent when it
                                           decides a shell command is needed)
 ```
 
-Kimi's code-agent module will need to call `executeCommand()` (implemented by Sol) when it decides a shell command should run — treat this as an internal function call/module import within your Node process, not a network call, for lowest latency. Document the exact function signature you expect (e.g. `executeCommand(cwd, command): Promise<{stdout, stderr, exitCode}>`) so Sol can implement a matching module.
+The code agent module calls `executeCommand()` (implemented by the terminal-execution module) when it decides a shell command should run — an internal function call/module import within the Node process, not a network call, for lowest latency. The expected function signature is `executeCommand(cwd, command): Promise<{stdout, stderr, exitCode}>`.
 
 ---
 
 ## Deliverables
 
-1. Express/Fastify server scaffold with the endpoint surface above (stubs are fine for `/code/run-task`, `/cowork/run-task`, `/design/run-task` — those bodies are Kimi's/Sol's to fill in)
+1. Express/Fastify server scaffold with the endpoint surface above (stubs are fine for `/code/run-task`, `/cowork/run-task`, `/design/run-task` — those bodies belong to the agentic layer)
 2. SQLite schema + migrations
 3. Provider registry + failover + Ollama detection, fully working against at least one real remote provider
 4. Pause/resume state machine, testable via a simulated provider failure
-5. MCP config CRUD + test-connection (process spawning stubbed — Kimi fills that in)
+5. MCP config CRUD + test-connection (process spawning stubbed — the agentic layer fills that in)
 6. Skills CRUD with upload/URL intake + SKILL.md parsing
 7. Storage cleanup cron job + pin/keep logic
 8. Encrypted key storage, localhost-only binding, scoped filesystem root
@@ -186,7 +184,7 @@ Kimi's code-agent module will need to call `executeCommand()` (implemented by So
 
 ---
 
-## Addendum — Build Prompt 1.5 (Backend Boost)
+## Addendum — 1.5 (Backend Boost)
 
 Three additive changes on top of everything above. Nothing here replaces an
 existing contract; the provider registry, MCP CRUD, skills intake, storage
@@ -218,7 +216,7 @@ running fully local. Vector store and history DB live under `~/Hyperion/memory/`
   provider (`baseURL: ${HYPERION_OLLAMA_URL}/v1`, dummy API key). Knobs:
   `HYPERION_MEMORY_LLM_MODEL` (`llama3.1:8b`), `HYPERION_MEMORY_EMBED_MODEL`
   (`nomic-embed-text`), `HYPERION_MEMORY_EMBED_DIMS` (`768`).
-- **API for Settings** (Sol): `GET /api/memory` (`?query=` for semantic search,
+- **API for Settings** (frontend): `GET /api/memory` (`?query=` for semantic search,
   `?limit=`, default 50 / max 200), `GET /api/memory/status`,
   `POST /api/memory/enable|disable`, `DELETE /api/memory/:id`, `DELETE /api/memory`.
   The list route returns `{ memories: [] }` rather than an error when memory is
@@ -240,7 +238,7 @@ wigolo ships disabled on purpose: it needs a one-time `init` before it can run,
 so enabling it is the user's explicit action. Seeding is idempotent through
 `settings` keys `mcp_seeded.<name>` — a default the user deletes stays deleted,
 and a default the user reconfigures is never overwritten. A failed seed logs a
-warning and never blocks boot. Process lifecycle is still Kimi's
+warning and never blocks boot. Process lifecycle is the MCP supervisor's
 `McpProcessManager`; this is config only.
 
 ### 3. opencodex — third provider type

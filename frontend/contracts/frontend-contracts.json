@@ -13,8 +13,7 @@
       "method": "GET",
       "expectedPath": "/api/meta",
       "status": "intentionally-unsupported",
-      "milestone": "A",
-      "reason": "Explicitly excluded from frontend Milestone A; no backend compatibility endpoint exists."
+      "reason": "Explicitly excluded from the frontend; no backend compatibility endpoint exists."
     },
     {
       "id": "chat.list",
@@ -239,7 +238,7 @@
       "method": "GET",
       "expectedPath": "/api/search",
       "status": "partial",
-      "reason": "Milestone B can federate list endpoints, but there is no global content-search contract."
+      "reason": "The shell can federate list endpoints, but there is no global content-search contract."
     }
   ]
 }

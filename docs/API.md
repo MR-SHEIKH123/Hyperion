@@ -667,7 +667,7 @@ the cleanup job, or discard one explicitly.
 
 `GET /summary` supplies the name+description list for system-prompt injection.
 Note that the chat orchestrator does **not** inject it today — assembling and
-inserting it is the caller's job (Kimi's and Sol's agent loops).
+inserting it is the caller's job (the agent loops).
 
 ### 7.1 System binaries and `needs-user-approval`
 
@@ -1216,7 +1216,7 @@ Scheduled Cowork runs (§17.2) are cancellable through the same
 stopped scheduled run is recorded with status `skipped` and its `lastRunAt` is
 stamped, so it does not immediately come due again on the next tick.
 
-### 12.4 The Design agent  *(new — Prompt 3, the Design slice)*
+### 12.4 The Design agent  *(new — the Design slice)*
 
 Design registers at boot alongside Cowork and Code, so `/api/design/run-task`
 streams SSE like any other agent run. `taskId` is optional (unlike Code): with
@@ -2245,7 +2245,7 @@ deltas:
 8. **`/api/backup` adds `GET /` and `POST /inspect`**, and import supports
    `dryRun`, because restoring overwrites the live database.
 9. **`/api/settings` and `/api/memory` are new routers** — the first was implied
-   by the `settings` table, the second is Prompt 1.5's Memory plugin.
+   by the `settings` table, the second is the 1.5 Memory plugin.
 10. **`/api/cowork` carries CRUD the spec never listed** — the knowledge library
     and the scheduled-task registry (§17). The spec framed `/api/cowork` as a
     single `run-task` seam, but both of these are user-owned records that outlive
