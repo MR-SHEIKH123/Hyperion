@@ -12,6 +12,7 @@ const {
   ANY_MUTATE,
   ANY_READ,
   ANY_TOOL,
+  assertNoPermissionKeyCollisions,
   createPermissionResolver,
   describeVerdict,
   evaluate,
@@ -248,6 +249,30 @@ describe('MCP key derivation', () => {
 
     assert.equal(verdict.action, 'allow');
     assert.equal(verdict.key, 'wigolo_search');
+  });
+
+  it('rejects registration of tools that collide under permissionKey normalization', () => {
+    // Both 'a.b_c' and 'a_b.c' normalize to 'a_b_c', which would lead to silent permission sharing.
+    // The resolver must fail closed by rejecting the registration.
+    assert.throws(
+      () =>
+        createPermissionResolver({
+          layers: [layer('project', { a_b_c: 'allow' })],
+          knownTools: new Set(['a.b_c', 'a_b.c']),
+        }),
+      (err: unknown) =>
+        err instanceof AppError &&
+        err.code === 'bad_request' &&
+        /collision/i.test(err.message),
+    );
+
+    // Non-colliding tools register cleanly
+    assert.doesNotThrow(() =>
+      createPermissionResolver({
+        layers: [layer('project', { a_b_c: 'allow', other_tool: 'deny' })],
+        knownTools: new Set(['a.b_c', 'other.tool']),
+      }),
+    );
   });
 });
 

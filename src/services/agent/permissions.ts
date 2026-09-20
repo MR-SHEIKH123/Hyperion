@@ -160,6 +160,29 @@ export function permissionKey(toolName: string): string {
 }
 
 /**
+ * Validate that a set of tool names does not contain multiple distinct tools
+ * that normalize to the same permission key under `permissionKey`.
+ *
+ * Fails closed with `bad_request` to prevent permission rule collision or
+ * silent rule-sharing between different tools.
+ */
+export function assertNoPermissionKeyCollisions(tools: Iterable<string>): void {
+  const seen = new Map<string, string>();
+  for (const tool of tools) {
+    const key = permissionKey(tool);
+    const existing = seen.get(key);
+    if (existing !== undefined && existing !== tool) {
+      throw new AppError(
+        'bad_request',
+        `MCP tool permission key collision: "${tool}" and "${existing}" both normalize to permission key "${key}".`,
+        { details: { tool, collidingWith: existing, permissionKey: key } },
+      );
+    }
+    seen.set(key, tool);
+  }
+}
+
+/**
  * The value a glob is matched against for this call.
  *
  * Returns `null` when there is nothing sensible to match, which makes a map rule
@@ -322,6 +345,7 @@ export function createPermissionResolver(input: {
   layers: readonly PermissionLayerInput[];
   knownTools: ReadonlySet<string>;
 }): (call: { call: ToolCall; effect: ToolEffect }) => PermissionVerdict {
+  assertNoPermissionKeyCollisions(input.knownTools);
   return ({ call, effect }) =>
     evaluate({ call, effect, layers: input.layers, knownTools: input.knownTools });
 }
