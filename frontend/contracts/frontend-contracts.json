@@ -81,6 +81,13 @@
       "reason": "All three implemented agent tools use /continue."
     },
     {
+      "id": "tasks.recovery",
+      "method": "GET",
+      "expectedPath": "/api/{tool}/tasks/:taskId/recovery",
+      "status": "missing",
+      "reason": "Nothing renders it yet. The read exists (1.31, 2026-09-21) and carries the three verbs of the recovery surface: the run's bounded step history with SQL totals over all of it, the leftover checkout with what discarding it would lose, and whether a resume or a discard is available and why not. The screen offering resume / view partial / discard is the remaining half of the item."
+    },
+    {
       "id": "attention.approvals",
       "method": "GET",
       "expectedPath": "/api/attention",

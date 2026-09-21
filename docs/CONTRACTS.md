@@ -4984,6 +4984,63 @@ given. Ollama reports no cache accounting at all: local rows stay NULL, and that
 is stated rather than papered over with a zero.
 
 
+## An interrupted run says what it left, and what can be done with it *(added in 1.31)*
+
+The `interrupted` state landed on its own, and a state on its own is only half an
+answer: it tells a person the run ended because the process went away, and nothing
+else. Prompt 1.31's three verbs — *view the partial work*, *resume*, *discard* —
+each already had a mechanism, and none of them had a reader:
+
+- **view** — `task_steps` has recorded every tool call, plan, compaction, approval
+  and model turn since migration `014`, written from inside the agent loop. Until
+  `GET /api/{tool}/tasks/:taskId/recovery` existed, **`listSteps` and
+  `summarizeSteps` had no production caller at all**: the run's history was written
+  and never read. That is not a small thing to find in a tree this size — the read
+  path was the one the item was waiting for, which is why wiring it was the first
+  half of the surface rather than a new feature.
+- **resume** — a **re-run**, not a continuation, and the distinction is the honest
+  part. Continuation replays a stored conversation and applies stored decisions; it
+  only moves a *parked* run (`blocked` / `ready_for_review`), because a parked run
+  still has an agent loop that can pick the conversation up. A killed process left
+  none, so `interrupted` is terminal and `claimParkedRun` must never touch it. What
+  makes the re-run worth doing is the leftover checkout: provisioning the same task
+  id re-attaches the directory still holding its edits (§ below).
+- **discard** — the orphan discard route, on that same directory.
+
+Four properties of the report are deliberate, and the first two are the same rule
+the worktree scan follows in a different place:
+
+- **The list is bounded; the totals are not.** `partial.steps` is the last fifty,
+  `partial.summary` is computed in SQL over every row, and `omitted` states the
+  difference. A bounded list that looked complete would understate a long run — the
+  mirror of `unchecked` counting directories a scan did not inspect.
+- **The worktree answer is live.** The attention queue reports the last completed
+  scan because a scan spawns git per directory; this read asks about **one** task,
+  so it finds the directory by name and risk-checks only that one. "Your
+  uncommitted edits are still there" is a claim about the disk now.
+- **A checkout a live task owns is never offered.** `worktree` is null for a
+  registered directory and `discard.reason` distinguishes *in use right now* from
+  *nothing on disk*. Those are different facts — one of them means your work is
+  somewhere — and a screen that showed both as "nothing to recover" would be worse
+  than one that showed nothing at all.
+- **A live run is a reader's question, not a writer's.** `cancelRun` both answers
+  "is a run live for this task?" and aborts it, which is exactly the wrong shape for
+  a recovery read: asking must not stop anything. `liveRunFor` is that question
+  without the side effect, and `test/recovery.test.ts` pins that a live run is still
+  uncancelled after the read.
+
+The report answers for **any** run rather than 404-ing on a finished one, because
+the state a caller meant to ask about can have moved on between the list and the
+click; `interrupted: false` is the honest answer and a `404` would read as "this
+task never existed". A task with no run at all is still a `404`.
+
+What is still missing, and must not be read as done: the **screen**. This is the
+read; resume, view-partial and discard are what a surface built on it would offer,
+and no surface renders it yet (`tasks.recovery` is declared in
+`frontend/contracts/frontend-contracts.json` with that reason). The unattended-run
+notification, the interactive-wait timeout and the Design environment remain from
+the same item.
+
 ## An orphaned worktree is reported, never reclaimed *(added in 1.31)*
 
 The worktree registry is in-memory by design — a task id resolves to a directory

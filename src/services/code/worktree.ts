@@ -653,6 +653,54 @@ export function resetOrphanedWorktreeSnapshot(): void {
   lastScan = null;
 }
 
+/**
+ * The leftover directory that belonged to one task, if it is still on disk.
+ *
+ * `scanOrphanedWorktrees` answers "what is in the worktrees root?" and pays a git
+ * spawn per directory for it, which is why the attention queue reports the last
+ * scan rather than running one. A recovery report (1.31) asks a narrower question
+ * about one task, so this looks the name up by `readdir` — no git — and runs the
+ * risk check on the single directory that matches. The answer is therefore live
+ * rather than as-old-as-the-last-scan, which is what a person deciding whether to
+ * discard their own edits needs.
+ *
+ * Only *unregistered* directories are returned. A registered one is a live task's
+ * checkout, and a caller that wants to offer "discard" must not be handed it.
+ */
+export async function findOrphanForTask(taskId: string): Promise<OrphanedWorktree | null> {
+  const root = getRoot('worktrees');
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+
+  const registered = new Set([...worktrees.values()].map((worktree) => path.resolve(worktree.dir)));
+  const candidates = entries
+    .filter((entry) => entry.isDirectory() && taskIdFromName(entry.name) === taskId)
+    .map((entry) => entry.name)
+    .filter((name) => !registered.has(path.resolve(root, name)))
+    // `freePath` makes `<id>` before `<id>-2`, and the suffix is the later
+    // creation, so the newest directory for the task wins — the same preference
+    // `adoptOrphan` uses, kept consistent so the report describes the directory a
+    // re-run would actually adopt.
+    .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+
+  const name = candidates[0];
+  if (name === undefined) return null;
+
+  const dir = path.join(root, name);
+  let lastModified = 0;
+  try {
+    lastModified = fs.statSync(dir).mtimeMs;
+  } catch {
+    lastModified = 0;
+  }
+  const risk = await orphanRisk(dir);
+  return { name, dir, taskId, lastModified, risk: risk.reason, checked: risk.checked };
+}
+
 /** `taskId` or `taskId-2` — the two shapes `freePath` produces. */
 function taskIdFromName(name: string): string {
   const match = /^(.*?)(?:-(\d+))?$/.exec(name);

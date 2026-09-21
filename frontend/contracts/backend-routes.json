@@ -73,6 +73,27 @@
       "capability": "design.core"
     },
     {
+      "method": "GET",
+      "path": "/api/code/tasks/:taskId/recovery",
+      "source": "src/http/agents.ts:618",
+      "exposure": "frontend",
+      "capability": "code.core"
+    },
+    {
+      "method": "GET",
+      "path": "/api/cowork/tasks/:taskId/recovery",
+      "source": "src/http/agents.ts:619",
+      "exposure": "frontend",
+      "capability": "cowork.core"
+    },
+    {
+      "method": "GET",
+      "path": "/api/design/tasks/:taskId/recovery",
+      "source": "src/http/agents.ts:620",
+      "exposure": "frontend",
+      "capability": "design.core"
+    },
+    {
       "method": "POST",
       "path": "/api/code/tasks/:taskId/cancel",
       "source": "src/http/agents.ts:614",

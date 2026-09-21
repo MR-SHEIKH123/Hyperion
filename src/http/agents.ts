@@ -79,6 +79,7 @@ import {
   startTaskRun,
   type TaskRunTool,
 } from '../db/taskRuns.ts';
+import { recoveryReport } from '../services/agent/recovery.ts';
 import { AppError, toAppError } from '../util/errors.ts';
 
 import { createLogger } from '../util/logger.ts';
@@ -597,6 +598,26 @@ agentsRouter.get(
 agentsRouter.get('/code/tasks/:taskId/state', taskStateRoute('code'));
 agentsRouter.get('/cowork/tasks/:taskId/state', taskStateRoute('cowork'));
 agentsRouter.get('/design/tasks/:taskId/state', taskStateRoute('design'));
+
+/**
+ * What an interrupted run left, for `GET /api/{tool}/tasks/:taskId/recovery`.
+ *
+ * The heavy half of this read is the worktree check — one `git status` and maybe
+ * a `rev-parse` in the single directory named for the task, not the per-directory
+ * scan the queue's source is built around — which is why it can be answered on
+ * demand rather than from the last scan. `services/agent/recovery.ts` carries the
+ * reasoning for the shape.
+ */
+function taskRecoveryRoute(tool: TaskRunTool) {
+  return wrap(async (req: Request, res: Response) => {
+    const taskId = pathParam(req, 'taskId');
+    res.json(await recoveryReport(tool, taskId));
+  });
+}
+
+agentsRouter.get('/code/tasks/:taskId/recovery', taskRecoveryRoute('code'));
+agentsRouter.get('/cowork/tasks/:taskId/recovery', taskRecoveryRoute('cowork'));
+agentsRouter.get('/design/tasks/:taskId/recovery', taskRecoveryRoute('design'));
 
 /**
  * Stop a task, for `POST /api/{tool}/tasks/:taskId/cancel`.

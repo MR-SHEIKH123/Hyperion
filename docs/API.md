@@ -1600,6 +1600,9 @@ TaskRun {
 | GET | `/api/code/tasks/:taskId/state` | `{ run: TaskRun, usage: TaskUsage }` |
 | GET | `/api/cowork/tasks/:taskId/state` | `{ run: TaskRun, usage: TaskUsage }` |
 | GET | `/api/design/tasks/:taskId/state` | `{ run: TaskRun, usage: TaskUsage }` |
+| GET | `/api/code/tasks/:taskId/recovery` | `RecoveryReport` — see §12.4a *(new in 1.31)* |
+| GET | `/api/cowork/tasks/:taskId/recovery` | `RecoveryReport` |
+| GET | `/api/design/tasks/:taskId/recovery` | `RecoveryReport` |
 
 #### `usage` — what the task has spent *(new in 1.29)*
 
@@ -1657,6 +1660,63 @@ stopped is recorded — distinguished by `pauseReason` (§12.5).
 
 
 ---
+
+### 12.4a Recovering an interrupted run  *(new in 1.31)*
+
+`GET /api/{tool}/tasks/:taskId/recovery` answers the three questions a person has
+after being told a task run ended because the process went away — what did it get
+as far as doing, are my edits still on disk, and what can I do about it:
+
+```ts
+RecoveryReport {
+  run: TaskRun;
+  interrupted: boolean;                 // whether this is a recovery case at all
+  stop: { code, message, at } | null;   // null when nothing was recorded about why
+  partial: {
+    steps: TaskStep[];                  // the run's *last* 50, oldest first
+    summary: { steps, toolCalls, failures, compressions,
+               tokensIn, tokensOut, complete };
+    omitted: number;                    // steps left out by that bound
+    lastStepAt: number | null;
+    conversation: { durable: boolean; messages: number };
+  };
+  worktree: { name, dir, taskId, lastModified, risk, checked } | null;
+  actions: {
+    resume: { possible: boolean; reason: string | null };
+    discard: { possible: boolean; name: string | null;
+               requiresForce: boolean; reason: string | null };
+  };
+}
+```
+
+Four things are deliberate:
+
+- **The step list is bounded and the totals are not.** `partial.steps` is the tail
+  (a long run has thousands), `summary` is computed in SQL over every row, and
+  `omitted` states the difference — the same rule the worktree scan's `unchecked`
+  follows. A bounded list that looked complete would understate the run.
+- **Nothing is answered on the run row alone.** This is the first production reader
+  of `task_steps`: the loop has been recording every tool call, plan, compaction,
+  approval and turn since migration `014`, and until now nothing ever read it back.
+- **The worktree answer is live, not the last scan.** `GET /api/attention` reports
+  the last completed scan because a scan spawns git per directory; this read asks
+  about **one** task, so it finds the directory by name and risk-checks that one.
+  "Your uncommitted edits are still there" is a fact about the disk now.
+- **A checkout a live task owns is never offered.** `worktree` is null for a
+  registered directory and `discard.reason` says *which* case it is — in use, or
+  nothing on disk. The two are different answers and a screen must not blur them.
+
+`resume.possible` is a fact about **this process** — no live run owns the task — and
+not a promise the re-run will succeed. Resuming an interrupted run is a *re-run*
+(`POST /api/{tool}/run-task` with the same `taskId`), not a continuation: the
+continuation routes only move a parked (`blocked` / `ready_for_review`) run, and a
+killed process leaves no conversation to replay. The leftover checkout is what
+makes the re-run worth doing, because provisioning the same task id re-attaches the
+directory still holding its edits (§8.1).
+
+A task with no run at all is still a `404`, naming the task. A run that is **not**
+interrupted is answered with `interrupted: false` rather than a `404`, because the
+state a caller meant to ask about can have moved on between the list and the click.
 
 ### 12.5 Stopping a task  *(new in 1.24)*
 
