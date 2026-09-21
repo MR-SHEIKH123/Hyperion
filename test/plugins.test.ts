@@ -208,6 +208,35 @@ describe('the plugin catalogue', () => {
     }
   });
 
+  test('reads a seeded browser-use server as what it is (1.35)', async () => {
+    const { seedDefaultServers } = await import('../src/services/mcp/defaults.ts');
+    seedDefaultServers();
+
+    const catalogue = listPlugins();
+    const browser = catalogue.plugins.find((plugin) => plugin.name === 'browser-use');
+    assert.ok(browser, 'the seeded browser-use server appears in the hub like any other plugin');
+    assert.equal(browser.kind, 'mcp');
+    // The seed is a normal MCP entry: the hub composes it, it does not special-case it.
+    assert.equal(browser.enabled, false);
+    assert.equal(browser.scan.grade, 'active');
+
+    const reading = browser.scan.findings.find((finding) => finding.code === 'mcp.browser-automation');
+    assert.ok(reading, 'a browser-driving server is read as one');
+    assert.equal(reading.severity, 'warning');
+    assert.match(reading.message, /Browser automation \(`browser-use` appears in its command\)/);
+    assert.match(reading.message, /signed in to/);
+
+    // Evidence, not a verdict: the marker found is named, and the generic
+    // local-command finding still stands beside it.
+    assert.ok(browser.scan.findings.some((finding) => finding.code === 'mcp.local-command'));
+    // Nothing invented a credential for it: the seed adds no key and no token,
+    // so the hub must not report one.
+    assert.ok(!browser.scan.findings.some((finding) => finding.code === 'mcp.stored-credential'));
+    // It declares no environment variables, and the absence is an absence: a
+    // zero-count finding would read as "checked, and it holds something".
+    assert.ok(!browser.scan.findings.some((finding) => finding.code === 'mcp.environment'));
+  });
+
   test('reports an override per tool and leaves the others at the default', async () => {
     const skill = seedSkill('summaries');
     setPluginAvailability(skillPluginId(skill.id), 'code', false);

@@ -2713,6 +2713,12 @@ silently mean "use the default".
 | `skill:*` | `orchestrator/agentContext.ts` | the skill is not offered to that tool's model; the Settings library still lists it |
 | `mcp:*` | `services/cowork/agent.ts` | Cowork does not list, start or call the server, and says the switch is why |
 
+**Seeded defaults appear here too.** The four seeded MCP servers (filesystem —
+enabled; wigolo, graphify and browser-use — disabled, each because it has a
+one-time setup) are ordinary entries: the hub composes them, so a seeded
+browser-use server is read as a browser-driving server with no special case, and
+its availability is decided like anything else's.
+
 ### 25.3 What the scan is, and is not
 
 The scan is **static, offline, and local**: it reads what the registries already
@@ -2729,8 +2735,13 @@ intake). It never spawns a process, opens a socket, or reads a skill's files aga
 - `active` — it runs a command here, talks to an endpoint, or a scan flagged it.
 
 `findings` names what was found (`mcp.local-command`, `mcp.remote-endpoint`,
-`mcp.stored-credential`, `mcp.environment`, `mcp.disabled-not-stopped`,
-`skill.<category>`). A stored credential is named as a **fact about the plugin**;
+`mcp.browser-automation`, `mcp.stored-credential`, `mcp.environment`,
+`mcp.disabled-not-stopped`, `skill.<category>`). `mcp.browser-automation` is its own
+finding rather than part of `mcp.local-command` because a browser-driving server is
+not merely local: it acts *as the user*, in the user's network position, on the
+pages that machine is signed in to. The finding names the marker it matched
+(`browser-use`, `playwright`, `puppeteer`, `selenium`, `chromedriver`) — evidence
+for the grade, not a verdict on a package. A stored credential is named as a **fact about the plugin**;
 its value — plaintext or stored ciphertext — never appears in the catalogue, and
 a URL with credentials is redacted to `//***@` before it is shown. `disclaimer`
 travels with every scan, in the same spirit as the skill risk report: a quiet

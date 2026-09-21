@@ -38,7 +38,9 @@ behavior in the browser.
   (1.34)**: `GET /api/plugins` composes the MCP servers, the skills and the built-in Memory plugin into one
   catalogue with an offline scan, and `PATCH /api/plugins/:id/availability` stores a per-tool decision
   (migration `025`, default available). What is still missing is a *frontend* Plugins surface — the tool
-  is a placeholder — and browser-use is not registered as a plugin yet (1.35).
+  is a placeholder. browser-use *is* registered now (1.35, a seeded MCP server), and the hub reads it as a
+  browser-driving server; what is still missing on that front is per-tool MCP selection, so no tool consumes a
+  second MCP server yet — Cowork reads `wigolo` by name.
 - ~~No Chat fork endpoint~~ **Closed 2026-09-21 (1.27)**: `POST /api/chat/:id/fork` branches a
   conversation without touching it. A dedicated Chat state endpoint is still missing
   (`chat.state` above): runs and paused runs are the only chat-state reads.
@@ -52,7 +54,8 @@ behavior in the browser.
   lists one artifact's version chain with its derived parent (Prompt 1.39 A6). There is still no
   cross-artifact listing or a "what produced this" graph — the version stack answers "what did this
   replace", not "where did this come from".
-- No Pulse, discovery, watchlist, or browser-use assignment contracts.
+- No Pulse, discovery, or watchlist contracts. Browser-use exists as a seeded MCP server (1.35); what has
+  no contract is *assigning* browser work to it from a tool.
 - Backup does not expose the specified encrypted destination/passphrase system.
 - ~~Memory has no direct-add or text-import endpoint.~~ **Closed 2026-09-21**: `POST /api/memory`
   (one memory, bounded to a paragraph) and `POST /api/memory/import` (pasted text, split on blank

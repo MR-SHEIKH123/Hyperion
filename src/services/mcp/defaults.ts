@@ -65,6 +65,14 @@ const FILESYSTEM_NAME = 'filesystem';
  */
 const FILESYSTEM_ARGV = ['-y', '@modelcontextprotocol/server-filesystem'] as const;
 
+/**
+ * browser-use's documented MCP launch, from its own docs:
+ * `uvx --from 'browser-use[cli]' browser-use --mcp`. The `[cli]` extra is not
+ * optional — without it the package starts and reports that the CLI addon is
+ * missing, which reads as a broken install rather than a wrong argument list.
+ */
+const BROWSER_USE_ARGV = ['--from', 'browser-use[cli]', 'browser-use', '--mcp'] as const;
+
 
 /**
  * The seed set.
@@ -74,12 +82,15 @@ const FILESYSTEM_ARGV = ['-y', '@modelcontextprotocol/server-filesystem'] as con
  * projects directory so it cannot reach anything outside the app's own sandbox
  * (the same root `security/fsScope.ts` enforces for our own writes).
  *
- * `wigolo` and `graphify` are seeded **disabled** on purpose. wigolo is
+ * `wigolo`, `graphify` and `browser-use` are seeded **disabled** on purpose. wigolo is
  * documented as possibly needing a one-time `wigolo init` before it will serve,
  * and graphify's interpreter does not exist until its venv has been created —
  * nor does the graph it serves, which has to be built first. A server
- * that fails on every start would sit permanently red in the status bar and make
- * the whole MCP panel look broken. Disabled means: visible in the list,
+ * `browser-use` needs `uv` on PATH (the entry runs `uvx`) and a model API key of
+ * its own in its environment, which only the user can supply — the browser agent
+ * runs its own model loop, so it is not satisfied by whatever drives Hyperion.
+ * A server that fails on every start would sit permanently red in the status bar
+ * and make the whole MCP panel look broken. Disabled means: visible in the list,
  * pre-filled, one click away — the user turns it on once its first-run setup is
  * done. That also matches the app-wide rule that nothing auto-enables itself.
  */
@@ -126,6 +137,22 @@ export function defaultServers(): DefaultServer[] {
         type: 'local',
         command: graphifyPython(),
         args: ['-m', 'graphify.serve', graphifyGraph()],
+        enabled: false,
+      },
+    },
+    {
+      note:
+        'Headed browser automation over MCP (browser-use 1.35): the server drives a real browser — ' +
+        'visiting pages, clicking, typing and downloading with the network access this machine has — ' +
+        'and the model loop inside it is its own, so it needs an API key of its own in its environment ' +
+        '(added by you; nothing is seeded here, and no placeholder key is written). It runs through ' +
+        '`uvx`, so `uv` has to be installed first. Seeded disabled: nothing auto-enables itself, and a ' +
+        'server that cannot start would sit permanently red in the status list.',
+      input: {
+        name: 'browser-use',
+        type: 'local',
+        command: 'uvx',
+        args: [...BROWSER_USE_ARGV],
         enabled: false,
       },
     },

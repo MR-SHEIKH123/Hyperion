@@ -123,6 +123,22 @@ const SKILL_CONSUMERS: readonly ToolName[] = ['code', 'cowork', 'design'];
  */
 const MEMORY_CONSUMERS: readonly ToolName[] = ['chat', 'cowork', 'playground'];
 
+/**
+ * Command-line markers of a server that drives a browser.
+ *
+ * A browser automation server is not merely "active": it acts as the user, in
+ * the user's network position, on pages the user is logged into. That is the one
+ * thing a settings screen has to say out loud before someone enables it, and the
+ * reading is evidence — the marker found is named in the finding — rather than a
+ * verdict about any particular package.
+ */
+const BROWSER_AUTOMATION_MARKERS = ['browser-use', 'playwright', 'puppeteer', 'selenium', 'chromedriver'] as const;
+
+function browserAutomationMarker(command: string | null, args: readonly string[]): string | null {
+  const haystack = `${command ?? ''} ${args.join(' ')}`.toLowerCase();
+  return BROWSER_AUTOMATION_MARKERS.find((marker) => haystack.includes(marker)) ?? null;
+}
+
 /** Hide `user:password@` in a stored endpoint. The value stays usable, the secret does not travel. */
 function redactEndpoint(raw: string): string {
   return raw.replace(/\/\/[^/@\s]+@/, '//***@');
@@ -211,6 +227,18 @@ export function listPlugins(): PluginCatalogue {
         code: 'mcp.stored-credential',
         severity: 'info',
         message: 'Holds a stored credential. The value never leaves the backend; only its hint is readable.',
+      });
+    }
+    const browserMarker =
+      server.type === 'local' ? browserAutomationMarker(server.command, server.args) : null;
+    if (browserMarker !== null) {
+      findings.push({
+        code: 'mcp.browser-automation',
+        severity: 'warning',
+        message:
+          `Browser automation (\`${browserMarker}\` appears in its command): it drives a real browser — ` +
+          'visiting pages, clicking, typing and downloading as this machine, on any site this machine is ' +
+          'signed in to. It also runs its own model loop, so it needs a credential of its own.',
       });
     }
     const envKeys = Object.keys(server.env);

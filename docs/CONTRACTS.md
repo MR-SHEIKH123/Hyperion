@@ -4825,3 +4825,34 @@ Still open under 1.34: no frontend Plugins surface (the tool is a placeholder),
 and an override can be recorded for a tool that cannot consume that plugin yet —
 reported through `consumers` rather than hidden.
 
+## browser-use is a seeded MCP server, not a new subsystem (1.35)
+
+The item reads as one sentence and that is the whole point: browser-use is an MCP
+server, and the hub built for 1.34 already hosts MCP servers. So this lands as a
+**fourth seeded default** (`services/mcp/defaults.ts`), with the documented launch
+from browser-use's own docs — `uvx --from 'browser-use[cli]' browser-use --mcp` —
+and three deliberate properties:
+
+1. **Seeded disabled.** Nothing auto-enables itself, and this server needs `uv` on
+   PATH before it can start at all; an entry that fails on every start would sit
+   permanently red and make the whole MCP list look broken. The other two
+   setup-required defaults (wigolo, graphify) are seeded the same way.
+2. **No invented credential.** The browser agent runs its own model loop, so it
+   needs an API key of its own in its environment. A placeholder key would be a
+   credential that cannot work — worse than none, because it looks configured. The
+   seed writes no `env` and no token; the requirement is stated in the note, where
+   the user meets it, and the hub reports the absence rather than a zero-count
+   finding.
+3. **Read as what it is.** The hub's scan gained one evidence-based reading:
+   `mcp.browser-automation`, triggered by `browser-use`, `playwright`,
+   `puppeteer`, `selenium` or `chromedriver` appearing in a local server's command
+   or arguments. It is separate from `mcp.local-command` because the fact that
+   matters is not "this runs here" but "this acts **as you**, on pages this machine
+   is signed in to". The finding names the marker it matched.
+
+Not done, and recorded rather than implied: **no tool consumes it yet.** Cowork
+reads one MCP server by name (`wigolo`), so an availability override for
+browser-use is a real stored decision that no code path consults today — which is
+exactly what `consumers: []` on its hub entry says. Wiring a second server into a
+tool's context is per-tool MCP selection, and that is Prompt-2 work.
+
