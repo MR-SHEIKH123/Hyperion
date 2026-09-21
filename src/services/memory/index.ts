@@ -35,6 +35,7 @@ import path from 'node:path';
 
 import { env } from '../../config/env.ts';
 import { isTemporaryChat } from '../../db/temporaryChats.ts';
+import { MEMORY_PLUGIN_ID, isPluginAvailableTo } from '../plugins/availability.ts';
 import { getBoolSetting, setSetting } from '../../db/settings.ts';
 import type { ToolName } from '../../types/core.ts';
 import { createLogger } from '../../util/logger.ts';
@@ -237,6 +238,10 @@ function toEntry(item: MemoryItem): MemoryEntry {
  */
 export async function recallForTurn(prompt: string, tool: ToolName): Promise<string | null> {
   if (!memoryEnabled()) return null;
+  // The same per-tool decision the writer makes (1.34): a tool that may not use
+  // Memory must not receive memories either, and the answer is a quiet `null` —
+  // the caller has a prompt to build, not an error to render.
+  if (!isPluginAvailableTo(MEMORY_PLUGIN_ID, tool)) return null;
   const trimmed = prompt.trim();
   if (trimmed.length === 0) return null;
 
@@ -272,7 +277,7 @@ export async function recallForTurn(prompt: string, tool: ToolName): Promise<str
  * the decision is observable — a caller cannot re-open the incognito hole by
  * ignoring a `void`.
  */
-export type RememberOutcome = 'queued' | 'disabled' | 'temporary' | 'empty';
+export type RememberOutcome = 'queued' | 'disabled' | 'temporary' | 'empty' | 'unavailable';
 
 /**
  * Hand a completed exchange to mem0's extraction flow.
@@ -302,6 +307,9 @@ export function rememberTurn(
   meta: { tool: ToolName; chatId: string },
 ): RememberOutcome {
   if (!memoryEnabled()) return 'disabled';
+  // Per-tool availability (1.34). Distinct from the plugin switch above because
+  // the user's sentence is different: the plugin is on, this tool may not use it.
+  if (!isPluginAvailableTo(MEMORY_PLUGIN_ID, meta.tool)) return 'unavailable';
   // Before the emptiness check and before `getMemory()`: nothing about a private
   // conversation — not even the id it was asked to store as metadata — may reach
   // the extractor, and loading the backend for a turn that will be discarded

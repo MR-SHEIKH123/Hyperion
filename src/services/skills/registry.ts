@@ -604,6 +604,8 @@ export function deleteSkill(id: string, options: { keepFiles?: boolean } = {}): 
 // --- context injection -----------------------------------------------------
 
 export interface SkillSummaryEntry {
+  /** The registry id. Needed by anything that has to ask a question *about* a skill. */
+  id: string;
   name: string;
   description: string;
   /** Provisioning status, so a consumer can see it without a second call. */
@@ -640,6 +642,7 @@ export function skillsSummary(): SkillSummaryEntry[] {
     .map((skill) => {
       const view = dependencyView(skill);
       return {
+        id: skill.id,
         name: skill.name,
         description: skill.description ?? '',
         status: view.status,

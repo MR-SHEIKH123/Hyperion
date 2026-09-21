@@ -4775,3 +4775,53 @@ honest shape: a restore replaces the database rather than merging it, so the
 pre-confirmation question is "does this archive know more or less than I have, and
 where". `onlyInArchive` and `onlyHere` name schema drift, which counts alone
 cannot express — a table on one side only is not "zero rows".
+
+## Plugins: compose, decide, and read (1.34)
+
+The Plugins hub answers two questions that had no home — *who may use this*, and
+*what is this* — and it deliberately owns no third: every fact about a plugin's
+content is read from the registry that stores it (`mcp_servers`, `skills`, the
+Memory plugin's switch). A hub with its own copy of a server's command would
+eventually disagree with the MCP screen beside it.
+
+1. **`enabled` and `availability` are different questions.** `enabled` is the
+   plugin's own switch; `availability` is per tool. Both are reported, and
+   migration `025` stores **deviations only**: no row for (plugin, tool) means
+   available. A default of unavailable would silently change what every existing
+   install can do the moment the hub shipped — and the user, whose tools had just
+   gone quiet, would have nothing to look at.
+2. **`null` deletes.** `PATCH .../availability` with `available: null` removes the
+   row rather than storing a decision that agrees with the default. The two are
+   identical to every reader and different to a user who later changes the
+   default, which is why the API sentence that offers the reset is only true for
+   the deletion. Clearing is asserted by reading the table, not the response.
+3. **`consumers` is a fact about the code.** Cowork is the only tool whose code
+   consumes an MCP server, and only the one it names (`wigolo`); the skills summary
+   reaches the three agent loops; Memory is read by the conversation surfaces and
+   Cowork. The hub states which tools a plugin reaches **today** rather than
+   implying that every switch gates something — an availability toggle wired to
+   nothing is worse than no toggle, because it moves the user's sense of control
+   without moving any behaviour.
+4. **The scan is a reading, not a verdict.** Offline, static, local: transport,
+   command, argument count, whether a credential is stored, how many environment
+   variables are declared, and the flags intake already recorded for a skill. The
+   grade is the worst thing found — `active` (it runs something or was flagged),
+   `inert` (files and instructions, nothing found that acts), `builtin` (Hyperion's
+   own content, which is not scanned by policy, so the grade is about provenance).
+   There is no numeric score, because a number would be precision the reading does
+   not have. The caveat is part of every response, the same way the skill risk
+   report's is.
+5. **A credential is named, never quoted.** The scan says a credential is stored;
+   the value does not appear in the catalogue in either form — the hub *does* hold
+   the stored ciphertext, so "it is encrypted anyway" is not a reason for it to
+   travel. A URL carrying credentials is redacted to `//***@` first.
+6. **The authorisation side is a leaf module.** `services/plugins/availability.ts`
+   imports the database and the tool vocabulary, nothing else, so the consumers
+   (memory, the agent context, Cowork) can honour a decision without importing the
+   catalogue — which imports all three of them. That cycle is not hypothetical;
+   it is the shape that bit the MCP supervisor before.
+
+Still open under 1.34: no frontend Plugins surface (the tool is a placeholder),
+and an override can be recorded for a tool that cannot consume that plugin yet —
+reported through `consumers` rather than hidden.
+

@@ -174,13 +174,13 @@
       "id": "plugins.unified",
       "method": "GET",
       "expectedPath": "/api/plugins",
-      "status": "missing"
+      "status": "implemented"
     },
     {
       "id": "plugins.availability",
       "method": "PATCH",
       "expectedPath": "/api/plugins/:id/availability",
-      "status": "missing"
+      "status": "implemented"
     },
     {
       "id": "design.diff",

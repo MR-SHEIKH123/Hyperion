@@ -23,6 +23,7 @@ import { healthRouter } from './health.ts';
 import { mcpRouter } from './mcp.ts';
 import { memoryRouter } from './memory.ts';
 import { projectsRouter } from './projects.ts';
+import { pluginsRouter } from './plugins.ts';
 import { providersRouter } from './providers.ts';
 import { pushRouter } from './push.ts';
 
@@ -54,6 +55,7 @@ export function createApp(): Express {
   app.use('/api/chat', chatRouter);
   app.use('/api/mcp', mcpRouter);
   app.use('/api/skills', skillsRouter);
+  app.use('/api/plugins', pluginsRouter);
   app.use('/api/storage', storageRouter);
   app.use('/api/usage', usageRouter);
   app.use('/api/backup', backupRouter);

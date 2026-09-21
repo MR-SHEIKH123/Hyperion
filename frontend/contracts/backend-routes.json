@@ -1103,6 +1103,20 @@
     },
     {
       "method": "GET",
+      "path": "/api/plugins",
+      "source": "src/http/plugins.ts:29",
+      "exposure": "frontend",
+      "capability": "plugins.manage"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/plugins/:id/availability",
+      "source": "src/http/plugins.ts:36",
+      "exposure": "frontend",
+      "capability": "plugins.manage"
+    },
+    {
+      "method": "GET",
       "path": "/api/storage/stats",
       "source": "src/http/storage.ts:51",
       "exposure": "frontend",

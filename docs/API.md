@@ -816,9 +816,12 @@ the cleanup job, or discard one explicitly.
 `PATCH /api/skills/:id` body: `name?`, `description?`, `token?` (nullable),
 `enabled?`.
 
-`GET /summary` supplies the name+description list for system-prompt injection.
-Note that the chat orchestrator does **not** inject it today — assembling and
-inserting it is the caller's job (the agent loops).
+`GET /summary` supplies the id+name+description list for system-prompt injection.
+The library read is **unfiltered**: every enabled skill is listed, including ones
+switched off for a given tool in the Plugins hub (§25), because the Settings panel
+that can explain the switch is the same read. The **agent loops** apply that
+filter (`services/plugins/consumers.ts`); the chat orchestrator still does not
+inject skills at all.
 
 ### 7.1 System binaries and `needs-user-approval`
 
@@ -2639,7 +2642,103 @@ be read (no cap configured, no MCP manager in this process) is reported
 indistinguishable from a category that is fine. `sources` also carries the count
 that was found, which is what makes an "empty" trustworthy.
 
-## 25. Where this differs from SPEC.md's suggested surface
+## 25. Plugins — `/api/plugins`  *(new in 1.34)*
+
+A plugin is not a fifth kind of thing: it is an **MCP server**, a **skill**, or a
+**built-in** (Memory) — the things a tool may or may not be allowed to use. The hub
+composes the registries that already own those records and adds the two facts that
+had nowhere to live: who may use a plugin, and what it is.
+
+### 25.1 `GET /api/plugins`
+
+| Field | Meaning |
+| --- | --- |
+| `plugins[]` | one entry per plugin (see below) |
+| `tools` | the tool vocabulary an availability answer can be given for |
+| `orphanedAvailability` | stored overrides whose plugin no longer exists |
+| `disclaimer` | the scan caveat, repeated at the top level |
+
+Each entry:
+
+| Field | Meaning |
+| --- | --- |
+| `id` | `mcp:<server id>`, `skill:<skill id>`, `builtin:memory` |
+| `kind` | `mcp`, `skill`, `builtin` |
+| `name`, `description`, `source` | display facts, read from the owning registry |
+| `enabled` | **the plugin's own switch**, not who may use it |
+| `consumers` | the tools whose code reads this plugin *today* |
+| `availability` | `{chat, code, cowork, design, playground}` → boolean |
+| `availabilityUpdatedAt` | when an override was last changed, `null` when all are defaults |
+| `scan` | `{grade, summary, findings, disclaimer}` |
+
+Four rules, each of which a plausible implementation could get wrong:
+
+- **Composition, not duplication.** A server's command is read from `mcp_servers`,
+  a skill's flags from the row intake wrote. A hub with its own copy of either
+  would eventually disagree with the screen next to it.
+- **`enabled` and `availability` are different questions**, and both are reported.
+  `enabled` is the plugin's own switch ("this server is configured and turned on");
+  `availability` is per tool ("Chat may use it, Code may not"). Collapsing them
+  would make "off everywhere" and "off for one tool" the same row.
+- **Absence is not off.** No stored row for (plugin, tool) means available
+  (migration `025` argues this). A default of unavailable would silently change
+  what every existing install can do the moment the hub shipped.
+- **`consumers` is a fact about the code, not a promise.** Cowork is the only tool
+  that consumes an MCP server today, and only the one it names; the skills summary
+  reaches the three agent loops; Memory is read by the conversation surfaces and
+  by Cowork. A `code` task run does not read Memory. Saying so is the point — an
+  availability switch that appears to gate something that does not exist would be
+  worse than no switch.
+
+### 25.2 `PATCH /api/plugins/:id/availability`
+
+Body `{ tool, available }` where `available` is `true`, `false`, or **`null`**.
+`null` **deletes** the override — "back to the default" is the absence of a
+decision, not a decision that happens to agree with the default. The response is
+`{ plugin, pruned }`, where `pruned` counts debris the write cleared: overrides
+whose plugin no longer exists are reported by the read and deleted by the next
+write, because a `GET` that deletes rows is a `GET` that can fail on a read-only
+database.
+
+Refusals name the half that was wrong: `404` for an unknown plugin id (the id is
+echoed), `400` for a tool outside `tools`, and `400` with `details.field:
+"available"` when the decision itself is missing — an absent field must not
+silently mean "use the default".
+
+**What honours it today** (each asserted by a test):
+
+| Plugin kind | Consumer | Effect of `available: false` |
+| --- | --- | --- |
+| `builtin:memory` | `services/memory/index.ts` | recall returns `null`; a write returns the outcome `unavailable` |
+| `skill:*` | `orchestrator/agentContext.ts` | the skill is not offered to that tool's model; the Settings library still lists it |
+| `mcp:*` | `services/cowork/agent.ts` | Cowork does not list, start or call the server, and says the switch is why |
+
+### 25.3 What the scan is, and is not
+
+The scan is **static, offline, and local**: it reads what the registries already
+stored (a server's transport, command, argument count, whether it holds a
+credential, how many environment variables it declares; a skill's flags from
+intake). It never spawns a process, opens a socket, or reads a skill's files again.
+
+`grade` is one of three, and it is the **worst thing the reading found**:
+
+- `builtin` — Hyperion's own content. The heuristic scan is not run on it by
+  policy (the same exemption `riskscan.ts` makes for hand-authored skills), so the
+  grade is about provenance, not safety, and the summary says that in words.
+- `inert` — files and instructions; nothing found that acts.
+- `active` — it runs a command here, talks to an endpoint, or a scan flagged it.
+
+`findings` names what was found (`mcp.local-command`, `mcp.remote-endpoint`,
+`mcp.stored-credential`, `mcp.environment`, `mcp.disabled-not-stopped`,
+`skill.<category>`). A stored credential is named as a **fact about the plugin**;
+its value — plaintext or stored ciphertext — never appears in the catalogue, and
+a URL with credentials is redacted to `//***@` before it is shown. `disclaimer`
+travels with every scan, in the same spirit as the skill risk report: a quiet
+grade means nothing obvious was found, never that the plugin is safe.
+
+---
+
+## 26. Where this differs from SPEC.md's suggested surface
 
 The spec framed its endpoint list as "Suggested … adjust naming as you see fit,
 but keep the shape" (`docs/SPEC.md` line 110). The shape is intact. Concrete

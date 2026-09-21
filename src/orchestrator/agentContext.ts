@@ -20,7 +20,7 @@ import {
   saveArtifactVersion as persistArtifactVersion,
   writeCodeFile,
 } from '../services/code/files.ts';
-import { skillsSummary } from '../services/skills/registry.ts';
+import { skillsAvailableTo } from '../services/plugins/consumers.ts';
 import { createLogger } from '../util/logger.ts';
 import type { SseStream } from './sse.ts';
 import type {
@@ -261,8 +261,12 @@ export function createAgentContext(input: AgentContextInput): AgentContext {
   const restoreArtifactVersion: AgentContext['restoreArtifactVersion'] = (artifact) =>
     restoreCodeArtifactVersion(artifact, artifactServices);
 
+  // Filtered by the Plugins hub (1.34): a skill switched off for this tool is
+  // not offered to it, so the model cannot recommend what it is not allowed to
+  // run. The library read is untouched — the skill is still installed and still
+  // listed in Settings, with the switch that hid it.
   const getSkillsSummary = (): { name: string; description: string }[] =>
-    skillsSummary().map((skill) => ({ name: skill.name, description: skill.description }));
+    skillsAvailableTo(tool).map((skill) => ({ name: skill.name, description: skill.description }));
 
   return {
     taskId,

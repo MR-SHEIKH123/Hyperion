@@ -34,7 +34,11 @@ behavior in the browser.
 
 ## Later
 
-- No unified `/api/plugins` surface or durable per-tool plugin availability.
+- ~~No unified `/api/plugins` surface or durable per-tool plugin availability.~~ **Closed 2026-09-21
+  (1.34)**: `GET /api/plugins` composes the MCP servers, the skills and the built-in Memory plugin into one
+  catalogue with an offline scan, and `PATCH /api/plugins/:id/availability` stores a per-tool decision
+  (migration `025`, default available). What is still missing is a *frontend* Plugins surface — the tool
+  is a placeholder — and browser-use is not registered as a plugin yet (1.35).
 - ~~No Chat fork endpoint~~ **Closed 2026-09-21 (1.27)**: `POST /api/chat/:id/fork` branches a
   conversation without touching it. A dedicated Chat state endpoint is still missing
   (`chat.state` above): runs and paused runs are the only chat-state reads.

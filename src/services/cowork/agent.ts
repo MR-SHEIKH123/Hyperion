@@ -17,6 +17,7 @@ import { createLogger } from '../../util/logger.ts';
 
 import { getMcpProcessManager } from '../../orchestrator/agents.ts';
 import { findServerByName } from '../mcp/registry.ts';
+import { mcpPluginId, isPluginAvailableTo } from '../plugins/availability.ts';
 import { recallForTurn, rememberTurn } from '../memory/index.ts';
 import { ScopeViolationError } from '../../security/fsScope.ts';
 import {
@@ -62,7 +63,8 @@ export interface CoworkDependencies {
   readKnowledge?: (source: KnowledgeSource) => Promise<KnowledgeReadResult>;
   recallForTurn?: (prompt: string, tool: 'cowork') => Promise<string | null>;
   rememberTurn?: (prompt: string, reply: string, meta: { tool: 'cowork'; chatId: string }) => void;
-  findWigolo?: () => { enabled: boolean } | null;
+  /** The id is needed for the per-tool plugin decision (1.34), not just `enabled`. */
+  findWigolo?: () => { id: string; enabled: boolean } | null;
   getMcpProcessManager?: () => McpProcessManager | null;
   resolveProfile?: typeof resolveProfile;
   sessionPermissionRules?: (taskId: string) => Record<string, PermissionRule>;
@@ -193,6 +195,20 @@ async function wigoloState(deps: CoworkDependencies): Promise<WigoloState> {
   }
   if (!configured.enabled) {
     return { available: true, enabled: false, running: false, tools: [], message: 'Wigolo is configured but disabled. Enable it in MCP settings; Cowork will not start it automatically.' };
+  }
+  // The Plugins hub's per-tool switch (1.34). Checked here, where the decision
+  // is turned into behaviour: saying a plugin is unavailable and then handing
+  // the model its tools anyway is the one outcome a hub must not have. The
+  // message names the switch, because the user turned it off and only they can
+  // turn it back on.
+  if (!isPluginAvailableTo(mcpPluginId(configured.id), 'cowork')) {
+    return {
+      available: false,
+      enabled: true,
+      running: false,
+      tools: [],
+      message: 'Wigolo is switched off for Cowork in the Plugins hub. Turn it back on there to let Cowork use it.',
+    };
   }
 
   const manager = (deps.getMcpProcessManager ?? defaultDependencies().getMcpProcessManager)();

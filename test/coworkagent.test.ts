@@ -19,6 +19,8 @@ const { AppError } = await import('../src/util/errors.ts');
 const { createCoworkAgent, readKnowledgeSource, runCoworkTask } = await import('../src/services/cowork/agent.ts');
 const { saveKnowledgeSource } = await import('../src/services/cowork/knowledge.ts');
 const { listRunKnowledge } = await import('../src/db/runKnowledge.ts');
+const { setPluginAvailability } = await import('../src/db/plugins.ts');
+const { mcpPluginId } = await import('../src/services/plugins/availability.ts');
 
 type StreamPlan = { chunks?: StreamChunk[]; error?: unknown };
 
@@ -167,7 +169,7 @@ describe('the additive Cowork agent', () => {
     const result = await runCoworkTask(input(), run.ctx, {
       dependencies: {
         listKnowledgeSources: () => [],
-        findWigolo: () => ({ enabled: true }),
+        findWigolo: () => ({ id: 'wigolo-server', enabled: true }),
         getMcpProcessManager: () => live.manager,
         recallForTurn: async () => null,
       },
@@ -178,6 +180,32 @@ describe('the additive Cowork agent', () => {
     assert.deepEqual(live.starts, []);
     assert.deepEqual(live.calls, [{ name: 'wigolo', tool: 'search', args: { query: 'Hyperion' } }]);
     assert.match(run.requests[1]?.messages.find((message) => message.role === 'tool')?.content ?? '', /MCP tool reported an error/);
+  });
+
+  it('withholds Wigolo when the Plugins hub has it switched off for Cowork (1.34)', async () => {
+    // The switch is stored, not passed in: this is the same row the hub's route
+    // writes, read at the point the decision becomes behaviour. Saying a plugin
+    // is unavailable and then handing the model its tools anyway is the one
+    // outcome a hub must not have.
+    const wigoloId = 'wigolo-server';
+    setPluginAvailability(mcpPluginId(wigoloId), 'cowork', false);
+
+    const live = makeManager([{ name: 'WIGOLO', state: 'running' }], { content: [], isError: false });
+    const run = context([{ chunks: [token('I will work without Wigolo.')] }]);
+    const result = await runCoworkTask(input(), run.ctx, {
+      dependencies: {
+        listKnowledgeSources: () => [],
+        findWigolo: () => ({ id: wigoloId, enabled: true }),
+        getMcpProcessManager: () => live.manager,
+        recallForTurn: async () => null,
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(live.listed, [], 'the tools are not even listed');
+    assert.deepEqual(live.starts, []);
+    const prompt = run.requests[0]?.messages.map((message) => message.content).join('\n') ?? '';
+    assert.match(prompt, /switched off for Cowork in the Plugins hub/);
   });
 
   it('keeps Ask refusal, Plan actions, and Act artifact versions on the shared loop', async () => {
