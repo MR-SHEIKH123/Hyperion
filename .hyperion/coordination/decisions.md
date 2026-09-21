@@ -942,6 +942,16 @@ found nothing renders it) — memory +2, provenance +2, Puter advisory +1, backu
 +2, session fork +1, plugins +2, chat context + resume +2, worktree check +2 — typecheck, lint
 **and** production build).
 
+**The baseline was re-measured on 2026-09-22, and it moved: 1172 tests / 208 suites
+(backend) and 224 tests / 38 files (frontend), all green, with `tsc --noEmit`, the
+production build and the contract check on the same tree.** The arithmetic is stated
+rather than left to trust, because a "current total" nobody can decompose is the kind
+of claim this file keeps having to correct: the backend's `+19` is the activity feed's
+third source and two states (`+3`), the cooldown read (`+7`), the delete route's
+`resetHealth` assertion (`+1`) and the duration read (`+8`) — which is 1153 + 19 = 1172
+exactly — and the frontend's `+3` is the cooldown disclosure (`+2` in
+`PrivacyIndicator.test.tsx`, `+1` for its wire schema in `providers.test.ts`).
+
 ## Resolved verifications
 
 - **Cowork: complete against Slice 4, not a stub** (verified against the code
