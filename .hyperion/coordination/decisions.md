@@ -159,6 +159,15 @@ conversation-only item is undecided until committed. So this section is the
 series' durable home: findings are numbered here, with evidence and status, and
 a finding is closed only by a commit that says so.
 
+**A second, older series shares these numbers.** The owner's Prompt-1 ledger
+(2026-09-21) identifies the original **Prompt 1.39** security items — `S1`, `S3`,
+`S4`, `S17` of them still undone — as a list that descends from the same `S12`
+this register recorded. The audit rows below were numbered by this register as
+they were found, and the two sequences collide (`S17` is the unchecked list
+`limit` here and the takeover bypass there). The owner's items are therefore
+recorded with a `P1-` prefix in the section that follows the audit detail, and the
+audit rows keep the numbers their commits and docs already use.
+
 **Method.** Read the security-relevant code against the contract its own docs
 state, then try to make the *documented* guarantee fail — not to find style, but
 to find the class this series exists for: a control that is well-formed, that the
@@ -601,6 +610,36 @@ record does not take a locality claim on faith.
 spend, and does not claim locality"; it fails with the lookup reverted, which is
 how it was confirmed to be red before the fix.
 
+## Prompt 1.39 — the original S-series (owner-supplied 2026-09-21)
+
+The owner supplied the Prompt-1 ledger, which names the four security items still
+undone from **Prompt 1.39**. They are recorded here with a `P1-` prefix because
+their numbers are not the audit series' numbers (see the intro above). The
+requirement text below is the ledger's, kept close to verbatim so the contract is
+not lost; the seam column is this repo as it actually is.
+
+| ID | Requirement (owner-supplied) | Seam in this tree | What is missing |
+| --- | --- | --- | --- |
+| `P1-S1` | **Approval-bound execution ticket** — bind continuation approvals to a tamper-proof cryptographic digest over tool name, permission key, exact command, canonical worktree, task/run IDs, parent ID, config revision and nonce. | `src/db/approvals.ts` stores `toolName`/`arguments`/`permissionKey`/`runId`/`taskId` (and `matchedPattern`/`matchedLayer`) per `PendingApproval`; `src/http/continuation.ts` replays `arguments` verbatim (`:465`). A park is recorded, but nothing binds the resumed call to what was approved. | The code. Also a *config revision* concept, which does not exist in this tree — the digest's exact field encoding is the part that must come from the spec, not from invention. |
+| `P1-S3` | **Process ownership registry** — in-flight registry tracking opaque process IDs, OS PID, task/run IDs, worktree, exact command, output buffers, and timing-safe ownership tokens. | `src/services/terminal/executor.ts` spawns with `shellInvocation`, keeps buffers, and kills the tree on timeout; `src/orchestrator/agents.ts::executeCommand` is the single choke point that could establish ownership. No registry exists. | The code, plus who consumes the registry (routes? approval resume?) and the token semantics. |
+| `P1-S4` | **Filesystem TOCTOU defenses** — pre-spawn and pre-write canonical boundary revalidation, rejection of intermediate directory symlinks (`lstat`), realpath validation against canonical boundaries at point of use. | `src/security/fsScope.ts` already realpaths at *resolve* time (`resolveInScope` → `realpathAllowingMissing`, sibling-prefix trap avoided). Nothing revalidates between resolution and use, and a symlinked ancestor that resolves inside the root is not rejected. | The code, and the exact API/behaviour the spec wants at the spawn and write sites. |
+| `P1-S17` | **Structurally authenticated takeover bypass** — interactive terminal user takeover authenticated by server-minted session tokens tied to live user actions, never a client `{ userTyped: true }` flag. | **None.** There is no interactive terminal takeover surface in this tree at all (`takeover`, `userTyped`, pty/stdin paths: nothing), so there is currently nothing to authenticate. | The feature (or a decision that it is out of scope here). |
+
+**Verified absent, not assumed.** `src/security/executionTicket.ts`,
+`src/services/terminal/processRegistry.ts`, `src/security/toctou.ts`,
+`src/security/takeover.ts` and `test/security139.test.ts` do not exist in the working
+tree, in any local or remote branch, or in the repository's history; GitHub code
+search finds no `executionTicket` and no `takeover` anywhere on the remote, and the
+string `1.39` appears in no file on any branch. The ledger says these were authored in
+a different workspace and never committed — uncommitted work in another sandbox does
+not travel with the repository, so it is not recoverable from here.
+
+**None of the four is implemented in this tree**, and none is a regression of
+anything that landed here: the register's audit series (`S13`–`S22`) is a different
+list of findings, all of them fixed. `P1-S1`, `P1-S3`, `P1-S4` and `P1-S17` need
+either their original files or the Prompt-1.39 requirement text before they can be
+built against the spec rather than against this table.
+
 ## Prompt-1 scope — status (2026-09-21, verified against the code, not transcribed)
 
 "Prompt 1" is not a document in this repo and never was — it is the working name
@@ -620,12 +659,14 @@ Where the scope says done, this is what was checked:
 | D-table decisions (D1/D4/D7/D8/D9/D11/D12/D13–D15, D-1.2) | **Landed**, each with the code and test the D-table entry names. |
 | v4 backend items `§6.1` context windows, `§6.3` approvals + continuation, `§6.4` unattended hardening, `§6.5` write-path downgrade, `§6.6` subagent isolation, `§6.7` profiles, `§6.8` observability + golden runs | **Landed.** |
 | v4 `§6.2` cost accounting per task | **Landed 2026-09-21.** `usage_log` gained `run_id` (migration `018`; `task_id` was `017`), the agent context records one priced row per provider request — so every task run is attributed whatever started it, and a delegated child's spend lands in its parent's task total — the task-state route returns a `usage` summary, and the activity feed carries each run's `spend`. The two findings this surfaced are S15 and S16 above. |
-| S-series audit (S12 fixed in PR #6; S13–S22 fixed 2026-09-21) | **Continuous.** `S2`–`S11` are not recoverable from this repo — like `1.25`, their list lived in conversation. If they exist in a local note, they need pasting in to be verified or closed. |
+| S-series audit (S12 fixed in PR #6; S13–S22 fixed 2026-09-21) | **Continuous.** The Prompt-1 ledger confirms the original series and names its four undone items — `P1-S1`, `P1-S3`, `P1-S4`, `P1-S17`, recorded above — whose code is not in this repo. The rest of the original list (`S2`, `S5`–`S11`, `S13`–`S16`, `S18`+) is still not enumerated here. |
 | Frontend (Prompt 2) | Out of this scope by design. Shell + Chat tool landed; Code, Cowork, Design, Playground, Plugins, Skills, Settings remain. Frontend-side items that *wait on backend contracts* are tracked in `frontend/contracts/gaps.md`, and one of them (no cross-tool pending-approval endpoint, no per-project active-task listing) is the earliest backend work the frontend will ask for. |
 
 **So: the backend core is complete, including `§6.2` as of 2026-09-21.** The
-remaining work in the series is whatever `S2`–`S11` and `1.25` turn out to be. The
-audit queue is **empty**: HTTP input validation was S17, `mcp_config.json` S18,
+remaining work in the series is the Prompt-1.39 items (`P1-S1`, `P1-S3`, `P1-S4`,
+`P1-S17` — recorded above, blocked on their files or the 1.39 requirement text),
+whatever the rest of the original S-list turns out to be, and `1.25`. The audit
+queue is **empty**: HTTP input validation was S17, `mcp_config.json` S18,
 the push payload S19, the memory store S20, and the last item — per-provider
 egress in `colibri.ts` — became S21 (with S22 falling out of the same lookup).
 Suite baseline for every future claim in this file: **914 tests / 166 suites
