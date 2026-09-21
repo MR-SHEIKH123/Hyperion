@@ -289,6 +289,7 @@ export function ChatConversation({ chatId, pendingSend, onPendingSendConsumed }:
           notice={busyError !== null ? busyError.message : null}
           onSend={send}
           onStop={() => stream.stop()}
+          privacy={model.privacy}
         />
       </footer>
     </section>

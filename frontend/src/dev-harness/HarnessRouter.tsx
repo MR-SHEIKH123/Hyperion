@@ -1,12 +1,55 @@
+import { useState } from 'react';
+import { Button } from '../design-system/components/Button/Button';
+import { Dialog } from '../design-system/components/Dialog/Dialog';
+import { StatusBadge } from '../design-system/components/StatusBadge/StatusBadge';
 import { TaskStateBanner } from '../components/TaskStateBanner/TaskStateBanner';
 import { ApertureMark } from '../design-system/components/ApertureMark/ApertureMark';
-import { StatusBadge } from '../design-system/components/StatusBadge/StatusBadge';
 import styles from './HarnessRouter.module.css';
 import { operationalFixtures } from './fixtures/operationalStates';
 import { taskStateFixtures } from './fixtures/taskStates';
 
 function fixtureTitle(id: string) {
   return id.replaceAll('_', ' ');
+}
+
+/**
+ * The dangerous-command confirmation, rendered with the production Dialog.
+ *
+ * The Code tool has no approval surface yet, so this is a primitive preview
+ * rather than a captured screen: it shows the shape the confirmation will take
+ * (the exact command, the working directory, and a decision) without pretending
+ * the surrounding task view exists.
+ */
+function DangerousCommandDialog() {
+  const [open, setOpen] = useState(false);
+  return (
+    <article className={`${styles.card} ${styles.dialogCard}`} data-fixture="dangerous-command-confirm">
+      <div>
+        <h3>Dangerous command confirmation</h3>
+        <p>
+          Primitive preview: the Code approval surface is not built yet, so this renders the
+          production Dialog with a fixture command.
+        </p>
+      </div>
+      <Button variant="quiet" onClick={() => setOpen(true)}>
+        Show confirmation
+      </Button>
+      <Dialog open={open} title="Run this command?" onClose={() => setOpen(false)}>
+        <p className={styles.dialogCommand}>
+          <code>rm -rf ./dist &amp;&amp; npm run build</code>
+        </p>
+        <p className={styles.dialogMeta}>Working directory: projects/hyperion</p>
+        <div className={styles.dialogActions}>
+          <Button variant="quiet" onClick={() => setOpen(false)}>
+            Deny
+          </Button>
+          <Button variant="primary" onClick={() => setOpen(false)}>
+            Allow once
+          </Button>
+        </div>
+      </Dialog>
+    </article>
+  );
 }
 
 export function Component() {
@@ -48,10 +91,18 @@ export function Component() {
               <div>
                 <h3>{fixture.title}</h3>
                 <p>{fixture.detail}</p>
+                <p className={styles.source}>{fixture.source}</p>
               </div>
               <StatusBadge tone={fixture.tone}>{fixture.tone}</StatusBadge>
             </article>
           ))}
+        </div>
+      </section>
+
+      <section aria-labelledby="dialog-fixtures-heading" className={styles.section}>
+        <h2 className={styles.sectionHeading} id="dialog-fixtures-heading">Dialog fixtures</h2>
+        <div className={styles.grid}>
+          <DangerousCommandDialog />
         </div>
       </section>
     </main>

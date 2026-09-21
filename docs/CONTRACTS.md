@@ -4333,3 +4333,68 @@ routes carry one today (`chat` 500, `chat/:id` 500, `chat/:id/messages` 500,
 `design/assets/approved` 500, `cowork/.../history` 500, `memory` 200), and
 `test/listlimits.test.ts` drives all nine — adding a list route that skips
 `queryLimit` fails there.
+
+## Point-of-action privacy *(added in Prompt 1.39, item B)*
+
+The egress class, the retention story, the standing ZDR requirement and the
+pre-send redaction-check flag are now rendered **where the send happens** — the
+composer's own line — not only in Settings. Same data, different placement: the
+decision the facts inform is made at the composer, and a fact disclosed three
+screens away from its consequence is disclosed too late to be part of the
+decision.
+
+**The frontend derives no verdict.** `PrivacyIndicator` shows the recorded status
+and the standing requirement side by side: "zero-data-retention not applied ·
+zero-data-retention required". It does not say *met*, *unmet*, *satisfied* or
+*eligible*, because that judgement is the backend's to make and it is made
+server-side (`zdr.ts` reasons over its own status list, and its comment says why
+the single definition lives there). A frontend that re-implemented the satisfying
+rule would keep answering after the rule changed — and would be answering a
+question the send path already answers, in the place where being wrong costs the
+user their data rather than an error message.
+
+**A status the UI cannot label is a contract failure, not a fallback.**
+`activeProviderResponseSchema` enumerates `egress` (`local`/`remote`/`unknown`)
+and `zdr.status` (the seven statuses in `types/core.ts`) and `zdr.requirement`
+(`off`/`prefer`/`require`); `zdr` is required rather than optional, because the
+route always sends it and a missing retention story must not be read as an absent
+one. An unknown value makes the response an `invalid_response` instead of
+rendering one badge for "we do not know this value" and "the provider retains
+your data" — the same reasoning as the enumerated `healthStatus` and provider
+type, now applied where the label has privacy semantics.
+
+**What has no data source, and therefore no UI.** The same item lists proxy
+profile, attachment/URL egress and Pulse source tier. None of the three exists in
+this backend (`grep -r 'proxyProfile\|attachmentEgress\|pulse'` finds nothing),
+so the composer shows no control for them: an unlabelled toggle or a permanently
+"unknown" chip would read as a limitation of the provider rather than of the
+feature. When any of them gets a backend field, it is rendered from that field or
+not at all — never defaulted.
+
+## The development state harness *(added in Prompt 1.39, item A4)*
+
+`/__dev/states` renders the hard-to-trigger states with production components and
+no provider or model calls (`HarnessRouter.test.tsx` asserts `fetch` is never
+called). The rule that makes it useful is the one about honesty: **every fixture
+either names the surface that produces it or says plainly that nothing does.**
+
+- Real states carry their source: the Code-lane refusal is `busy` (409,
+  retryable, `details.running/limit/queued`) or a queued waiter depending on
+  concurrency mode; the spending cap is `spending_cap_reached` (429, autonomous
+  work only); the backup diff is `POST /api/backup/inspect`; MCP disconnection is
+  `GET /api/mcp/status`; "no provider active" is `/api/providers/active` returning
+  `provider: null`.
+- States the contract does not have say so in the card: **interrupted** is not a
+  `TaskRun` state (a run is `stopped` or `error`, and the frontend derives
+  "interrupted" from the transport — see the task machine), **provider cooldown**
+  is not a state at all (an outage arrives as a run `paused` with a reason, then
+  failover), and **design preview failure** has no preview to fail because the
+  Design tool has no frontend yet.
+- The dangerous-command confirmation renders the production `Dialog` as a
+  primitive preview and is labelled as one — the Code approval surface does not
+  exist yet, and a harness that faked the surrounding task view would hide that
+  exactly as well as hiding the dialog would.
+
+A fixture list that only contains implemented states lets "we never built it"
+read as "nothing to render". The second kind of entry is the reason the file
+exists.

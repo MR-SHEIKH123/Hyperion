@@ -49,9 +49,22 @@ npm run build
   aperture identity, and accessible primitives.
 - `src/workspaces/` is the shared Code/Design/Cowork frame. It owns composition,
   resize/restoration, focus regions, and deep-link panel targets, not tool logic.
+- `src/components/PrivacyIndicator/` is the point-of-action privacy line
+  (Prompt 1.39 B): egress class, retention status, standing requirement and the
+  redaction-check flag, rendered by the composer from
+  `GET /api/providers/active`. It states facts and derives no verdict — whether a
+  status satisfies a requirement is decided server-side. The wire contract
+  enumerates `egress` and the ZDR status/requirement values, so a value this
+  frontend cannot label is refused as a contract mismatch rather than rendered as
+  an ambiguous badge.
 - `src/dev-harness/` renders deterministic hard-to-reach states with production
   components. `/__dev/states` exists only under Vite development and is removed
-  from production output.
+  from production output. Every fixture names the surface that produces it, or
+  says plainly that no surface does — interrupted tasks, provider cooldown and
+  design-preview failure are recorded as **not exposed** rather than faked. The
+  dangerous-command confirmation is rendered with the production `Dialog` and
+  labelled a primitive preview, because the Code approval surface does not exist
+  yet.
 
 ## Operational shell + Chat tool (in progress)
 
@@ -60,7 +73,8 @@ npm run build
   health indicator (worst-of-three verdict from `GET /api/health/summary`).
   Tools without a frontend yet resolve to an honest placeholder
   (`ToolPlaceholder`), never a fake panel.
-- `src/tools/chat/` — the Chat tool, end-to-end:
+- `src/tools/chat/` — the Chat tool, end-to-end (the composer carries the
+  point-of-action privacy line next to the send control):
   - conversation list: pin, archive/unarchive (archived is a separate view;
     archiving is never a step toward deletion), delete with confirmation;
   - transcript rendered from persisted truth; the stream hook contributes only

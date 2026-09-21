@@ -93,7 +93,14 @@ function NewConversation() {
         </p>
       </div>
       <div className={styles.newChatComposer}>
-        <Composer model={model} phase="idle" notice={notice} onSend={send} onStop={() => {}} />
+        <Composer
+        model={model}
+        phase="idle"
+        notice={notice}
+        onSend={send}
+        onStop={() => {}}
+        privacy={model.privacy}
+      />
       </div>
     </section>
   );

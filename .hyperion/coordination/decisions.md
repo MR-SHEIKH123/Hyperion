@@ -610,10 +610,18 @@ record does not take a locality claim on faith.
 spend, and does not claim locality"; it fails with the lookup reverted, which is
 how it was confirmed to be red before the fix.
 
-## Prompt 1.39 — the original S-series (owner-supplied 2026-09-21)
+## The ledger's undone security items (owner-supplied 2026-09-21)
 
-The owner supplied the Prompt-1 ledger, which names the four security items still
-undone from **Prompt 1.39**. They are recorded here with a `P1-` prefix because
+**Attribution corrected 2026-09-21:** the ledger says these four were specified
+"during Prompt 1.39". The 1.39 text the owner then supplied is the *frontend
+expansion addendum* and contains no security items at all, so that attribution is
+wrong — they belong to the Prompt-1 security series (the same series as `S12`) and
+no 1.39 requirement text describes them. The items below and their `P1-` prefix
+stand (the prefix exists to keep them apart from this register's audit series, not
+to date them); what is corrected is where they came from. The real 1.39 ledger is
+the section after this one.
+
+The owner's ledger names the four security items still undone. They are recorded here with a `P1-` prefix because
 their numbers are not the audit series' numbers (see the intro above). The
 requirement text below is the ledger's, kept close to verbatim so the contract is
 not lost; the seam column is this repo as it actually is.
@@ -640,6 +648,36 @@ list of findings, all of them fixed. `P1-S1`, `P1-S3`, `P1-S4` and `P1-S17` need
 either their original files or the Prompt-1.39 requirement text before they can be
 built against the spec rather than against this table.
 
+## Prompt 1.39 — Frontend Expansion Layer (owner-supplied text, 2026-09-21)
+
+The owner supplied the 1.39 requirement text itself. It is an **addendum to
+Prompt 2 v2** (frontend), explicitly not a replacement: A1–A6 are new scope, B
+refines existing spec, C is backlog, D fixes the build order. Items are cited as
+"1.39 A1" etc., so they can never be confused with the audit series' `S`-numbers in
+this register.
+
+**Status, verified against the tree (2026-09-21).**
+
+| Item | Requirement | Status | Evidence |
+| --- | --- | --- | --- |
+| 1.39 A1 | Attention Center — one actionable queue across all tools, deep-linked | **Not started.** No surface, no data source. There is no cross-tool listing to build on: approvals list per task (`/api/{tool}/tasks/:taskId/approvals`), tasks list per tool (`/api/code/tasks`, `/api/cowork/scheduled-tasks`), and the activity feed is chronological history by design. A real v1 needs a server-side aggregation (its own route), not N frontend fan-out requests. | `grep -r attention frontend/src` — nothing; routes as listed |
+| 1.39 A2 | Contract-driven layer: typed contracts from backend source, boundary validation, error mapping, capability discovery, startup version check, dev-time report | **Landed** (Milestone A), tightened in this commit | `src/contracts/{wire,capabilities,compatibility}`, `api/errors.ts` (`ErrorCode` → `ApiError`), `npm run contracts` prints implemented/partial/route-mismatch/missing/undocumented. This commit enumerates `egress`/`zdr` and requires `zdr` — the one place where the contract accepted `z.unknown()` |
+| 1.39 A3 | One shared workspace frame for Code/Design/Cowork | **Frame landed; tools pending.** The frame exists with all eight 1.39 regions (task rail, context explorer, main surface, progress stream, inspector, version timeline, composer, status banner), plus resize/restoration/focus/deep-link targets. None of the three tools has populated it yet — Chat is its own tool surface | `src/workspaces/AgentWorkspace.{tsx,types.ts}` + test |
+| 1.39 A4 | Dev-only state harness for hard-to-reach states | **Extended in this commit.** 12 states named: streaming (`running`), paused, approval-required, reconnecting, worktree-lane-full, MCP-disconnected, backup-diff, spending-cap-reached, dangerous-command-confirm now render; `interrupted`, provider-cooldown and design-preview-failure are recorded as **not exposed** with the reason. No dialogs are faked: the dangerous-command confirmation uses the production `Dialog`, labelled a primitive preview | `src/dev-harness/fixtures/operationalStates.ts`, `HarnessRouter.tsx` + 4 tests |
+| 1.39 A5 | Workspace restoration + draft safety | **Mostly landed; one field missing.** Persisted: last tool, open views, selected views, selected model per tool, panel layouts, last-viewed versions, safe drafts, navigation hints, onboarding draft. Credential/token/passphrase keys are rejected by construction. **Missing: terminal scroll position** (and the Playground/setup-form drafts that have no surface yet) | `src/state/persistence/{schemas,classification}.ts`; the hard exclusion from 1.23/1.26 is the forbidden-key set |
+| 1.39 A6 | Provenance: add only parent version + knowledge sources used | **Not started, and blocked on nothing but work.** The frontend has no provenance display yet at all (`grep -r provenance frontend/src` — nothing), so "extend the existing one" has no target here; both fields are backend facts (artifact `parent` in `artifact_versions`, memory recall sources) that need a display surface first | grep result; `src/db/artifactVersions` shape |
+| 1.39 B | Point-of-action privacy indicators (refinement, not a new system) | **Landed in this commit** for the Chat composer: egress, retention status, standing requirement, redaction check, from `/api/providers/active`. **No data source exists** for proxy profile, attachment/URL egress or Pulse source tier (`grep` finds none), so no control is rendered for them — recorded in CONTRACTS.md. Point-action placement for Code/Cowork/Design follows their tools | `src/components/PrivacyIndicator/` + 6 tests; `docs/CONTRACTS.md` |
+| 1.39 C | Backlog the Code review tooling, Design review tooling and wider a11y/security hardening | **Recorded as backlog.** Not Milestone-D-blocking; nothing was built from it | this register |
+| 1.39 D | Adopt the six-milestone order with A1–A6 folded in (attention + contract → Foundation/Operational shell; workspace framework → Agent workspaces) | **Adopted.** Contract layer landed in Foundation; workspace frame landed ahead of the Agent-workspaces milestone; the Attention Center is the outstanding fold-in for Foundation/Operational shell, and is the next piece of 1.39 work | Milestone A/B history; the table above |
+
+**Its own quality gates** (real backend integration, full state coverage, keyboard
+nav, responsive layout, no duplicate/lost events on reconnect, no sensitive data
+in local storage or logs, typecheck+tests, docs matching behaviour, honest
+labelling of unsupported capability, visual review before done) are adopted as
+written. The two this commit was held to: **honest labelling** (the harness's
+`not exposed` cards, the composer's missing indicators named in CONTRACTS rather
+than defaulted) and **docs matching behaviour** (same commit).
+
 ## Prompt-1 scope — status (2026-09-21, verified against the code, not transcribed)
 
 "Prompt 1" is not a document in this repo and never was — it is the working name
@@ -659,12 +697,14 @@ Where the scope says done, this is what was checked:
 | D-table decisions (D1/D4/D7/D8/D9/D11/D12/D13–D15, D-1.2) | **Landed**, each with the code and test the D-table entry names. |
 | v4 backend items `§6.1` context windows, `§6.3` approvals + continuation, `§6.4` unattended hardening, `§6.5` write-path downgrade, `§6.6` subagent isolation, `§6.7` profiles, `§6.8` observability + golden runs | **Landed.** |
 | v4 `§6.2` cost accounting per task | **Landed 2026-09-21.** `usage_log` gained `run_id` (migration `018`; `task_id` was `017`), the agent context records one priced row per provider request — so every task run is attributed whatever started it, and a delegated child's spend lands in its parent's task total — the task-state route returns a `usage` summary, and the activity feed carries each run's `spend`. The two findings this surfaced are S15 and S16 above. |
-| S-series audit (S12 fixed in PR #6; S13–S22 fixed 2026-09-21) | **Continuous.** The Prompt-1 ledger confirms the original series and names its four undone items — `P1-S1`, `P1-S3`, `P1-S4`, `P1-S17`, recorded above — whose code is not in this repo. The rest of the original list (`S2`, `S5`–`S11`, `S13`–`S16`, `S18`+) is still not enumerated here. |
+| S-series audit (S12 fixed in PR #6; S13–S22 fixed 2026-09-21) | **Continuous.** The owner's ledger names four undone security items (`P1-S1`, `P1-S3`, `P1-S4`, `P1-S17` — recorded above) whose code is not in this repo; the rest of that list is still not enumerated here. |
+| Prompt 1.39 (frontend addendum) | **In progress, ledger above.** A2 landed, A4/A5 largely, A3 frame landed, B landed for Chat; A1 (Attention Center) is the next piece and A6 has no target surface yet. |
 | Frontend (Prompt 2) | Out of this scope by design. Shell + Chat tool landed; Code, Cowork, Design, Playground, Plugins, Skills, Settings remain. Frontend-side items that *wait on backend contracts* are tracked in `frontend/contracts/gaps.md`, and one of them (no cross-tool pending-approval endpoint, no per-project active-task listing) is the earliest backend work the frontend will ask for. |
 
 **So: the backend core is complete, including `§6.2` as of 2026-09-21.** The
-remaining work in the series is the Prompt-1.39 items (`P1-S1`, `P1-S3`, `P1-S4`,
-`P1-S17` — recorded above, blocked on their files or the 1.39 requirement text),
+remaining work in the series is the ledger's four undone security items
+(`P1-S1`, `P1-S3`, `P1-S4`, `P1-S17` — recorded above, blocked on their files or
+their requirement text), the frontend addendum's ledger above (next: 1.39 A1),
 whatever the rest of the original S-list turns out to be, and `1.25`. The audit
 queue is **empty**: HTTP input validation was S17, `mcp_config.json` S18,
 the push payload S19, the memory store S20, and the last item — per-provider

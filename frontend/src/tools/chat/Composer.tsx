@@ -1,6 +1,10 @@
 import { useCallback, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { Square } from 'lucide-react';
 import { Button } from '../../design-system/components/Button/Button';
+import {
+  PrivacyIndicator,
+  type ProviderPrivacy,
+} from '../../components/PrivacyIndicator/PrivacyIndicator';
 import styles from './Composer.module.css';
 import type { ModelSelection } from './useModelSelection';
 import type { StreamPhase } from './useChatStream';
@@ -17,6 +21,13 @@ export interface ComposerProps {
    */
   onSend: (prompt: string, modelId: string) => Promise<void> | void;
   onStop: () => void;
+  /**
+   * Egress and retention facts for the next send, from the active provider.
+   * Required rather than optional so a new composer surface cannot ship without
+   * the privacy line and still typecheck (Prompt 1.39 B); pass `null` only
+   * while the provider query has not answered.
+   */
+  privacy: ProviderPrivacy | null;
 }
 
 /**
@@ -24,7 +35,7 @@ export interface ComposerProps {
  * the send control becomes a stop; the textarea stays editable so the next
  * prompt can be typed before the stream ends.
  */
-export function Composer({ model, phase, notice, onSend, onStop }: ComposerProps) {
+export function Composer({ model, phase, notice, onSend, onStop, privacy }: ComposerProps) {
   const [draft, setDraft] = useState('');
   const areaRef = useRef<HTMLTextAreaElement>(null);
   const running = phase === 'running';
@@ -101,7 +112,10 @@ export function Composer({ model, phase, notice, onSend, onStop }: ComposerProps
             ))}
           </select>
         </label>
-        <span className={styles.hint}>Enter to send · Shift+Enter for a new line</span>
+        <div className={styles.trailing}>
+          {privacy !== null && <PrivacyIndicator privacy={privacy} />}
+          <span className={styles.hint}>Enter to send · Shift+Enter for a new line</span>
+        </div>
       </div>
     </form>
   );
