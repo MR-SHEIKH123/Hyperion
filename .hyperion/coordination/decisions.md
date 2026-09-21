@@ -854,7 +854,17 @@ checked against what was there rather than assumed to be additive:
 nav, responsive layout, no duplicate/lost events on reconnect, no sensitive data
 in local storage or logs, typecheck+tests, docs matching behaviour, honest
 labelling of unsupported capability, visual review before done) are adopted as
-written. The two this commit was held to: **honest labelling** (the harness's
+written.
+
+**How to do the visual review** (the one gate this register cannot run itself):
+`npm start` in the repository and `npm run dev` in `frontend/` — the dev server
+proxies `/api` to `127.0.0.1:4317`, so one origin serves the whole app. Two
+screens are worth the time: **`/attention`**, whose queue is empty on a fresh
+database but whose `sources` block is not (it names every category it read, and a
+category it cannot read says so with a reason), and **`/__dev/states`**, the
+development harness, which renders every fixture — the ten attention kinds, the
+task lifecycle including `interrupted`, and the states recorded as *not exposed*,
+which are there precisely so that "not built" cannot read as "nothing to show". The two this commit was held to: **honest labelling** (the harness's
 `not exposed` cards, the composer's missing indicators named in CONTRACTS rather
 than defaulted) and **docs matching behaviour** (same commit).
 
