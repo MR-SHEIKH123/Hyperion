@@ -62,6 +62,29 @@ const taskState = {
   usage: { requests: 4, runs: 1, tokensIn: 1_200, tokensOut: 800, costUsd: 0.0321, priced: true, unpricedRequests: 0 },
 };
 
+const recovery = {
+  run: { ...taskState.run, state: 'interrupted', pauseReason: null, completedAt: NOW - 1_000 },
+  interrupted: true,
+  stop: { code: 'internal_error', message: 'the process ended while this run was live', at: NOW - 1_000 },
+  partial: {
+    steps: [
+      { runId: 'run-1', step: 1, mode: 'act', kind: 'tool_call', profile: null, provenance: null,
+        toolName: 'edit_file', ok: true, detail: 'src/parser.ts', tokensIn: 10, tokensOut: 5,
+        reasoningTokens: null, cacheReadTokens: null, cacheWriteTokens: null, createdAt: NOW - 30_000 },
+    ],
+    summary: { steps: 1, toolCalls: 1, failures: 0, compressions: 0, tokensIn: 10, tokensOut: 5, complete: true },
+    omitted: 0,
+    lastStepAt: NOW - 30_000,
+    conversation: { durable: false, messages: 0 },
+  },
+  worktree: { name: 'wt-task-1', dir: '/tmp/wt-task-1', taskId: 'task-1', lastModified: NOW - 20_000,
+    risk: 'uncommitted changes', checked: true },
+  actions: {
+    resume: { possible: true, reason: null },
+    discard: { possible: true, name: 'wt-task-1', requiresForce: true, reason: null },
+  },
+};
+
 const versions = {
   artifactKey: 'src/parser.ts',
   versions: [
@@ -83,6 +106,7 @@ interface Routes_ {
   lane?: Response;
   task?: Response;
   versions?: Response;
+  recovery?: Response;
 }
 
 function stubFetch(overrides: Routes_ = {}) {
@@ -90,6 +114,7 @@ function stubFetch(overrides: Routes_ = {}) {
     const path = describeRequest(input);
     if (path === '/api/code/tasks') return Promise.resolve(overrides.lane ?? json(lane));
     if (path === '/api/code/tasks/task-1/state') return Promise.resolve(overrides.task ?? json(taskState));
+    if (path === '/api/code/tasks/task-1/recovery') return Promise.resolve(overrides.recovery ?? json(recovery));
     if (path.startsWith('/api/artifacts/versions')) return Promise.resolve(overrides.versions ?? json(versions));
     return Promise.resolve(json({ error: { code: 'not_found', message: `${path} is not stubbed`, retryable: false } }, 404));
   });
@@ -201,6 +226,33 @@ describe('the Code surface', () => {
     const mock = vi.mocked(globalThis.fetch);
     const versionCalls = mock.mock.calls.filter((call) => describeRequest(call[0]).startsWith('/api/artifacts/versions'));
     expect(versionCalls.length).toBe(1);
+  });
+
+  it('offers the recovery verbs for an interrupted run, and reads nothing extra for a live one', async () => {
+    stubFetch({
+      task: json({
+        run: { ...taskState.run, state: 'interrupted', pauseReason: null, completedAt: NOW - 1_000 },
+        usage: taskState.usage,
+      }),
+    });
+    const first = renderTool(['/code?task=task-1']);
+
+    // The panel is the surface's answer to its own banner: the state alone said
+    // "interrupted", and this says what survived and what can be done about it.
+    expect(await screen.findByRole('heading', { name: 'What the run left' })).toBeInTheDocument();
+    expect(screen.getByText(/the process ended while this run was live/)).toBeInTheDocument();
+    expect(screen.getByText(/is still on disk/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Discard the leftover checkout' })).toBeInTheDocument();
+    first.result.unmount();
+
+    // A run that is merely paused is not a recovery case, so the read is not made
+    // at all — a screen that asked anyway would spawn git work per poll.
+    stubFetch();
+    renderTool(['/code?task=task-1']);
+    await screen.findByText(/Waiting for approval/);
+    expect(screen.queryByRole('heading', { name: 'What the run left' })).toBeNull();
+    const mock = vi.mocked(globalThis.fetch);
+    expect(mock.mock.calls.some((call) => describeRequest(call[0]).endsWith('/recovery'))).toBe(false);
   });
 
   it('remembers the panel layout it was resized to, and reopens at that width', async () => {

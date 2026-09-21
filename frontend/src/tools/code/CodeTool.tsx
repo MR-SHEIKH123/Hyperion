@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 
 import { getCodeLane, getTaskState } from '../../api/tasks';
+import { RecoveryPanel } from '../../components/RecoveryPanel/RecoveryPanel';
 import { CodeLaneRail, TaskSpend } from './CodeSurface';
 import { getArtifactVersions } from '../../api/provenance';
 import { TaskStateBanner } from '../../components/TaskStateBanner/TaskStateBanner';
@@ -25,7 +26,10 @@ type TaskRun = z.infer<typeof taskStateResponseSchema>['run'];
  *
  * **What this surface is.** A read view of the Code lane: what is running, what
  * is queued, what is parked holding a worktree, and — for a selected task — its
- * state, its spend and (when a file is named) its version history. It is the
+ * state, its spend and (when a file is named) its version history. A task whose
+ * run was **interrupted** also gets the recovery panel in this region, because
+ * that state carries a decision — what survived, and whether to keep the leftover
+ * checkout — that a badge cannot express (1.31). It is the
  * destination the Attention Center's Code items already deep-link to, so the ids
  * in `?task=` and `?file=` are the contract between the two.
  *
@@ -86,7 +90,15 @@ export default function CodeTool() {
         attention queue links here with the task already chosen.
       </p>
     ) : (
-      <TaskSpend taskId={taskId} usage={task.data?.usage} isPending={task.isPending} isError={task.isError} />
+      <>
+        {state?.kind === 'interrupted' ? (
+          // The one state where a read is not enough: an interrupted run has a
+          // decision attached to it, and the frame's main region is where the
+          // surface answers its own banner (1.31).
+          <RecoveryPanel tool="code" taskId={taskId} />
+        ) : null}
+        <TaskSpend taskId={taskId} usage={task.data?.usage} isPending={task.isPending} isError={task.isError} />
+      </>
     ),
     progressStream: (
       <p className={styles.idle}>

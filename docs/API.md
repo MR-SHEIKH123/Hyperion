@@ -1764,6 +1764,14 @@ A task with no run at all is still a `404`, naming the task. A run that is **not
 interrupted is answered with `interrupted: false` rather than a `404`, because the
 state a caller meant to ask about can have moved on between the list and the click.
 
+The Code surface renders this read in its main region whenever the selected task's run
+is interrupted (`frontend/src/components/RecoveryPanel`): the step tail with the totals
+over all of it, the leftover checkout with what a discard would lose, and a two-step
+discard that mirrors the backend's own `force` rule. **Resume is reported, not
+actioned** — the panel names the availability, the reason and the route, because this
+surface does not start runs yet, and `tasks.recovery` carries that as `partial` in
+`frontend/contracts/frontend-contracts.json` rather than as a disabled button.
+
 ### 12.5 Stopping a task  *(new in 1.24)*
 
 A long agent run needs a stop button that does not require closing the tab. These

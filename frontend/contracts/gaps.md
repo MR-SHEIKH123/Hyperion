@@ -16,6 +16,15 @@ behavior in the browser.
   reconciliation), so an interruption is a state the backend holds rather than one this
   frontend derives. One thing it does not close: there is still no per-project active-task
   listing.
+- ~~No way to see what an interrupted run left.~~ **The read landed 2026-09-21 (1.31); the
+  screen is still missing.** `GET /api/{tool}/tasks/:taskId/recovery` reports the run's
+  bounded step history with SQL totals over all of it, the leftover checkout and what
+  discarding it would lose, and whether a resume or a discard is available and why not —
+  so the three verbs of the recovery surface have their data. What does not exist is the
+  surface: nothing renders it (`tasks.recovery` is declared here as `missing`), which is
+  why 1.31 is still partial. Worth knowing for whoever builds it: resuming an interrupted
+  run is a **re-run** of the task (whose provisioning re-attaches the leftover checkout),
+  not a continuation — the continuation routes only move a parked run.
 - No complete per-project active-task listing for switch warnings.
 - Health summary has no backup component and no explicit provider cooldown detail.
 - ~~No per-provider egress-proxy contract.~~ **Closed 2026-09-21 (1.37).**
@@ -36,15 +45,19 @@ behavior in the browser.
   default base URL and catalogue URL, `requiresPaidPlan` and what a rejection does — a
   settings screen needs to hard-code none of it. There is still no settings form that creates
   one, and nothing renders the advisory.
-- ~~No way to see what an interrupted run left.~~ **The read landed 2026-09-21 (1.31); the
-  screen is still missing.** `GET /api/{tool}/tasks/:taskId/recovery` reports the run's
-  bounded step history with SQL totals over all of it, the leftover checkout and what
-  discarding it would lose, and whether a resume or a discard is available and why not —
-  so the three verbs of the recovery surface have their data. What does not exist is the
-  surface: nothing renders it (`tasks.recovery` is declared here as `missing`), which is
-  why 1.31 is still partial. Worth knowing for whoever builds it: resuming an interrupted
-  run is a **re-run** of the task (whose provisioning re-attaches the leftover checkout),
-  not a continuation — the continuation routes only move a parked run.
+- ~~No way to see what an interrupted run left.~~ **Closed for Code on 2026-09-21 (1.31).**
+  `GET /api/{tool}/tasks/:taskId/recovery` reports the run's bounded step history with SQL
+  totals over all of it, the leftover checkout and what discarding it would lose, and
+  whether a resume or a discard is available and why not; the Code surface now renders it
+  (`components/RecoveryPanel`, mounted in the main region when the selected task's run is
+  interrupted) so a restart's leftovers are a screen rather than a badge. Two halves are
+  deliberately still open, and `tasks.recovery` stays `partial` for exactly those: the panel
+  **reports** resume with its reason and the route that performs it instead of offering a
+  button, because resuming an interrupted run is a **re-run** (`POST /api/{tool}/run-task`
+  with the same task id, whose provisioning re-attaches the leftover checkout) and no
+  surface can start a run yet; and Cowork and Design have no surfaces of their own, so only
+  Code mounts the panel. The unattended-run notification, the interactive-wait timeout and
+  the Design environment remain the rest of 1.31.
 - No global search endpoint; later shell search must report federated partial coverage.
 
 ## Later

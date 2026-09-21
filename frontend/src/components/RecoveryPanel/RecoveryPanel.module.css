@@ -1,0 +1,65 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--status-warning);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  min-width: 0;
+}
+.heading { margin: 0; color: var(--text-primary); font-size: var(--text-md); }
+.subheading {
+  margin: var(--space-3) 0 0;
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.stop { margin: 0; color: var(--text-primary); }
+.summary { margin: 0; color: var(--text-muted); font-size: var(--text-xs); }
+.plain { margin: 0; }
+.pending { margin: 0; color: var(--text-muted); }
+.omitted { margin: 0; color: var(--text-muted); font-size: var(--text-xs); }
+.conversation { margin: var(--space-2) 0 0; color: var(--text-muted); font-size: var(--text-xs); }
+.steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.step {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+  font-size: var(--text-xs);
+  min-width: 0;
+}
+.step[data-ok='false'] { border-left: 2px solid var(--status-error); }
+.stepIndex { color: var(--text-muted); font-family: var(--font-code); }
+.stepKind { color: var(--text-primary); }
+.stepTool { font-family: var(--font-code); color: var(--accent-primary); }
+.stepDetail { color: var(--text-muted); overflow-wrap: anywhere; }
+.failed { color: var(--status-error); }
+.failure { margin: var(--space-2) 0 0; color: var(--status-error); }
+.buttons { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.confirm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--status-warning);
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+}
+.confirm p { margin: 0; color: var(--text-primary); }

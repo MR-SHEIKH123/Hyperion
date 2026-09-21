@@ -5043,12 +5043,19 @@ the state a caller meant to ask about can have moved on between the list and the
 click; `interrupted: false` is the honest answer and a `404` would read as "this
 task never existed". A task with no run at all is still a `404`.
 
-What is still missing, and must not be read as done: the **screen**. This is the
-read; resume, view-partial and discard are what a surface built on it would offer,
-and no surface renders it yet (`tasks.recovery` is declared in
-`frontend/contracts/frontend-contracts.json` with that reason). The unattended-run
-notification, the interactive-wait timeout and the Design environment remain from
-the same item.
+The **screen** landed the same day, for Code: `RecoveryPanel`
+(`frontend/src/components/RecoveryPanel`) is a shared component parameterised by
+tool, and the Code surface mounts it in its main region **only when the selected
+task's run is interrupted** — a merely paused run must not make the panel start
+scanning worktrees on every poll, and a test asserts that read is not made. Two
+verbs are actioned (view partial; discard, in a two-step confirm that sends `force`
+only when the user answers the first question) and one is **reported rather than
+actioned**: resuming is a re-run with the same task id, no surface can start a run
+yet, and the panel names the availability, the reason and the route instead of
+rendering a dead button. `tasks.recovery` is declared `partial` for exactly that,
+and for the fact that Cowork and Design have no surface to mount the panel in. The
+unattended-run notification, the interactive-wait timeout and the Design
+environment remain from the same item.
 
 ## An orphaned worktree is reported, never reclaimed *(added in 1.31)*
 

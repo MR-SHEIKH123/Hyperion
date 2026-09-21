@@ -1,5 +1,6 @@
 import {
   codeLaneSchema,
+  recoveryReportSchema,
   taskStateWithUsageResponseSchema,
   type taskToolSchema,
 } from '../contracts/wire/tasks';
@@ -29,3 +30,16 @@ export const getTaskState = (tool: TaskTool, taskId: string, signal?: AbortSigna
  */
 export const getCodeLane = (signal?: AbortSignal) =>
   request('/api/code/tasks', codeLaneSchema, { ...(signal === undefined ? {} : { signal }) });
+
+/**
+ * What an interrupted task run left behind, and which recoveries apply (§12.4a).
+ *
+ * A read, not a probe: it answers `interrupted: false` for a run that turned out
+ * to be finished, keeps its step list bounded with totals over all of it, and
+ * never guesses whether a leftover checkout is safe to remove. The screen renders
+ * those answers; nothing here interprets them.
+ */
+export const getTaskRecovery = (tool: TaskTool, taskId: string, signal?: AbortSignal) =>
+  request(`/api/${tool}/tasks/${encodeURIComponent(taskId)}/recovery`, recoveryReportSchema, {
+    ...(signal === undefined ? {} : { signal }),
+  });
