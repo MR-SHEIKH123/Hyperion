@@ -4651,3 +4651,61 @@ data. What is still missing is a *tool* to host it: the Code/Design task surface
 that would put a version timeline under a diff do not exist yet, so the panel is
 reviewable in the harness and unwired in the app — stated here rather than implied
 by a passing test suite.
+
+### A cooldown is not a health verdict (and both are needed)
+
+`health.ts` evicts a provider after two *retryable* failures in a window, and
+excludes non-retryable ones on purpose: a wrong key must not evict a provider that
+is plainly alive. That exclusion left the opposite hole — nothing bounded how
+often a wrong key was retried, so every request in a chat hit the same 401 again,
+and a 429 was answered by the router's own immediate second attempt, which is the
+behaviour a rate limit exists to punish. Prompt 1 addendum 1.36 supplies the
+missing mechanism as a table (401/403 60m, 402 30m, 429 5m + `Retry-After`, 404
+2m, 5xx 1m, network 30s), and `src/providers/cooldowns.ts` is that table.
+
+**The two mechanisms answer different questions, so neither replaces the other.**
+Health is an availability judgement with a threshold, and it is what failover keys
+off. A cooldown is a per-class back-off with no threshold at all: one 401 sets
+one, because a wrong key is not a matter of degree. Conflating them would either
+make a single typo evict a healthy provider (the argument `health.ts` already
+makes) or leave the key being retried forever (the hole 1.36 closes).
+
+Four decisions underneath:
+
+1. **The HTTP status decides the class where there is one.** Classification falls
+   back to the typed error for failures that never had a response — unreachable and
+   timeout are the network class, and a raw throw out of `fetch` (DNS, TLS) is a
+   network fault even though it never became an `AppError`. The status wins because
+   it is what separates "rate limited" from "our request was malformed"; both
+   arrive typed as `provider_error`.
+2. **Other 4xx set no cooldown.** A 400 is this process's bug. Parking the
+   provider for it would hide the bug behind a back-off that reads like the
+   provider's fault. `aborted` never cools anything either: a user cancelling is
+   not a provider event.
+3. **`Retry-After` is honoured only on a 429, only when it asks for longer than
+   the table, and never beyond an hour.** The header is a request, not a verdict:
+   a provider saying "try again in 2s" is not a reason to come back sooner than
+   this process would anyway, and a gateway answering `Retry-After: 86400` must
+   not take a provider out of rotation for a day on the strength of one header.
+   That clamp is what 1.36 calls capped backoff — the cap is the longest judgement
+   this process makes on its own, so no header can outlast it.
+4. **Cooling providers sort last, never out.** The candidate list is reordered, not
+   filtered, for exactly the reason `listFailoverCandidates` gives for unhealthy
+   providers: a provider serving an hour-long auth cooldown is still the right
+   answer when it is the only one that can serve the model, and refusing outright
+   would turn a key the user is about to fix into an outage. Ordering is what makes
+   the choice prefer someone else *when there is someone else* — and the switch is
+   reported as `cooldown` with the class named, so a paused run says "the
+   credentials were rejected", not "401".
+
+Expiry is applied on read (`cooldownFor`), so a stale entry can never be observed
+and there is no janitor to forget to run; and every user action that re-evaluates
+a provider goes through `resetHealth`, which is now the one place both the health
+tracker and the cooldown are forgotten. That is the part of 1.36's "deadlock
+reset" that has a mechanism behind it: nothing here can hold a provider out of
+rotation permanently.
+
+**What 1.36 names and this does not implement: `ModelSlot`.** The addendum lists
+it with no mechanism, and nothing in this tree resembles a slot abstraction over
+models, so inventing one would be a guess wearing the addendum's name. It is
+recorded in the register as unavailable rather than approximated.

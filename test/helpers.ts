@@ -84,6 +84,13 @@ export interface MockBehaviour {
   failBody?: string;
   /** Fail only the first N stream requests, then behave normally. */
   failFirst?: number;
+  /**
+   * `Retry-After` header sent with a failing stream response.
+   *
+   * Real gateways send it with a 429, and it is the one thing a rate limit
+   * cannot be respected without, so the mock has to be able to say it.
+   */
+  retryAfter?: string;
   /** Emit these tokens, then abort the connection mid-stream. */
   truncateAfter?: number;
   /** Hang without responding, to exercise the timeout path. */
@@ -162,7 +169,10 @@ export async function startMockProvider(initial: MockBehaviour = {}): Promise<Mo
           (behaviour.failFirst === undefined || streamRequests <= behaviour.failFirst);
 
         if (shouldFail) {
-          res.writeHead(behaviour.failStatus ?? 500, { 'Content-Type': 'application/json' });
+          res.writeHead(behaviour.failStatus ?? 500, {
+            'Content-Type': 'application/json',
+            ...(behaviour.retryAfter === undefined ? {} : { 'Retry-After': behaviour.retryAfter }),
+          });
           res.end(behaviour.failBody ?? JSON.stringify({ error: { message: 'mock failure' } }));
           return;
         }

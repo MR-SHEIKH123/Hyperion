@@ -128,6 +128,11 @@ function mapSwitchReason(reason: SwitchReason): PauseReason {
       return 'capability_mismatch';
     case 'health_failure':
       return 'provider_failure';
+    // A cooldown is a failure being respected, not a decided move: the provider
+    // did fail, and the user's next question is what to fix. `provider_failure`
+    // is the reason that says so.
+    case 'cooldown':
+      return 'provider_failure';
     // Nothing failed: the run moved because the standing policy barred the
     // provider it started with. `provider_switch` is the reason that says the
     // move was decided rather than forced.

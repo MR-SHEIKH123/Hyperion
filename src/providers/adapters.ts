@@ -145,12 +145,45 @@ async function httpFetch(
  * serialises `details` verbatim to the client. `redactSecrets` is a second
  * layer for the server-side log, not a substitute for the split.
  */
+/**
+ * `Retry-After` as a number of seconds, or null when absent or unparseable.
+ *
+ * The header has two legal forms — a delta in seconds and an HTTP date — and
+ * gateways use both. A date in the past is a zero, not a negative: the provider
+ * is saying "go ahead", and arithmetic on a negative would produce a deadline in
+ * the past that reads as an expired cooldown anyway, so the two agree by
+ * construction. A value we cannot parse is treated as absent rather than as zero,
+ * so a malformed header falls back to the table instead of disabling the back-off.
+ */
+function parseRetryAfter(value: string | null): number | null {
+  if (value === null) return null;
+  const trimmed = value.trim();
+  if (trimmed === '') return null;
+
+  if (/^\d+$/.test(trimmed)) {
+    const seconds = Number(trimmed);
+    return Number.isFinite(seconds) ? seconds : null;
+  }
+
+  const at = Date.parse(trimmed);
+  if (Number.isNaN(at)) return null;
+  return Math.max(0, Math.round((at - Date.now()) / 1000));
+}
+
 async function failFromResponse(response: Response, context: string): Promise<never> {
   const body = await response.text().catch(() => '');
   const detail = redactSecrets(body.slice(0, 500));
 
   // Status alone is safe to expose and is what the frontend actually branches on.
-  const details = { status: response.status };
+  // `Retry-After` joins it because it is a duration, not content: a 429's header
+  // is what tells the cooldown how long the provider wants to be left alone, and
+  // it is the only thing in the response that a rate limit cannot be respected
+  // without. Everything else about the body stays private.
+  const retryAfterSeconds = parseRetryAfter(response.headers.get('retry-after'));
+  const details = {
+    status: response.status,
+    ...(retryAfterSeconds === null ? {} : { retryAfterSeconds }),
+  };
   const privateDetails = { body: detail };
 
   // 401/403 are configuration problems: retrying cannot help, and they must NOT

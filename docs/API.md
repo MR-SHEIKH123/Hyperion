@@ -497,6 +497,20 @@ and in the persisted message. A transparent failover before the first token
 emits `resumed` and the user sees nothing; a failure after output has started
 pauses instead of silently restarting.
 
+`code` is the router's own reason for a pause, so a paused-by-switch event can
+carry `capability_mismatch`, `health_failure`, `zdr_requirement` or `cooldown`
+while `reason` stays one of the enum values above — a `cooldown` switch reports
+`provider_failure`, because the provider did fail and the class of failure is
+what the `message` names. A provider that failed in a way worth pausing for (a
+rejected key, a rate limit, a 5xx) is *cooled down* for a duration set by the
+failure: 60m for 401/403, 30m for 402, 5m for 429 (or the provider's own
+`Retry-After`, whichever is longer, capped at an hour), 2m for 404, 1m for 5xx
+and 30s for a network fault. Cooldowns live in memory, expire on their own, and
+are cleared by any user action that re-evaluates the provider — so a request
+that arrives while the active provider is cooling down is routed to another
+provider that can serve the model, and the run says so rather than repeating the
+same failure.
+
 `busy` (409, retryable, `details: { jobId }`) is returned as JSON when a job is
 already in flight and `concurrency_mode` is `reject`. Under `queue` the request
 waits for the lock instead.
