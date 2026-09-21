@@ -697,6 +697,13 @@
     },
     {
       "method": "GET",
+      "path": "/api/providers/puter/advisory",
+      "source": "src/http/providers.ts:112",
+      "exposure": "frontend",
+      "capability": "providers.manage"
+    },
+    {
+      "method": "GET",
       "path": "/api/providers/colibri/advisory",
       "source": "src/http/providers.ts:101",
       "exposure": "frontend",

@@ -173,8 +173,13 @@ test('a local provider behind a proxy elsewhere is remote, not local', () => {
   assert.equal(proxyLeavesMachine({ type: null, egressProxy: 'http://192.0.2.10:3128' }), true);
 
   // A provider type this build does not know stays unknown: not knowing what a
-  // provider is cannot be improved by looking at its proxy.
-  assert.equal(egressClassFor({ type: 'puter' as never, egressProxy: 'http://127.0.0.1:1' }), 'unknown');
+  // provider is cannot be improved by looking at its proxy. The stand-in is a
+  // word no build has — when this assertion named `puter` it silently stopped
+  // testing anything the moment 1.38 made that type real.
+  assert.equal(
+    egressClassFor({ type: 'someday' as never, egressProxy: 'http://127.0.0.1:1' }),
+    'unknown',
+  );
 });
 
 // --- storage and disclosure ------------------------------------------------

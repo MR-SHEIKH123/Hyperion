@@ -33,14 +33,19 @@ export function isToolName(value: unknown): value is ToolName {
  *               a distinct type because its operational profile (registered by
  *               hand, one generation at a time, minutes-to-hours per reply) is
  *               nothing like a hosted gateway's.
+ *   puter     — Puter's hosted OpenAI-compatible endpoint. Also chat-completions
+ *               shaped, and also reuses the `openai` adapter; a distinct type
+ *               because its credential is a *session auth token* rather than a
+ *               vendor API key, which expires and has to be pasted again (1.38).
  */
-export type ProviderType = 'remote' | 'local' | 'opencodex' | 'colibri';
+export type ProviderType = 'remote' | 'local' | 'opencodex' | 'colibri' | 'puter';
 
 export const PROVIDER_TYPES: readonly ProviderType[] = [
   'remote',
   'local',
   'opencodex',
   'colibri',
+  'puter',
 ];
 
 export function isProviderType(value: unknown): value is ProviderType {

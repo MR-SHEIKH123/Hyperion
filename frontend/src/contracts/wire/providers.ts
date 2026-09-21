@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const providerTypeSchema = z.enum(['remote', 'local', 'opencodex', 'colibri']);
+export const providerTypeSchema = z.enum(['remote', 'local', 'opencodex', 'colibri', 'puter']);
 export const providerSchema = z.object({
   id:z.string(), name:z.string(), type:providerTypeSchema, baseUrl:z.string(),
   hasKey:z.boolean(), apiKeyHint:z.string().nullable(), enabled:z.boolean(), priority:z.number(),

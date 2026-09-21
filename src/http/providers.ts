@@ -28,6 +28,7 @@ import {
   testProviderConnection,
 } from '../providers/registry.ts';
 import { colibriAdvisory, probeColibri, requireSlowAcknowledgement } from '../providers/colibri.ts';
+import { puterAdvisory } from '../providers/puter.ts';
 import { redactionCheckEnabled, zdrRequirement } from '../db/settings.ts';
 import { egressClassFor, isLoopbackHost, tryEgressProxy } from '../services/safety/outbound.ts';
 import { zdrStatusFor } from '../services/safety/zdr.ts';
@@ -103,6 +104,18 @@ providersRouter.post(
  * suggested base URL for the create form. Read-only: registering and enabling
  * remain explicit, separate acts.
  */
+/**
+ * What a Puter provider is configured with, and where the credential comes from
+ * (1.38). Advertised rather than left to documentation because the credential is
+ * an expiring session token, which is unlike every other provider here.
+ */
+providersRouter.get(
+  '/puter/advisory',
+  wrap((_req, res) => {
+    res.json(puterAdvisory());
+  }),
+);
+
 providersRouter.get(
   '/colibri/advisory',
   wrap((_req, res) => {

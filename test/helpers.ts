@@ -117,6 +117,14 @@ export interface MockProvider {
    * `tool_call_id`.
    */
   streamCalls: { model: string; body: Record<string, unknown> }[];
+  /**
+   * `Authorization` as received on the last stream request, or null.
+   *
+   * The credential path is otherwise unobservable from a test: a provider whose
+   * token never leaves the process looks identical, from the response alone, to
+   * one that sends it (Part 1.38).
+   */
+  lastAuthorization: string | null;
   modelCalls: number;
   behave(next: MockBehaviour): void;
   close(): Promise<void>;
@@ -132,6 +140,7 @@ export interface MockProvider {
 export async function startMockProvider(initial: MockBehaviour = {}): Promise<MockProvider> {
   let behaviour: MockBehaviour = { models: ['mock-model'], tokens: ['Hello', ' world'], ...initial };
   const streamCalls: { model: string; body: Record<string, unknown> }[] = [];
+  let lastAuthorization: string | null = null;
   let modelCalls = 0;
   let streamRequests = 0;
 
@@ -159,6 +168,7 @@ export async function startMockProvider(initial: MockBehaviour = {}): Promise<Mo
       req.on('data', (chunk) => (body += chunk));
       req.on('end', () => {
         streamRequests++;
+        lastAuthorization = req.headers.authorization ?? null;
         const parsed = JSON.parse(body || '{}') as { model?: string };
         streamCalls.push({ model: parsed.model ?? '', body: parsed as Record<string, unknown> });
 
@@ -273,6 +283,9 @@ export async function startMockProvider(initial: MockBehaviour = {}): Promise<Mo
     streamCalls,
     get modelCalls() {
       return modelCalls;
+    },
+    get lastAuthorization() {
+      return lastAuthorization;
     },
     behave(next) {
       behaviour = { ...behaviour, ...next };

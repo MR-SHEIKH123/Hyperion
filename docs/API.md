@@ -217,7 +217,7 @@ form** — only `hasKey` and a short `apiKeyHint`.
 ```ts
 {
   id: string; name: string;
-  type: 'remote' | 'local' | 'opencodex' | 'colibri';
+  type: 'remote' | 'local' | 'opencodex' | 'colibri' | 'puter';
   baseUrl: string;
   hasKey: boolean; apiKeyHint: string | null;
   enabled: boolean; priority: number;
@@ -242,6 +242,7 @@ Three routes also spread a registry summary into the response:
 | GET | `/api/providers` | `{ providers: ProviderPublic[], ...summary }` |
 | POST | `/api/providers` | **201** `{ provider }` |
 | POST | `/api/providers/detect-local` | `LocalDetectionResult` (bare) |
+| GET | `/api/providers/puter/advisory` | `PuterAdvisory` (bare) *(1.38)* |
 | GET | `/api/providers/colibri/advisory` | `ColibriAdvisory` (bare) |
 | POST | `/api/providers/colibri/probe` | `ColibriProbeResult & { defaultBaseUrl }` |
 | GET | `/api/providers/active/models` | `{ providerId, providerName, models }` |
@@ -256,7 +257,7 @@ Three routes also spread a registry summary into the response:
 | POST | `/api/providers/:id/test` | `{ ok, message, modelCount?, code? }` |
 
 **POST /api/providers** body: `name` (req), `type` (req, one of
-`remote` / `local` / `opencodex` / `colibri`), `baseUrl` (req), `apiKey?`,
+`remote` / `local` / `opencodex` / `colibri` / `puter`), `baseUrl` (req), `apiKey?`,
 `priority?`, `enabled?`, `egressProxy?`. `enabled` is body-only and defaults to
 false, so nothing — including local detection — can auto-enable a provider the
 user didn't turn on.
@@ -380,6 +381,52 @@ Two deliberate limits on that gate:
 - It gates **enabling**, not creating. `POST /api/providers` with
   `type: 'colibri'` needs no flag, because a provider that is merely configured
   and switched off cannot surprise anyone.
+
+### 3.4 Puter
+
+Puter is not a different *protocol* — it serves an OpenAI-compatible
+`/v1/chat/completions`, so it streams through the same adapter as `remote` with
+no branch of its own. It is a different **credential**: there is no vendor API
+key. You sign in to Puter, take the session `auth_token`, and paste that, and
+that token expires.
+
+**GET /api/providers/puter/advisory** — no body. Returns:
+
+```ts
+{
+  type: 'puter';
+  defaultBaseUrl: string;   // 'https://api.puter.com/puterai/openai/v1'
+  credential: 'auth_token';
+  egress: 'remote';
+  note: string;             // multi-line prose, safe to render verbatim
+}
+```
+
+`defaultBaseUrl` is a suggestion for pre-filling a form, not an assumption:
+`baseUrl` is still required on create, exactly as for every other type. The
+advisory exists so a settings screen can say what to paste and what happens next
+without hard-coding either fact.
+
+**The three consequences of a token credential**, each of which is asserted in
+`test/puter.test.ts` rather than left as prose:
+
+- **It is stored like a secret and hinted like one.** Encrypted at rest, and
+  `apiKeyHint` is the last four characters — with no `sk-` assumption, because a
+  Puter token has no prefix. Every read path still refuses to return it.
+- **It is sent as a bearer token**, in the `Authorization` header where a vendor
+  key would go. Nothing downstream of `authHeaders()` can tell the two apart,
+  which is the point.
+- **Its expiry is an authentication failure, not an outage.** A rejected token
+  comes back `401`, which the failover cooldowns (§4.3) classify as `auth` and
+  hold for an hour. That is the intended behaviour: re-sending a dead token on
+  every request would burn a minute of the user's patience per message, and the
+  fix is a person pasting a fresh token, not a retry. The advisory's note says
+  so, since a user who does not know the token expires will read the 60-minute
+  pause as a broken provider.
+
+**Egress is `remote` by type**, never by URL (§20.6): the service is hosted, so
+a Puter provider tunnelled through a proxy or reached at a loopback relay is
+still remote. `puter` is listed with the declared-remote types for that reason.
 
 ---
 
@@ -2178,9 +2225,11 @@ is scanned. Warning about a payload that never left would train the user to
 dismiss the prompt, and so would warning about `unknown`; the gate fires on
 `remote` and nothing else.
 
-A declared `remote`/`opencodex` provider is never downgraded to `local`, even at
-`127.0.0.1`: `opencodex` is a local proxy that forwards to upstream vendors, and
-understating egress is the one direction this feature must not fail in.
+A declared `remote`/`opencodex`/`puter` provider is never downgraded to `local`,
+even at `127.0.0.1`: `opencodex` is a local proxy that forwards to upstream
+vendors, `puter` is a hosted service whose type is about its credential rather
+than its address, and understating egress is the one direction this feature must
+not fail in.
 
 #### The refusal
 
@@ -2508,9 +2557,9 @@ deltas:
    and the stream stays open so the same connection can carry the resume.
 3. **Providers gained routes the spec didn't list**: full CRUD, `disable`,
    `detect-local`, `/:id/test`, `/active/current`, and per-provider model lists.
-   `type` now includes `opencodex` and `colibri`, and Colibrì adds
+   `type` now includes `opencodex`, `colibri` and `puter`, Colibrì adds
    `/colibri/advisory` and `/colibri/probe` plus an acknowledgement flag on
-   enable (§3.3).
+   enable (§3.3), and Puter adds `/puter/advisory` (§3.4).
 4. **`/api/skills` intake is two-phase** (`upload`/`fetch` → preview →
    `confirm`) rather than a single POST, because the spec requires a parsed
    preview, a credential recommendation and a risk report *before* registration.

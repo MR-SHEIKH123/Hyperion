@@ -609,6 +609,14 @@ export function saveModelCacheError(id: string, message: string): void {
  * local API lives under `/api/...` with no `/v1` anywhere. Both would break if
  * `/v1` were bolted on. Anything not named here is stored exactly as the user
  * typed it, so adding a provider type is inert until someone lists it.
+ *
+ * `puter` (1.38) is deliberately **not** on this list. It is OpenAI-compatible,
+ * but the compatibility lives under a path of Puter's own
+ * (`/puterai/openai/v1`), so appending `/v1` to a bare `api.puter.com` would
+ * produce a URL that is not Puter's API at all. The exact URL is advertised by
+ * `/api/providers/puter/advisory` for a form to pre-fill, and whatever the user
+ * types is stored verbatim — the same choice this function makes for every type
+ * it cannot rewrite with confidence.
  */
 const OPENAI_COMPATIBLE_TYPES: readonly ProviderType[] = ['remote'];
 

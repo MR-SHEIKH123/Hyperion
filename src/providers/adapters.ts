@@ -824,7 +824,11 @@ export function adapterFor(provider: ProviderRecord): ProviderAdapter {
     // OpenAI-shaped GET /v1/models, so the stock adapter is correct as-is. It
     // needs no credential unless COLI_API_KEY is set, and `authHeaders()`
     // already omits Authorization entirely when there is no stored key.
+    // Puter (1.38) is the same protocol with a different credential: the token
+    // travels as a bearer token exactly where an API key would, so the adapter
+    // needs no branch — only the storage and disclosure do.
     case 'colibri':
+    case 'puter':
     case 'remote':
       return openAiAdapter;
   }

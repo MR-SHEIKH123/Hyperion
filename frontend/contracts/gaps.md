@@ -23,7 +23,13 @@ behavior in the browser.
   `GET /api/providers/active` adds `{redacted, authority, scheme, hasCredentials,
   offMachine}` — the point-of-action privacy line renders it, and the egress class
   already accounts for it (`local` + an off-machine proxy is `remote`).
-- Still no Puter provider type.
+- ~~Still no Puter provider type.~~ **Closed 2026-09-21 (1.38).** `puter` is a provider
+  type (`providerTypeSchema` accepts it) whose difference is the *credential*: an expiring
+  session `auth_token` rather than a vendor key, so an expired one is a configuration fact
+  and pauses the provider for the hour rather than being retried on every request.
+  `GET /api/providers/puter/advisory` states the credential kind, the default base URL and
+  what an expiry does — a settings screen needs to hard-code none of it. There is still no
+  settings form that creates one.
 - No global search endpoint; later shell search must report federated partial coverage.
 
 ## Later

@@ -77,6 +77,11 @@ export interface EgressSubject {
  * talks to it over HTTP at a base URL the user supplies, which may be anywhere.
  * `colibri` is the mirror image: a local runtime whose replies take minutes, so
  * its distinct type is about scheduling, not about where the bytes go.
+ *
+ * `puter` is remote for the plain reason the others are not: the service is
+ * hosted, and the only thing that makes it a separate type is the *credential*
+ * (an expiring session token, not a vendor key). Egress does not care about
+ * that, so it is filed with `remote` rather than given a rule of its own.
  */
 export function classifyProviderType(type: ProviderType | null | undefined): EgressClass {
   switch (type) {
@@ -85,6 +90,11 @@ export function classifyProviderType(type: ProviderType | null | undefined): Egr
       return 'local';
     case 'remote':
     case 'opencodex':
+    // Puter is a hosted service: remote by declaration, and no URL could change
+    // that. Listed with the type rather than after the URL check, because the
+    // type *is* the answer here — a Puter provider reached over a tunnel is still
+    // Puter (Part 1.38).
+    case 'puter':
       return 'remote';
     default:
       // Covers both null (provider deleted) and a type this build does not know,
