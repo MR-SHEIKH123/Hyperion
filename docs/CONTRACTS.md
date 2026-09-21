@@ -5359,3 +5359,40 @@ server had just refused to apply. It now reads the flag, distinguishes `expired`
 (nothing was allowed — continue the task to be asked again) from an already-answered
 prompt, and says which. Announcing an allowance that was not granted is the one
 wording a prompt with a deadline must never produce.
+
+## `implemented` was checked on one side only *(added 2026-09-22)*
+
+The contract ledger's `implemented` status is defined as "a client calls a real
+route" — two halves — and the gate that landed the previous day checked the first
+one: `check-contracts.mjs` asked whether the path exists in the backend snapshot and
+never whether anything in `frontend/src` calls it. Four rows were wrong about the
+half nobody checked. `providers.zdr` named a route with no write gesture anywhere in
+the app (the frontend renders the ZDR status and cannot set the policy).
+`plugins.unified` and `plugins.availability` named the catalogue and the per-tool
+availability route while the Plugins tool is a placeholder with a rail entry and no
+`api/plugins` client at all. `design.preview` named a preview route while the Design
+tool has no surface to render one in. All four are real routes; none of them is a
+contract the frontend has.
+
+The rule that found them matches a path against the frontend's own source, with two
+tolerances that exist because of how the clients are written rather than for
+convenience: a parameter matches anything inside one path segment (the clients pass
+`${encodeURIComponent(id)}`), and the segment after `/api/` may be an interpolated
+tool (`api/tasks.ts` writes `/api/${tool}/tasks/...`, while the ledger spells each
+tool out because that is what the backend mounts). Test files are excluded, and that
+exclusion is load-bearing in a specific way: without it a row could pass on the
+strength of a test asserting the path, which is a claim about the row rather than
+about the app — the same failure shape as the route-pointer pass, one level up.
+
+**The check is one-directional, and that is stated rather than papered over.** It can
+prove that no client mentions a path, which is what makes an `implemented` row false.
+It cannot prove the right client calls it: the method is not compared, so a client
+for the same path with a different verb satisfies it. Two rows it deliberately does
+not constrain are `route-mismatch` rows whose paths genuinely differ —
+`tasks.continue` and `settings.reload` — and neither has a client either. A mismatch
+is a fact about paths and stays true without a caller, so those two are recorded in
+`frontend/contracts/gaps.md`, which is where frontend progress lives. The
+continuation one is the fact worth repeating here: approving a prompt records a
+decision and deliberately does not start the agent, nothing in the frontend posts
+`/continue`, and the Attention Center's own copy tells the user to "open the task and
+continue it" — which no screen can do.

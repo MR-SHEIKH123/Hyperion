@@ -85,6 +85,20 @@ behavior in the browser.
   Settings surface exists, and the daily-cap read is the summary's only consumer today.
   Whatever renders it must keep `rowsWithCacheReporting`/`rowsWithDuration` beside the
   rates and means, and must not show a `null` measure as zero.
+- **Nothing in the frontend posts a task continuation.** `POST /api/{tool}/tasks/:taskId/continue`
+  is the call that starts a parked run again — approving a prompt deliberately does not
+  (`continuation.ts`: "does not start the agent", it records the decision and answers
+  `continuable`) — and no client makes it: `api/tasks.ts` has `state` and `recovery`, the
+  Attention Center posts the decision and then tells the user to "open the task and continue
+  it", and the Code surface's recovery panel reports resume without actioning it. So an
+  approved run can sit parked indefinitely while the copy implies a next step. The route is
+  ready and is a `route-mismatch` row (the spec named `/resume`); what is missing is the
+  control that calls it.
+- **No client posts `POST /api/settings/reload-config` (1.28).** The route re-reads and
+  validates the on-disk permissions and profiles on demand, caching nothing, and is covered by
+  three route cases; nothing calls it, because there is no Settings surface at all (the same
+  reason the memory import routes above are uncalled). A reload control belongs there when
+  that surface exists.
 - No global search endpoint; later shell search must report federated partial coverage.
 
 ## Later

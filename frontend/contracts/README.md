@@ -47,6 +47,7 @@ Four facts are decidable from the two snapshots, so they are checked now:
 | rule | why |
 | --- | --- |
 | `implemented` ⇒ the route exists | a client calls a real route; if the route is gone, "implemented" is a claim about nothing. `{tool}` is expanded to `code`/`cowork`/`design` first, the same way the API-coverage check expands it. |
+| `implemented` ⇒ a frontend module mentions the path | the other half of the same sentence, checked since 2026-09-22. Four rows were wrong about it: `providers.zdr`, `plugins.unified`, `plugins.availability` and `design.preview` each named a real route and no frontend module calls it. Test files do not count — a row must not pass on the strength of its own assertion. |
 | `route-mismatch` ⇒ its own `expectedPath` exists | a mismatch needs an implementation to be mismatched with. This is the rule that catches a row naming a path that was never built. |
 | `route-mismatch` ⇒ a non-empty `specifiedPath` **different** from `expectedPath`, plus a `reason` | "the spec asked for something else" is only useful with the something else named, and a row whose two paths are equal is not describing a mismatch. |
 | no other status carries `specifiedPath` | that field answers "which path is this?" for a mismatch, and two answers on an `implemented` row is one too many. |
@@ -60,3 +61,20 @@ non-zero, naming the row, its status and the fact that contradicts it.
 can point at a route that does not exist yet (`projects.active-tasks`,
 `search.global`) because it describes how far the frontend has got with a
 requirement, not what the backend serves; `missing` is a gap by definition.
+
+`route-mismatch` is not constrained by the client half either, and that is a
+statement about what the status means rather than a hole: a mismatch records that
+the specification's path and the implemented path differ, which is a fact about
+paths and stays true whether or not a client has been written. Two mismatches have
+no client — `tasks.continue` and `settings.reload` — and they are recorded in
+`gaps.md`, which is the file that carries frontend progress. The client check is
+deliberately one-directional: it can prove that *no* client mentions a path, which is
+what makes a row's status false, and it cannot prove the right client calls it, since
+the method is not compared.
+
+The matcher is looser than a string comparison in two ways, both because of how the
+clients are written: a parameter matches anything inside one path segment (the
+clients use `${encodeURIComponent(id)}`), and the segment after `/api/` may be an
+interpolated tool (`api/tasks.ts` writes `/api/${tool}/tasks/...`, while the ledger
+spells each tool out because that is what the backend mounts). Anything else has to
+match literally.
