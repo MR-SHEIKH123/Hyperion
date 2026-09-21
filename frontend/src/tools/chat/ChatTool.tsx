@@ -2,6 +2,8 @@ import { useCallback, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useMutation } from '@tanstack/react-query';
 import { createChat } from '../../api/chat';
+import { usePersistedDraft } from '../../state/persistence/usePersistedDraft';
+import { NEW_CHAT_DRAFT_KEY } from './drafts';
 import { useModelSelection } from './useModelSelection';
 import { Composer } from './Composer';
 import { ChatConversation } from './ChatConversation';
@@ -50,15 +52,19 @@ export default function ChatTool() {
 }
 
 /**
- * New-conversation state. The chat is created lazily on first send: the
- * prompt rides on the location state, the created chat's conversation consumes
- * it, and a reload in between simply loses the unsent draft (it was never
- * persisted, so that is the honest behaviour).
+ * New-conversation state. The chat is created lazily on first send: the prompt
+ * rides on the location state and the created chat's conversation consumes it.
+ *
+ * The draft is remembered under its own key (1.39 A5) until that happens: typing a
+ * prompt and reloading should not lose it. Once the chat exists the draft is
+ * dropped, because the prompt is then carried by the conversation that owns it —
+ * keeping both would send it twice on a back-navigation.
  */
 function NewConversation() {
   const navigate = useNavigate();
   const [notice, setNotice] = useState<string | null>(null);
   const model = useModelSelection(null);
+  const draft = usePersistedDraft(NEW_CHAT_DRAFT_KEY);
 
   const createMutation = useMutation({
     mutationFn: ({ modelId }: { modelId: string }) =>
@@ -70,6 +76,7 @@ function NewConversation() {
       setNotice(null);
       try {
         const data = await createMutation.mutateAsync({ modelId });
+        draft.clear();
         void navigate(`/chat/${data.chat.id}`, {
           state: { pendingSend: { prompt, modelId } } satisfies ChatLocationState,
         });
@@ -80,7 +87,7 @@ function NewConversation() {
         throw error;
       }
     },
-    [createMutation, navigate],
+    [createMutation, draft, navigate],
   );
 
   return (
@@ -94,13 +101,15 @@ function NewConversation() {
       </div>
       <div className={styles.newChatComposer}>
         <Composer
-        model={model}
-        phase="idle"
-        notice={notice}
-        onSend={send}
-        onStop={() => {}}
-        privacy={model.privacy}
-      />
+          model={model}
+          phase="idle"
+          notice={notice}
+          onSend={send}
+          onStop={() => {}}
+          privacy={model.privacy}
+          initialDraft={draft.initial}
+          onDraftChange={draft.onChange}
+        />
       </div>
     </section>
   );

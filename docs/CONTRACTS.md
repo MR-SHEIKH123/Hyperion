@@ -4519,3 +4519,51 @@ every row with the writer production uses — `recordApproval`, `createRun` /
 `recordStep`, `createScheduledTask` / `finishRun`, `logError` — including the two
 assertions that are about absence: a plain failed run must not appear, and
 resolving an approval must remove exactly one item.
+
+## What the shell is allowed to remember *(added in Prompt 1.39, item A5)*
+
+Workspace restoration is a promise about *presentation*, and it is worth stating
+what that excludes, because the pressure to remember more will only grow. The
+persisted state may hold: the last tool, which views were open and selected per
+tool, the selected model per tool, panel layouts, the last version viewed per
+artifact, unsent drafts, navigation hints, the onboarding draft, and where the
+reader was in a scrolling surface. It may not hold credentials, keys, tokens,
+passphrases or attachment content — not by convention but by construction:
+`assertPersistenceSafe` walks the whole object recursively and throws on any key
+whose normalized form names a secret (`apiKey`, `token`, `passphrase`, …), so the
+write never happens, and the draft schema admits attachment **metadata** only, so
+even a caller that tried could not store bytes. Both are pinned by tests, including
+the case that matters most: a rejected write leaves the rest of the browser's
+storage untouched.
+
+Three rules the pieces share:
+
+1. **A draft is text the user typed, and nothing else.** Losing an unsent prompt to
+   a reload is the failure this exists to prevent, so the text is kept — debounced,
+   because rewriting the whole state on every keystroke would put storage on the
+   typing hot path, and flushed on unmount, because navigating away is exactly when
+   the last characters would otherwise be lost. A draft that is empty or only
+   whitespace is removed rather than stored: a saved blank is indistinguishable from
+   a draft the user deliberately cleared, and it would come back as a phantom.
+2. **A reading position is an anchor, not a number.** The remembered value is the id
+   of the row at the top of the viewport plus how far above that row's top edge sits
+   — a raw `scrollTop` means a different place after a resize, a font change or a
+   streamed message that grew above it. Restoring happens before paint so a reopened
+   conversation does not flash at the end and jump, and if the anchored row is no
+   longer loaded the anchor is **dropped** rather than guessed at, with the view
+   falling back to the end.
+3. **Following the tail is conditional.** New content moves the view only while the
+   viewport is already at the end. Anyone reading back through a transcript is not
+   asking to be pulled to the bottom by the next streamed token, and following
+   resumes only when they return to the end themselves.
+
+Finally, a refused write is not an application failure. A browser in private mode,
+a full quota or a blocked origin throws on `setItem`; the store catches it, keeps
+the value in memory for the session and says nothing, because a feature that
+remembers where you were should not be able to break where you are. What it must
+not do is pretend: nothing is retried and nothing is reported as saved.
+
+`frontend/src/state/persistence/` holds the store, the schema and the two hooks
+(`usePersistedDraft`, `useScrollAnchor`); `frontend/src/tools/chat/drafts.ts` owns
+the draft keys, so the key space is one place rather than a convention spread over
+call sites.

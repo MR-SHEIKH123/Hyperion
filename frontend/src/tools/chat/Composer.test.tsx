@@ -54,6 +54,28 @@ describe('Composer', () => {
     expect(input).toHaveValue('');
   });
 
+  it('starts from the remembered draft and reports every edit', async () => {
+    const onDraftChange = vi.fn();
+    render(<Composer {...base} onSend={vi.fn()} initialDraft="half a thought" onDraftChange={onDraftChange} />);
+
+    const input = screen.getByLabelText('Message');
+    expect(input).toHaveValue('half a thought');
+
+    await userEvent.type(input, '!');
+    expect(onDraftChange).toHaveBeenLastCalledWith('half a thought!');
+  });
+
+  it('reports the draft as sent once the send is accepted', async () => {
+    const onDraftChange = vi.fn();
+    render(<Composer {...base} onSend={vi.fn().mockResolvedValue(undefined)} initialDraft="go" onDraftChange={onDraftChange} />);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    // '' rather than a clear() of the remembered draft: the composer stays the
+    // only thing that owns the text on screen.
+    expect(onDraftChange).toHaveBeenLastCalledWith('');
+  });
+
   it('does not send while a run is live and shows stop instead', () => {
     const onSend = vi.fn();
     const onStop = vi.fn();

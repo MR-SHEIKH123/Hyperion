@@ -6,6 +6,9 @@ import type { ChatReconciliation } from '../../api/chat';
 import type { MessageRecord, RunStateSnapshot } from '../../contracts/wire/chat';
 import { Button } from '../../design-system/components/Button/Button';
 import { StatusBadge } from '../../design-system/components/StatusBadge/StatusBadge';
+import { useScrollAnchor } from '../../state/persistence/useScrollAnchor';
+import { usePersistedDraft } from '../../state/persistence/usePersistedDraft';
+import { chatDraftKey } from './drafts';
 import { useChatStream } from './useChatStream';
 import { useModelSelection } from './useModelSelection';
 import { Composer } from './Composer';
@@ -43,8 +46,10 @@ interface ConversationProps {
 export function ChatConversation({ chatId, pendingSend, onPendingSendConsumed }: ConversationProps) {
   const queryClient = useQueryClient();
   const scrollRef = useRef<HTMLDivElement>(null);
-  const contentLengthRef = useRef(0);
-  const rowCountRef = useRef(0);
+
+  // The unsent draft and the reading position are the two things this surface is
+  // expected to come back to (1.39 A5).
+  const draft = usePersistedDraft(chatDraftKey(chatId));
 
   const chatQuery = useQuery({
     queryKey: ['chat', chatId],
@@ -201,16 +206,10 @@ export function ChatConversation({ chatId, pendingSend, onPendingSendConsumed }:
     return rows;
   }, [persisted, stream.status, modelId, model.activeProviderName]);
 
-  useEffect(() => {
-    const container = scrollRef.current;
-    if (container === null) return;
-    const length = view.reduce((n, m) => n + m.content.length, 0);
-    if (length > contentLengthRef.current || view.length !== rowCountRef.current) {
-      container.scrollTop = container.scrollHeight;
-    }
-    contentLengthRef.current = length;
-    rowCountRef.current = view.length;
-  }, [view]);
+  // Reading position: restored once per conversation, then followed only while the
+  // viewport is already at the bottom. The old behaviour — jump to the end whenever
+  // the transcript grew — moved the view out from under anyone reading back.
+  useScrollAnchor(scrollRef, chatDraftKey(chatId), view, { enabled: !chatQuery.isPending });
 
   const pausedRun = latestRun !== null && latestRun.state === 'paused' ? latestRun : null;
   const showResumeBanner = pausedRun !== null && stream.status.phase !== 'running';
@@ -290,6 +289,8 @@ export function ChatConversation({ chatId, pendingSend, onPendingSendConsumed }:
           onSend={send}
           onStop={() => stream.stop()}
           privacy={model.privacy}
+          initialDraft={draft.initial}
+          onDraftChange={draft.onChange}
         />
       </footer>
     </section>

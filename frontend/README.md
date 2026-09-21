@@ -40,8 +40,14 @@ npm run build
   feature modules, and SSE parsing/session control. A dropped mutation stream is
   reconciled through task state and is never replayed automatically.
 - `src/state/persistence/` stores only classified presentation state, safe drafts,
-  and navigation hints. Credential fields, tokens, passphrases, approval secrets,
-  attachment bytes, and lifecycle state are rejected.
+  reading positions, and navigation hints. Credential fields, tokens, passphrases,
+  approval secrets, attachment bytes, and lifecycle state are rejected — the
+  classification walks the whole object on every write, so a rejected draft never
+  reaches storage at all. It is mounted once (`PersistenceProvider`, one store per
+  tab, in-memory fallback when the browser refuses storage): `usePersistedDraft`
+  keeps an unsent prompt (debounced, flushed on unmount, blank drafts removed) and
+  `useScrollAnchor` keeps where the reader was as a row id plus a pixel offset
+  rather than a `scrollTop`, so a resize does not move it.
 - `src/state/task-machine/` maps the implemented backend TaskRun states into the
   frontend lifecycle. `connecting` and `reconnecting` are transport states;
   pending cancellation and approval-dialog visibility are metadata/UI state.
@@ -82,7 +88,12 @@ npm run build
   - pause banner with the run's pause reason and a Resume action (a fresh
     prompt on a paused run is a switch-and-resume);
   - pre-stream refusals (`busy` 409, no provider) keep the composer's draft —
-    a refused send never swallows the user's text;
+    a refused send never swallows the user's text; and the draft itself outlives
+    the tab: the new-conversation box and every conversation remember what was
+    typed until it is sent (Prompt 1.39 A5);
+  - the transcript reopens where it was left, and stops following the tail as
+    soon as the reader scrolls back — streamed tokens no longer pull the page
+    away from someone reading;
   - model picker against the active provider's live model list
     (`GET /api/providers/active/models`); a switched model persists to the
     chat.
