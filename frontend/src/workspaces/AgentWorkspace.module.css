@@ -1,13 +1,242 @@
-.workspace { --left-width:280px; --right-width:340px; min-height:0; height:100%; display:grid; grid-template-columns:var(--left-width) minmax(0,1fr) var(--right-width); grid-template-rows:auto minmax(0,1fr) auto; grid-template-areas:"status status status" "left main right" "composer composer composer"; background:var(--surface-canvas); color:var(--text-primary); }
-.status { grid-area:status; border-bottom:1px solid var(--border-subtle); }
-.left { grid-area:left; display:grid; min-width:var(--workspace-panel-min); grid-template-rows:minmax(120px,auto) minmax(0,1fr); border-right:1px solid var(--border-subtle); background:var(--surface-subtle); }
-.main { grid-area:main; display:grid; min-width:0; grid-template-rows:minmax(0,1fr) minmax(120px,32%); }
-.right { grid-area:right; display:grid; min-width:var(--workspace-panel-min); grid-template-rows:minmax(0,1fr) auto; border-left:1px solid var(--border-subtle); background:var(--surface-subtle); }
-.composer { grid-area:composer; border-top:1px solid var(--border-subtle); background:var(--surface-raised); }
-.panel { min-width:0; min-height:0; overflow:auto; padding:var(--space-3); }
-.panel + .panel { border-top:1px solid var(--border-subtle); }
-.region:focus { outline:2px solid var(--focus-ring); outline-offset:-2px; }
-.resizeLeft,.resizeRight { position:absolute; top:0; bottom:0; width:9px; padding:0; border:0; background:transparent; cursor:col-resize; z-index:2; }
-.resizeLeft { left:calc(var(--left-width) - 4px); }.resizeRight { right:calc(var(--right-width) - 4px); }
-.frame { position:relative; min-height:0; height:100%; }
-@media (max-width:900px){.workspace{display:flex;flex-direction:column;overflow:auto}.left,.main,.right{display:block;border:0;min-width:0}.main{order:2}.left{order:1}.right{order:3}.composer{order:4;position:sticky;bottom:0}.status{order:0}.resizeLeft,.resizeRight{display:none}.panel{max-height:42vh}.main .panel:first-child{min-height:48vh}}
+.workspace {
+  --left-width: 280px;
+  --right-width: 340px;
+  min-height: 0;
+  height: 100%;
+  display: grid;
+  grid-template-columns: var(--left-width) minmax(0, 1fr) var(--right-width);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-areas: "status status status" "left main right" "composer composer composer";
+  background: var(--surface-canvas);
+  color: var(--text-primary);
+}
+
+/* A folded side column is still a column — it just holds strips instead of panels,
+   so the frame never collapses to nothing and the expand control stays reachable. */
+.workspace[data-left='folded'] {
+  grid-template-columns: var(--left-width) minmax(0, 1fr) var(--right-width);
+}
+
+.status {
+  grid-area: status;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.left {
+  grid-area: left;
+  display: grid;
+  /* `--workspace-panel-min` is the 240px floor `MIN_WIDTH` enforces, so the
+     stylesheet and the drag clamp cannot disagree about how narrow is too narrow. */
+  min-width: var(--workspace-panel-min);
+  grid-template-rows: minmax(120px, auto) minmax(0, 1fr);
+  border-right: 1px solid var(--border-subtle);
+  background: var(--surface-subtle);
+}
+
+.workspace[data-left='folded'] .left {
+  min-width: 0;
+  grid-template-rows: auto auto;
+  align-content: start;
+}
+
+.main {
+  grid-area: main;
+  display: grid;
+  min-width: 0;
+  grid-template-rows: minmax(0, 1fr) minmax(120px, 32%);
+}
+
+/* A folded progress stream keeps its label strip and gives its height back to the
+   main surface, which is what folding a panel is for. */
+.workspace[data-progress='folded'] .main {
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.right {
+  grid-area: right;
+  display: grid;
+  min-width: var(--workspace-panel-min);
+  grid-template-rows: minmax(0, 1fr) auto;
+  border-left: 1px solid var(--border-subtle);
+  background: var(--surface-subtle);
+}
+
+.workspace[data-right='folded'] .right {
+  min-width: 0;
+  grid-template-rows: auto auto;
+  align-content: start;
+}
+
+.composer {
+  grid-area: composer;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--surface-raised);
+}
+
+.panel {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-3);
+}
+
+.panel + .panel {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.panelBody {
+  min-width: 0;
+}
+
+.region:focus {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+/* --- folding ---------------------------------------------------------------- */
+
+.panelFolded {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-1);
+  padding: var(--space-1);
+  overflow: hidden;
+}
+
+.foldedLabel {
+  /* Vertical so a 44px strip can still say which panel is folded away. */
+  writing-mode: vertical-rl;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.fold {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm, 4px);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.fold:hover {
+  background: var(--surface-raised);
+  color: var(--text-primary);
+}
+
+.fold:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.panel > .fold {
+  position: absolute;
+  top: var(--space-1);
+  right: var(--space-1);
+  z-index: 1;
+}
+
+.panelFolded > .fold {
+  position: static;
+}
+
+/* --- resize handles --------------------------------------------------------- */
+
+.frame {
+  position: relative;
+  min-height: 0;
+  height: 100%;
+}
+
+.resizeLeft,
+.resizeRight {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 9px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: col-resize;
+  /* Without this a drag on a touch screen scrolls the page instead of resizing. */
+  touch-action: none;
+  z-index: 2;
+}
+
+.resizeLeft {
+  left: calc(var(--left-width) - 4px);
+}
+
+.resizeRight {
+  right: calc(var(--right-width) - 4px);
+}
+
+.resizeLeft:focus-visible,
+.resizeRight:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+@media (max-width: 900px) {
+  .workspace {
+    display: flex;
+    flex-direction: column;
+    overflow: auto;
+  }
+
+  .left,
+  .main,
+  .right {
+    display: block;
+    border: 0;
+    min-width: 0;
+  }
+
+  .main {
+    order: 2;
+  }
+
+  .left {
+    order: 1;
+  }
+
+  .right {
+    order: 3;
+  }
+
+  .composer {
+    order: 4;
+    position: sticky;
+    bottom: 0;
+  }
+
+  .status {
+    order: 0;
+  }
+
+  .resizeLeft,
+  .resizeRight {
+    display: none;
+  }
+
+  .panel {
+    max-height: 42vh;
+  }
+
+  /* Folded panels are strips, and a 42vh strip would be absurd. */
+  .panelFolded {
+    max-height: none;
+  }
+
+  .main .panel:first-child {
+    min-height: 48vh;
+  }
+}

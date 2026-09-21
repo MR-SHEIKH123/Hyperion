@@ -10,43 +10,10 @@ import { ErrorNotice } from '../../components/ErrorNotice/ErrorNotice';
 import { VersionTimeline } from '../../components/Provenance/ProvenancePanel';
 import { fromBackendRun } from '../../state/task-machine/task-state';
 import { AgentWorkspace } from '../../workspaces/AgentWorkspace';
-import { usePersistenceStore } from '../../state/persistence/PersistenceProvider';
+import { useWorkspaceLayout } from '../../state/persistence/useWorkspaceLayout';
 import styles from './CodeSurface.module.css';
 
-import type { AgentWorkspaceDefinition, WorkspaceLayoutState, WorkspacePanelId } from '../../workspaces/AgentWorkspace.types';
-
-/** The panel ids the frame can collapse, so a value read back from storage is checked. */
-const PANEL_IDS: readonly WorkspacePanelId[] = [
-  'taskRail',
-  'contextExplorer',
-  'mainSurface',
-  'progressStream',
-  'inspector',
-  'versionTimeline',
-  'composer',
-  'statusBanner',
-];
-
-/**
- * The stored layout is a generic record of panel sizes; the frame wants a left and
- * a right width. Translating here keeps the stored shape stable across tools — the
- * frame can add a panel without a migration — and means an unrecognised panel id
- * from an older build is dropped rather than cast into the frame's union.
- */
-function layoutFromStore(saved: { sizes: Record<string, number>; collapsed: string[] } | undefined): WorkspaceLayoutState | undefined {
-  if (saved === undefined) return undefined;
-  return {
-    leftWidth: saved.sizes.left ?? 280,
-    rightWidth: saved.sizes.right ?? 340,
-    collapsed: saved.collapsed.filter((panel): panel is WorkspacePanelId =>
-      (PANEL_IDS as readonly string[]).includes(panel),
-    ),
-  };
-}
-
-function layoutToStore(layout: WorkspaceLayoutState): { sizes: Record<string, number>; collapsed: string[] } {
-  return { sizes: { left: layout.leftWidth, right: layout.rightWidth }, collapsed: [...layout.collapsed] };
-}
+import type { AgentWorkspaceDefinition } from '../../workspaces/AgentWorkspace.types';
 
 import type { taskStateResponseSchema } from '../../contracts/wire/tasks';
 import type { z } from 'zod';
@@ -80,7 +47,10 @@ export default function CodeTool() {
   const [params, setParams] = useSearchParams();
   const taskId = params.get('task');
   const file = params.get('file');
-  const store = usePersistenceStore();
+  // Presentation memory (1.39 A5): the panel widths and folds are remembered per
+  // tool. The frame owns the translation; this surface only hands over what it
+  // last left behind (see `useWorkspaceLayout`).
+  const layout = useWorkspaceLayout('code');
 
   const lane = useQuery({ queryKey: ['code', 'lane'], queryFn: ({ signal }) => getCodeLane(signal), retry: false, refetchInterval: 10_000 });
   const task = useQuery({
@@ -95,10 +65,6 @@ export default function CodeTool() {
     enabled: file !== null,
     retry: false,
   });
-
-  // Presentation memory (1.39 A5): the panel widths are remembered per tool, and
-  // the layout the frame reports is the one that gets stored.
-  const savedLayout = layoutFromStore(store.snapshot().projects['active']?.panelLayouts['code']);
 
   const state = useMemo(() => {
     const run: TaskRun | undefined = task.data?.run;
@@ -177,18 +143,8 @@ export default function CodeTool() {
   return (
     <AgentWorkspace
       definition={definition}
-      {...(savedLayout === undefined ? {} : { initialLayout: savedLayout })}
-      onLayoutChange={(layout) => {
-        const previous = store.snapshot().projects['active'];
-        store.setProject('active', {
-          openViewIds: previous?.openViewIds ?? {},
-          selectedViewIds: previous?.selectedViewIds ?? {},
-          selectedModelIds: previous?.selectedModelIds ?? {},
-          lastViewedVersions: previous?.lastViewedVersions ?? {},
-          panelLayouts: { ...(previous?.panelLayouts ?? {}), code: layoutToStore(layout) },
-          lastTool: 'code',
-        });
-      }}
+      {...(layout.initialLayout === undefined ? {} : { initialLayout: layout.initialLayout })}
+      onLayoutChange={layout.onLayoutChange}
     />
   );
 }

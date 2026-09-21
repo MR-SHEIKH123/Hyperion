@@ -4523,6 +4523,79 @@ every row with the writer production uses — `recordApproval`, `createRun` /
 assertions that are about absence: a plain failed run must not appear, and
 resolving an approval must remove exactly one item.
 
+## The workspace frame: regions, folding, geometry *(added in Prompt 1.39, item A3)*
+
+Code, Cowork and Design are the same *kind* of surface: a task rail, one main
+surface, a progress stream, an inspector, a version timeline, a composer and a
+status line. Three separate layouts would have drifted on exactly the parts a user
+learns once — where the rail is, what the status line means, which key resizes a
+panel — so `frontend/src/workspaces/AgentWorkspace.tsx` owns the eight regions as
+a *frame*, and an occupant supplies their contents. The occupant's definition
+(`AgentWorkspaceDefinition`) may omit the optional regions; the layout is valid
+either way, so a tool with no version history does not render an empty box.
+
+The frame is the **case**, and what it owns is the interesting part:
+
+- **Geometry is clamped, and every path shares one clamp.** `MIN_WIDTH` 240 (the
+  same floor the stylesheet calls `--workspace-panel-min`), `MAX_WIDTH` 520, and
+  the pointer drag, the keyboard step (±16 px per arrow key) and the stored initial
+  layout all go through it. A stored layout is clamped on read rather than trusted:
+  a bad saved width must not be able to collapse the surface or push the inspector
+  off the screen.
+- **A drag reports once, on release.** The pointer path moves the column on every
+  pointer-move event — the frame must follow the pointer — but it notifies
+  `onLayoutChange` only when the drag ends, because a resize is one decision and the
+  persistence layer should not see eighty writes for one gesture. The right-hand
+  separator sits on the column's *outer* edge, so dragging it left grows the column;
+  a move or a release with no pointer-down before it is ignored, since browsers
+  deliver stray moves to whatever is under the cursor.
+- **Pointer capture is an optimisation, not the mechanism.** `setPointerCapture`
+  keeps a fast drag alive when the pointer outruns the 9px handle, but it can throw
+  (`InvalidPointerId` for a pointer that is not active) and some environments have
+  no implementation at all, so a missing or refusing API is tolerated and the drag
+  continues uncaptured. Throwing on pointer-down would take the whole panel with it.
+- **A folded panel is absent, not hidden.** Folding renders the region without its
+  body, so nothing inside it is focusable and nothing in the accessibility tree
+  reaches it, and the strip that remains still says which panel it is (vertically,
+  because 44 px is not enough width for a horizontal label). A CSS `display: none`
+  would leave the content in the tab order.
+- **Three regions can never fold.** The main surface (a tool *is* its surface), the
+  composer (hiding where the next instruction is given is how a user concludes the
+  surface is read-only) and the status line (task state must not be hideable while a
+  run is parked). An occupant's `collapsible` list can only **narrow** that set — it
+  cannot remove a region from the frame, so an occupant that forgets the field does
+  not accidentally make the task rail unfoldable.
+- **A fully folded side column becomes a strip**: 44 px, and its separator is not
+  rendered at all, because a handle that resizes nothing is worse than no handle.
+  Each column remembers its own width while folded and returns to it on expand.
+- **A deep link arrives where it promised.** `focusPanel` returns `false` when the
+  occupant never supplied that region — an honest answer a caller can fall back from
+  — and when the region *is* supplied but folded away it expands the fold first and
+  focuses once the region exists. Focusing a node that is not in the document either
+  fails silently or, worse, appears to succeed.
+- **The state the CSS reads is on the DOM**: `data-left` / `data-right` /
+  `data-progress` are `open` / `folded` / `absent`, so a layout rule never has to
+  recompute the fold set in its head. Under 900 px the grid becomes a stacked column
+  with a sticky composer and the resize handles are not rendered at all: a pointer
+  resize of a stacked column has no meaning, and a keyboard-reachable separator that
+  moves nothing would be a lie.
+- **Persistence belongs to the hook, not the occupant.** The first occupant owned
+  its own translation of `panelLayouts[tool]` into frame fields, which is forty lines
+  of store plumbing that the second occupant would have copied with one value
+  changed; `useWorkspaceLayout` owns it now (see the next section).
+
+`AgentWorkspace.test.tsx` (22 cases) covers the three occupants, omitted regions,
+fold-and-return, the non-foldable three, `collapsible` narrowing, unknown stored
+ids, deep-link-into-a-folded-panel, keyboard steps, clamping, the once-per-drag
+report, stray-move rejection, double-click reset and a capture-less environment;
+`useWorkspaceLayout.test.tsx` covers the store side. Mutation red-checks, all
+killed: a folded panel hidden instead of removed (2 red), the main surface made
+foldable (2), focus no longer expanding first (1), every pointer move reported (2),
+a folded column keeping full width (1), the clamp removed (2), the pointer never
+released (1), a stored panel id trusted (1), the debounce window collapsed to zero
+(1), the unmount flush dropped (1), and another feature's stored field dropped from
+the write (1).
+
 ## What the shell is allowed to remember *(added in Prompt 1.39, item A5)*
 
 Workspace restoration is a promise about *presentation*, and it is worth stating
@@ -4559,6 +4632,18 @@ Three rules the pieces share:
    viewport is already at the end. Anyone reading back through a transcript is not
    asking to be pulled to the bottom by the next streamed token, and following
    resumes only when they return to the end themselves.
+4. **A layout is remembered per tool, and written as one whole record.** Panel
+   widths and folded panels are stored under `panelLayouts[tool]`, so Code's folded
+   inspector is not Cowork's; the generic `sizes` record (rather than two named
+   fields) is what lets the frame grow a panel without a migration. Writes are
+   debounced — folding three panels in a row is one stored layout, not three — and
+   flushed on unmount, because navigating away is exactly when the last change would
+   otherwise be lost. A stored panel id the build does not recognise is **dropped on
+   read** rather than cast into the union: it costs the user one fold, which is
+   recoverable, where a crash on load is not. The write carries every other field of
+   the project record across unchanged, since the store replaces the record
+   wholesale — a spread that dropped a field would silently erase another feature's
+   memory.
 
 Finally, a refused write is not an application failure. A browser in private mode,
 a full quota or a blocked origin throws on `setItem`; the store catches it, keeps
@@ -4566,10 +4651,10 @@ the value in memory for the session and says nothing, because a feature that
 remembers where you were should not be able to break where you are. What it must
 not do is pretend: nothing is retried and nothing is reported as saved.
 
-`frontend/src/state/persistence/` holds the store, the schema and the two hooks
-(`usePersistedDraft`, `useScrollAnchor`); `frontend/src/tools/chat/drafts.ts` owns
-the draft keys, so the key space is one place rather than a convention spread over
-call sites.
+`frontend/src/state/persistence/` holds the store, the schema and the three hooks
+(`usePersistedDraft`, `useScrollAnchor`, `useWorkspaceLayout`);
+`frontend/src/tools/chat/drafts.ts` owns the draft keys, so the key space is one
+place rather than a convention spread over call sites.
 
 ## `interrupted` is its own state, not another flavour of error *(Prompt 1, item 1.31; migration `020`)*
 
