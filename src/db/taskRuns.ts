@@ -225,15 +225,38 @@ function releaseTaskState(tool: TaskRunTool, taskId: string): void {
  * multi-task view should reflect that reality now, not only once the run ends.
  *
  * Deliberately separate from `finishTaskRun`: it never touches `completed_at`
- * (the run has not ended) and never rewrites the reason columns (a run that
- * blocks must not lose the pause/error reason it may already carry, and a run
- * that becomes ready for review has no new reason to record). Only `state` and
- * `updated_at` move.
+ * (the run has not ended) and it never *clears* a reason. `state` and `updated_at`
+ * always move; the reason columns move only when the caller supplies one.
+ *
+ * **A park now supplies one** (`pauseReason`, 1.31). It did not before, and the
+ * cost was visible in two places that were written expecting it: the Attention
+ * Center's `blocked` / `paused` / `ready_for_review` items read
+ * `pause_reason ?? <a generic sentence>`, so every parked run showed the generic
+ * sentence, and an unattended run had nothing to say beyond "failed". The token
+ * written here is the `ParkReason` (`plan_ready`, `redaction_blocked`, …) and NOT
+ * the sentence — see `services/agent/parkMessages.ts` for why the translation
+ * lives at the point of display.
+ *
+ * The old rule is preserved, not replaced: a bare transition still leaves the
+ * columns alone, because a run that becomes `ready_for_review` on a reason the
+ * caller did not state must not lose an earlier, still-true one — and because
+ * clearing them here would erase a `ceiling_reached` or `approval_denied` the
+ * history needs.
  */
-export function updateTaskRunState(runId: string, state: TaskRunState): void {
+export function updateTaskRunState(
+  runId: string,
+  state: TaskRunState,
+  reason: { pauseReason?: string | undefined } = {},
+): void {
+  if (reason.pauseReason === undefined) {
+    getDb()
+      .prepare('UPDATE task_runs SET state = ?, updated_at = ? WHERE run_id = ?')
+      .run(state, Date.now(), runId);
+    return;
+  }
   getDb()
-    .prepare('UPDATE task_runs SET state = ?, updated_at = ? WHERE run_id = ?')
-    .run(state, Date.now(), runId);
+    .prepare('UPDATE task_runs SET state = ?, pause_reason = ?, updated_at = ? WHERE run_id = ?')
+    .run(state, reason.pauseReason, Date.now(), runId);
 }
 
 /** The two states a parked run can be in, both non-terminal and both continuable. */

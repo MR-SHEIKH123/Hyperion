@@ -133,7 +133,7 @@ describe('what the queue contains, and in what order', () => {
   const approvals: { id: string }[] = [];
   const chatId = { value: '' };
   const pausedRun = { value: '' };
-  const taskRuns = { plan: '', review: '', interrupted: '', legacyInterrupted: '', ordinaryFailure: '' };
+  const taskRuns = { plan: '', review: '', blocked: '', interrupted: '', legacyInterrupted: '', ordinaryFailure: '' };
   const scheduled = { id: '', failedRun: '' };
 
   before(() => {
@@ -183,7 +183,9 @@ describe('what the queue contains, and in what order', () => {
 
     taskRuns.review = 'run-attention-review';
     startTaskRun({ runId: taskRuns.review, taskId: 'task-attention-review', tool: 'design' });
-    finishTaskRun(taskRuns.review, 'ready_for_review', { pauseReason: 'ready_for_review' });
+    // A token a *park* wrote, which is what the column holds once `parkRun`
+    // records one (1.31) — the queue must translate it rather than show it.
+    finishTaskRun(taskRuns.review, 'ready_for_review', { pauseReason: 'plan_ready' });
 
     // Two interruptions, because both shapes are real. The current one is
     // produced the way production produces it — a run left `running`, then boot
@@ -196,6 +198,13 @@ describe('what the queue contains, and in what order', () => {
     taskRuns.legacyInterrupted = 'run-attention-legacy-interrupted';
     startTaskRun({ runId: taskRuns.legacyInterrupted, taskId: 'task-attention-legacy-interrupted', tool: 'code' });
     reconcileTaskRuns();
+
+    // A run blocked by something the user has to resolve, carrying the token a
+    // park writes. The queue translates it: the sentence for this reason invites a
+    // review of a flagged message, which is only useful if it says so.
+    taskRuns.blocked = 'run-attention-blocked';
+    startTaskRun({ runId: taskRuns.blocked, taskId: 'task-attention-blocked', tool: 'cowork' });
+    finishTaskRun(taskRuns.blocked, 'blocked', { pauseReason: 'redaction_blocked' });
 
     taskRuns.ordinaryFailure = 'run-attention-failed';
     startTaskRun({ runId: taskRuns.ordinaryFailure, taskId: 'task-attention-failed', tool: 'code' });
@@ -234,6 +243,23 @@ describe('what the queue contains, and in what order', () => {
     assert.equal(item(page, `paused:${pausedRun.value}`).kind, 'paused');
     assert.equal(item(page, `plan:${taskRuns.plan}`).kind, 'plan_ready');
     assert.equal(item(page, `review:${taskRuns.review}`).kind, 'ready_for_review');
+    // The reason token is translated into a sentence at display time: the column
+    // holds `plan_ready`, and a queue that printed the column would put a token in
+    // front of the user. This read used to fall through to its generic fallback for
+    // every parked run, because `parkRun` wrote no reason at all.
+    const reviewDetail = item(page, `review:${taskRuns.review}`).detail;
+    assert.match(reviewDetail, /plan/i);
+    assert.doesNotMatch(reviewDetail, /^plan_ready$/, 'the token itself is not the sentence');
+
+    const blockedItem = item(page, `blocked:${taskRuns.blocked}`);
+    assert.equal(blockedItem.kind, 'blocked');
+    assert.match(blockedItem.detail, /credential/i, 'the reason is what the user needs here');
+    assert.notEqual(blockedItem.detail, 'redaction_blocked', 'not the raw token');
+    assert.notEqual(
+      blockedItem.detail,
+      'The run is waiting on something it cannot resolve alone.',
+      'and not the generic fallback the queue showed while nothing wrote a reason',
+    );
     assert.equal(item(page, `interrupted:${taskRuns.interrupted}`).kind, 'interrupted');
     assert.equal(
       item(page, `interrupted:${taskRuns.legacyInterrupted}`).kind,
@@ -314,7 +340,7 @@ describe('what the queue contains, and in what order', () => {
     const page = await queue();
 
     assert.equal(source(page, 'pending_approvals').status, 'ok');
-    assert.equal(source(page, 'task_runs').count, 4, 'plan, review and two interruptions');
+    assert.equal(source(page, 'task_runs').count, 5, 'plan, review, blocked, and two interruptions');
     assert.equal(source(page, 'chat_runs').count, 2);
     assert.equal(source(page, 'scheduled_task_runs').status, 'ok');
 

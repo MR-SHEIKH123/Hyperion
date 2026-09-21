@@ -1892,6 +1892,45 @@ Act resolve to different baselines, so showing one as "the" answer would be wron
 for the other two), and `?taskId=` adds that run's session rules — omitted, there
 are simply no session rules to report.
 
+### 12.6a A parked run records why, and the notification says it  *(new in 1.31)*
+
+Every state transition a run makes to `blocked` or `ready_for_review` is a **park**:
+the run stopped somewhere it can continue from, and it is waiting on a person.
+`task_runs.pause_reason` now carries the reason, as a **token** from the park
+vocabulary (`plan_ready`, `approval_required`, `doom_loop`, `loop_detected`,
+`iteration_ceiling`, `context_exhausted`, `redaction_blocked`, `zdr_blocked`).
+
+It did not before, and two readers had already been written as if it did:
+
+- **The Attention Center** read `pause_reason ?? <a generic sentence>` for its
+  `blocked`, `paused` and `ready_for_review` items. A fallback sentence only makes
+  sense if a sentence is expected, so every parked run showed the fallback. The
+  item's `detail` is now the sentence for the recorded reason, and the wording
+  differs per reason **because the action does**: `redaction_blocked` invites a
+  review of the flagged message, while `zdr_blocked` must not — nothing can be
+  approved, and the block lifts only when a setting or a recorded provider fact
+  changes.
+- **A scheduled run's notification** worded itself from `result.ok`, and a park is
+  `ok: false` — so a task that stopped *to ask a question* was announced as
+  **"<task> failed"**. An unattended run parked on a plan now says it is waiting for
+  review, a blocked one says it is paused, and each says why. A stop that is not a
+  park (`cancelled`, `ceiling_reached`) keeps its old wording, because a rule the
+  user set is not a park.
+
+Two properties are load-bearing:
+
+- **The column keeps holding a token, never a sentence.** Every other writer writes
+  a token (`cancelled`, `ceiling_reached`, `approval_denied`), and a column that
+  sometimes holds prose cannot be switched on later. The translation lives in
+  `src/services/agent/parkMessages.ts`, at the point of display.
+- **A bare transition still clears nothing.** `updateTaskRunState(runId, state)`
+  without a reason moves only the state, exactly as before, so a run that becomes
+  `ready_for_review` cannot lose an earlier `ceiling_reached`. `finishTaskRun`
+  still rewrites the columns, so a finished run does not keep a park's reason.
+
+The reason map is a total `Record<ParkReason, string>`: adding a park reason is a
+compile error there until somebody decides what to tell the user.
+
 ### 12.7 The Design agent  *(new — the Design slice)*
 
 Design registers at boot alongside Cowork and Code, so `/api/design/run-task`
@@ -3033,7 +3072,7 @@ recorded:
 | kind | source | when it appears |
 | --- | --- | --- |
 | `approval_required` | `pending_approvals` | a call the engine parked, across every task |
-| `paused`, `blocked`, `ready_for_review` | `task_runs` | live run states; a paused run is resumable, a blocked one needs something the run cannot supply |
+| `paused`, `blocked`, `ready_for_review` | `task_runs` | live run states; a paused run is resumable, a blocked one needs something the run cannot supply. The item's `detail` is the sentence for the run's recorded `pauseReason` (see §12.6a), not the token itself |
 | `plan_ready` | `task_runs` + `task_steps(kind='plan')` | a `ready_for_review` run that produced a plan — **one item, not two**, because the plan is why it wants review |
 | `interrupted` | `task_runs`, `chat_runs` | a task run in the `interrupted` state (migration `020`: boot reconciliation demotes what a dead process left mid-flight) plus the pre-`020` shape of the same event (`error` with `error_code: internal_error`, which existing databases hold and which is still reported), and a paused chat run with that code — the one a user sees as "the reply stopped halfway" |
 | `scheduled_run_failed` | `scheduled_tasks.last_status` | the scheduler's own verdict, so a later success clears it with no window to expire |

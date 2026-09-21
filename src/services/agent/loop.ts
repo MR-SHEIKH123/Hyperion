@@ -414,7 +414,12 @@ export function parkRun(
 ): void {
   const state = PARK_STATE[reason];
   if (runId !== undefined) {
-    updateTaskRunState(runId, state);
+    // The reason travels with the state as of 1.31. Before this the row said
+    // *that* a run was parked and never *why*, so the Attention Center showed a
+    // generic sentence where the specific one existed, and an unattended run had
+    // nothing to tell the user beyond "failed". The token (not a sentence) is what
+    // goes in the column; `parkMessages.ts` owns the wording.
+    updateTaskRunState(runId, state, { pauseReason: reason });
     recordStep({ runId, step: nextStepNumber(runId), kind: 'note', ok: false, detail: `${reason}: ${detail}` });
   }
   ctx.emit('task_parked', { ...(runId === undefined ? {} : { runId }), state, reason, detail });

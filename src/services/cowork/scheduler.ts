@@ -58,8 +58,9 @@
 
 
 import { env } from '../../config/env.ts';
+import { parkSummary } from '../agent/parkMessages.ts';
 import { findChat } from '../../db/chats.ts';
-import { finishTaskRun, getTaskRun, startTaskRun } from '../../db/taskRuns.ts';
+import { finishTaskRun, getTaskRun, startTaskRun, type TaskRun } from '../../db/taskRuns.ts';
 import { requireAgent } from '../../orchestrator/agents.ts';
 import { createAgentContext } from '../../orchestrator/agentContext.ts';
 import { registerCancellable } from '../../orchestrator/cancel.ts';
@@ -69,7 +70,7 @@ import { AppError } from '../../util/errors.ts';
 import { createIntervalJob } from '../../util/intervalJob.ts';
 import { createLogger } from '../../util/logger.ts';
 import { assertWithinSpendCap } from '../limits/budget.ts';
-import { sendPush } from '../notify/push.ts';
+import { sendPush, type PushPayload } from '../notify/push.ts';
 import {
   dueScheduledTasks,
   finishRun,
@@ -134,16 +135,60 @@ function linkedChatId(chatId: string): string | undefined {
   return findChat(chatId) === null ? undefined : chatId;
 }
 
-async function notify(task: ScheduledTask, result: TaskResult): Promise<void> {
-  await sendPush({
+/**
+ * Tell the user what the run did, in the state it actually reached (1.31).
+ *
+ * A scheduled run is the definition of *unattended*: nobody is watching it, so a
+ * notification is the only way it can tell the user anything. It used to word
+ * itself from `result.ok` alone, and the case that broke is the one the
+ * unattended path was built for — a run that **parks**. A park means "waiting on
+ * you" (`plan_ready`, `approval_required`, a redaction finding, a ZDR block), and
+ * `result.ok` is false for it, so the user was told *"<task> failed — the run did
+ * not finish"* about a task that was working exactly as designed and needed one
+ * decision. That is the same mistake `012` argued against for `stopped`: a
+ * notification that cries failure for a pause teaches people to ignore it.
+ *
+ * So the wording comes from the run's own state, and for a park from the reason
+ * `parkRun` recorded (`services/agent/parkMessages.ts`). Deliberately not from
+ * `result.summary` in that case either: the summary is written for whoever opens
+ * the task, and the first sentence of a notification is what decides whether they
+ * do.
+ */
+export function scheduledRunNotification(
+  task: Pick<ScheduledTask, 'id' | 'name'>,
+  run: Pick<TaskRun, 'state' | 'pauseReason'> | null,
+  result: Pick<TaskResult, 'ok' | 'summary'>,
+): Omit<PushPayload, 'sentAt'> {
+  const parked =
+    run !== null && (run.state === 'blocked' || run.state === 'ready_for_review')
+      ? {
+          title:
+            run.state === 'ready_for_review'
+              ? `${task.name} is waiting for your review`
+              : `${task.name} is paused`,
+          body:
+            parkSummary(run.pauseReason) ??
+            (run.state === 'ready_for_review'
+              ? 'The run has stopped for you to look at. Open it to see what it wants.'
+              : 'The run is waiting on something it cannot resolve alone. Open it to see what.'),
+        }
+      : null;
+
+  return {
     reason: 'scheduled-task',
-    title: result.ok ? `${task.name} finished` : `${task.name} failed`,
-    body: result.summary || (result.ok ? 'Completed with no summary.' : 'The run did not finish.'),
+    title: parked?.title ?? (result.ok ? `${task.name} finished` : `${task.name} failed`),
+    body:
+      parked?.body ??
+      (result.summary || (result.ok ? 'Completed with no summary.' : 'The run did not finish.')),
     // Tagging by task id collapses yesterday's notification into today's
     // rather than stacking one per day in the tray.
     tag: `scheduled-task:${task.id}`,
     url: '/cowork',
-  });
+  };
+}
+
+async function notify(task: ScheduledTask, result: TaskResult, runId: string): Promise<void> {
+  await sendPush(scheduledRunNotification(task, getTaskRun(runId), result));
 }
 
 /**
@@ -312,7 +357,10 @@ export async function runScheduledTask(id: string): Promise<void> {
     markExecution(result.ok ? 'complete' : 'error', result.error);
 
     log.info('scheduled task finished', { id: task.id, ok: result.ok });
-    await notify(task, result);
+    // The run's state is read *after* the agent returned and after
+    // `markExecution`, so a park is visible here — that is what makes the
+    // notification able to say "waiting for you" instead of "failed".
+    await notify(task, result, runId);
   } catch (error) {
     // Cancelling aborts whatever the run was waiting on, so it lands here as an
     // `aborted` error. Handled ahead of every other branch because the reason
@@ -362,7 +410,9 @@ export async function runScheduledTask(id: string): Promise<void> {
     if (capped) return;
 
     log.error('scheduled task failed', { id: task.id, error: String(error) });
-    await notify(task, { ok: false, summary: `${task.name} failed to run.` });
+    // No run id: this branch is the one where the agent threw before any state
+    // existed to read, so there is nothing but the failure to report.
+    await notify(task, { ok: false, summary: `${task.name} failed to run.` }, runId);
   } finally {
     // Every exit unregisters, including the early returns above. A registration
     // left behind would keep offering to cancel a run that has already ended,

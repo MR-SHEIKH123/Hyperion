@@ -2824,6 +2824,39 @@ The wording differs per reason and that is deliberate: `redaction_blocked` invit
 user to review and approve, while `zdr_blocked` must not — there is nothing to
 approve, and the block lifts only when a setting or a recorded provider fact changes.
 
+## A park says why, and the sentence is written where it is read *(added in 1.31)*
+
+`parkRun` wrote the state and stopped there. `task_runs.pause_reason` stayed null
+for every park, which was invisible in two places because both had been written
+*expecting* a reason: the Attention Center's parked items read
+`pause_reason ?? <a generic sentence>` — so the generic sentence was what every
+parked run showed — and the unattended-run notification worded itself from
+`result.ok`, so a scheduled run that parked to ask a question was announced as
+**failed**. That is the mistake `012` argued against for `stopped`: a notification
+that cries failure for a pause teaches people to ignore it.
+
+The reason now travels with the state, as a **token** (`plan_ready`,
+`redaction_blocked`, `ceiling_reached` is *not* a park, …), and the translation to
+a sentence lives in `services/agent/parkMessages.ts` at the point of display. Two
+decisions worth keeping:
+
+- **The column keeps tokens.** Every other writer already writes one
+  (`cancelled`, `ceiling_reached`, `approval_denied`), and a column that carries
+  prose half the time is a column no reader can switch on. Storing the sentence
+  would have been the smaller change and the worse one.
+- **A bare transition clears nothing.** `updateTaskRunState(runId, state)` still
+  moves only the state, so a run that becomes `ready_for_review` cannot lose an
+  earlier, still-true reason. Only a caller that *states* a reason rewrites the
+  column, and the map is a total `Record<ParkReason, string>` so a new reason is a
+  compile error until somebody writes its sentence.
+
+The wording is per reason on purpose, because the action is: `redaction_blocked`
+invites the user to review a flagged message, `zdr_blocked` must not (nothing can
+be approved), an approval prompt means one decision is all that is needed while a
+`ceiling_reached` stop means the same rule would trip again, and
+`context_exhausted` cannot be continued at all — the same conversation would refill
+the window — so it points at a fresh task.
+
 ## Stopping a run is not the same as losing the client (groundwork for 1.24)
 
 ### `ctx.signal` combines disconnect with cancellation

@@ -30,6 +30,7 @@
  *     to a queue where that category is fine, and the user cannot tell which.
  */
 
+import { parkSummary } from '../agent/parkMessages.ts';
 import { getDb } from '../../db/adapter.ts';
 import { countPendingApprovals, listAllPendingApprovals } from '../../db/approvals.ts';
 import { queryErrorLog } from '../../db/errorLog.ts';
@@ -219,7 +220,14 @@ function taskRunItem(run: TaskRunRow, plan: string | null): AttentionItem | null
       kind: 'blocked',
       tool,
       title: `${tool} task is blocked`,
-      detail: run.pause_reason ?? run.error_message ?? 'The run is waiting on something it cannot resolve alone.',
+      // The recorded reason is a *token* (`redaction_blocked`), so it is
+      // translated rather than shown: this line used to read `pause_reason ??`
+      // directly, which was written expecting a sentence and would now put
+      // `context_exhausted` in front of a user. `parkMessages.ts` owns the words.
+      detail:
+        parkSummary(run.pause_reason) ??
+        run.error_message ??
+        'The run is waiting on something it cannot resolve alone.',
       createdAt: run.updated_at,
       ...base,
     };
@@ -231,7 +239,7 @@ function taskRunItem(run: TaskRunRow, plan: string | null): AttentionItem | null
       kind: 'paused',
       tool,
       title: `${tool} task is paused`,
-      detail: run.pause_reason ?? 'The run is paused and can be resumed.',
+      detail: parkSummary(run.pause_reason) ?? 'The run is paused and can be resumed.',
       createdAt: run.updated_at,
       ...base,
     };
@@ -245,7 +253,7 @@ function taskRunItem(run: TaskRunRow, plan: string | null): AttentionItem | null
           kind: 'ready_for_review',
           tool,
           title: `${tool} task is ready for review`,
-          detail: run.pause_reason ?? 'The work is done and specifically wants your eyes.',
+          detail: parkSummary(run.pause_reason) ?? 'The work is done and specifically wants your eyes.',
           createdAt: run.updated_at,
           ...base,
         }
