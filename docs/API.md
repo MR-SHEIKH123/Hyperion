@@ -1764,6 +1764,15 @@ The payload delivered to the service worker is
 `{ reason: 'scheduled-task' | 'attention-needed', title, body, url?, tag?, sentAt }`.
 `tag` collapses repeat notifications about the same thing in the OS tray.
 
+**Text fields are clamped to fit the transport** (title 240 bytes, body 600, url
+512, tag 128 — UTF-8, cut on a character boundary and marked with `…`). A Web
+Push message is capped at 4,096 octets, and a scheduled run's summary is model
+output bounded only at 4,000 characters, so it used to build a message the push
+service refused: the rejection is not 404/410, so the subscription was kept and
+the notification was simply never delivered — silently, and precisely for the
+runs that produced the longest reports. The tray truncates anyway; the full text
+is in the app the notification opens. See `buildPushBody`.
+
 ---
 
 ## 19. Per-item export  *(new in 1.18)*

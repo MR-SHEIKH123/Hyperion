@@ -75,6 +75,63 @@ export interface PushSubscription {
   keys: { p256dh: string; auth: string };
 }
 
+/**
+ * How much room a notification has.
+ *
+ * Web Push caps a message at 4,096 octets — the size a push service is required
+ * to accept — and `web-push` wraps the JSON in an encryption envelope on top
+ * (about 103 bytes for `aes128gcm`). This budget sits below both, and the
+ * per-field ceilings below leave the worst case at roughly half of it.
+ */
+export const PUSH_MESSAGE_BUDGET_BYTES = 3_000;
+
+/** Per-field ceilings, in UTF-8 bytes. */
+const FIELD_LIMITS = { title: 240, body: 600, url: 512, tag: 128 } as const;
+
+/**
+ * Clamp text to `maxBytes` without splitting a code point.
+ *
+ * Byte-wise slicing is what turns an emoji into a replacement character, and a
+ * notification is exactly where a status glyph lives. The ellipsis says the text
+ * was cut; the whole text is in the app, which is where the notification points.
+ */
+function clampField(text: string, maxBytes: number): string {
+  if (Buffer.byteLength(text) <= maxBytes) return text;
+
+  const ellipsis = '…';
+  const room = maxBytes - Buffer.byteLength(ellipsis);
+  let kept = '';
+  let used = 0;
+  for (const character of text) {
+    const size = Buffer.byteLength(character);
+    if (used + size > room) break;
+    kept += character;
+    used += size;
+  }
+  return `${kept}${ellipsis}`;
+}
+
+/**
+ * The message `sendPush` serializes: the payload with every text field clamped.
+ *
+ * Built here rather than at the call sites because a caller cannot be expected to
+ * know the transport's limit, and the failure was invisible in the worst way — a
+ * run whose summary ran long built a message the push service refused, the
+ * rejection was not 404/410 so the subscription was deliberately kept, and the
+ * user got no notification for exactly the runs with the most to say.
+ */
+export function buildPushBody(payload: Omit<PushPayload, 'sentAt'>, sentAt = Date.now()): string {
+  const message: PushPayload = {
+    ...payload,
+    title: clampField(payload.title, FIELD_LIMITS.title),
+    body: clampField(payload.body, FIELD_LIMITS.body),
+    ...(payload.url === undefined ? {} : { url: clampField(payload.url, FIELD_LIMITS.url) }),
+    ...(payload.tag === undefined ? {} : { tag: clampField(payload.tag, FIELD_LIMITS.tag) }),
+    sentAt,
+  };
+  return JSON.stringify(message);
+}
+
 // --- web-push loading ------------------------------------------------------
 
 interface WebPushError {
@@ -249,7 +306,7 @@ export async function sendPush(payload: Omit<PushPayload, 'sentAt'>): Promise<Pu
   const subscriptions = listSubscriptions();
   if (subscriptions.length === 0) return { sent: 0, removed: 0, skipped: 'no-subscriptions' };
 
-  const body = JSON.stringify({ ...payload, sentAt: Date.now() } satisfies PushPayload);
+  const body = buildPushBody(payload);
   const dead: string[] = [];
   let sent = 0;
 

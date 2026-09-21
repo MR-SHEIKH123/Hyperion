@@ -176,6 +176,7 @@ findings.
 | S16 | A chat id with no chat row behind it raised the FK on `usage_log`, and `recordUsage` swallows its own errors — so the spend row was **discarded**. The agent path passes exactly such an id (`linkedChatId` nulls it for the task row for this reason), which meant §6.2's recording could have failed invisibly. | **Fixed** 2026-09-21 — the linkage is resolved at write time (an id with no row is stored as NULL, the spend kept), same treatment a temporary chat already got. |
 | S17 | `limit` reached SQL unchecked on seven of the nine list routes: `limit=2.5` was a **500** quoting SQLite ("datatype mismatch"), and `limit=-1` returned the **whole table**, because SQLite reads a negative `LIMIT` as no limit at all. The two routes that got it right (`/api/activity`, `/api/chat/:id/messages`) proved the rule was known and simply not applied. | **Fixed** 2026-09-21 — `queryLimit`/`queryOffset` in `src/http/params.ts`, one bound per route; found by the HTTP-input audit, pinned by `test/listlimits.test.ts` (nine routes, five of its eight cases failed before the fix). |
 | S18 | A **default** backup (`includeKeys=false`) shipped `mcp_config.json` unconditionally, and `registry.ts::toEntry` writes a remote server's token into it as a plaintext `Authorization: Bearer` header — so the archive whose own comment promises it "exposes conversations but not credentials" contained a working credential in the clear. | **Fixed** 2026-09-21 — the file travels only with `includeKeys`, on the same reasoning as the key itself; the manifest's `warning` names the omission. Pinned by `test/backupsecrets.test.ts` (asserted against the archive's bytes). |
+| S19 | The notification body was the run's summary, unbounded past the transport: a long report built a push message over the 4,096-octet cap, the push service refused it, the refusal is not 404/410 so the subscription was kept — and **no notification arrived, silently, for exactly the runs with the most to report**. | **Fixed** 2026-09-21 — `buildPushBody` clamps every text field (title 240 B, body 600, url 512, tag 128, cut on a character boundary); pinned by `test/pushpayload.test.ts`. The privacy half of the item was verified clean. |
 
 ### S13 in full — a path rule matched the string, not the file
 
@@ -403,9 +404,61 @@ The writer itself is sound: writes are atomic (temp file + rename), created
 rewrite, and a corrupt file is quarantined with the database left as the
 authority. What was not sound was the export, and that is fixed.
 
-**Not yet audited** (next sessions, in the order they look worth the time):
-web-push payload privacy, the memory plugin's local store, and per-provider
-egress handling in `colibri.ts`.
+### S19 in full — what a notification carries, and how much of it
+
+**Privacy first, because that was the queued question, and the answer is: clean.**
+Verified rather than assumed:
+
+* The payload is encrypted to the browser's own subscription keys (`web-push`
+  encrypts with `aes128gcm`; VAPID is authentication, not the privacy layer), so
+  the push service relays ciphertext. The module has said so since it was written;
+  the check here was that `sendPush` really does hand the payload to
+  `sendNotification` rather than to an `unencrypted`-style path — it does, and
+  there is no other send path in the repo.
+* Nothing logs a payload. `sendPush` logs `{ reason, sent, removed }`, failures log
+  `{ endpoint: short(endpoint), status, error }`, and `short()` is 32 characters.
+  `String(error)` on a `WebPushError` is `"Error: Received unexpected response
+  code"` — the endpoint and the service's response body live on properties the log
+  call does not touch.
+* The VAPID private key is encrypted at rest and never leaves the server
+  (`publicKey()` is the only half exposed), which the settings work pinned earlier.
+
+What the item *did* find is a body that could not be delivered. A scheduled run's
+summary is model output bounded only at 4,000 characters by the code agent
+(`MAX_SUMMARY`), and it was used verbatim as the notification body. A Web Push
+message is capped at 4,096 octets — the size a push service is required to accept
+— and `web-push` adds about 103 bytes of envelope on top. So a task that produced a
+long report built a message the service refused.
+
+**Why it was invisible.** `sendPush` deletes a subscription only on 404/410, and
+deliberately: every other failure is treated as transient so a wifi blip cannot
+unsubscribe someone (that rule is in this file's push section, and it is right).
+A 413 from an oversized body lands in that bucket: the failure is logged at warn
+level, the subscription survives, and the user — who is not reading server logs —
+gets no notification. The runs most likely to be long are the ones most worth
+being told about.
+
+**Fix.** `buildPushBody(payload)` is the only thing `sendPush` serializes, and it
+clamps `title` (240 bytes), `body` (600), `url` (512) and `tag` (128), cutting on a
+character boundary and appending `…`. UTF-8 bytes rather than characters, because
+the limit is bytes and a status emoji is four of them; a byte-wise cut would put a
+replacement character in the tray. Worst case ≈ 1.5 KB, half the budget, so no
+combination of maximal fields can reach the cap.
+
+**Considered and kept:** showing the summary at all. A notification that says only
+"your task finished" would be privacy-perfect and useless; the lock-screen
+exposure is the feature working as intended, and the clamp is about the transport,
+not about hiding the text.
+
+**Tests.** `test/pushpayload.test.ts` — a 20,000-character summary is clamped to
+the budget and visibly clipped, a short body passes through untouched, the optional
+fields survive being clamped, multi-byte text is cut on a code-point boundary (no
+`U+FFFD`, no lone surrogate), and the maximal case fits the protocol with room for
+the envelope. All five fail before the fix — four of them on the missing export,
+one on the size assertion.
+
+**Not yet audited** (next sessions, in the order they look worth the time): the
+memory plugin's local store, and per-provider egress handling in `colibri.ts`.
 
 ## Prompt-1 scope — status (2026-09-21, verified against the code, not transcribed)
 
@@ -426,15 +479,14 @@ Where the scope says done, this is what was checked:
 | D-table decisions (D1/D4/D7/D8/D9/D11/D12/D13–D15, D-1.2) | **Landed**, each with the code and test the D-table entry names. |
 | v4 backend items `§6.1` context windows, `§6.3` approvals + continuation, `§6.4` unattended hardening, `§6.5` write-path downgrade, `§6.6` subagent isolation, `§6.7` profiles, `§6.8` observability + golden runs | **Landed.** |
 | v4 `§6.2` cost accounting per task | **Landed 2026-09-21.** `usage_log` gained `run_id` (migration `018`; `task_id` was `017`), the agent context records one priced row per provider request — so every task run is attributed whatever started it, and a delegated child's spend lands in its parent's task total — the task-state route returns a `usage` summary, and the activity feed carries each run's `spend`. The two findings this surfaced are S15 and S16 above. |
-| S-series audit (S12 fixed in PR #6; S13–S18 fixed 2026-09-21) | **Continuous.** `S2`–`S11` are not recoverable from this repo — like `1.25`, their list lived in conversation. If they exist in a local note, they need pasting in to be verified or closed. |
+| S-series audit (S12 fixed in PR #6; S13–S19 fixed 2026-09-21) | **Continuous.** `S2`–`S11` are not recoverable from this repo — like `1.25`, their list lived in conversation. If they exist in a local note, they need pasting in to be verified or closed. |
 | Frontend (Prompt 2) | Out of this scope by design. Shell + Chat tool landed; Code, Cowork, Design, Playground, Plugins, Skills, Settings remain. Frontend-side items that *wait on backend contracts* are tracked in `frontend/contracts/gaps.md`, and one of them (no cross-tool pending-approval endpoint, no per-project active-task listing) is the earliest backend work the frontend will ask for. |
 
 **So: the backend core is complete, including `§6.2` as of 2026-09-21.** The
 remaining work in the series is the audit queue above and whatever `S2`–`S11` and
-`1.25` turn out to be. The HTTP-input item of that queue is done (`S17`, plus `S18`), which
-leaves web-push payload privacy, the memory plugin's local store, and
-`colibri.ts` egress. Suite baseline for every future claim in this file:
-**887 tests / 162 suites green, `tsc --noEmit` clean** (backend), **84 tests and
+`1.25` turn out to be. The HTTP-input item of that queue is done (`S17`–`S19`), which
+leaves the memory plugin's local store and `colibri.ts` egress. Suite baseline for every future claim in this file:
+**892 tests / 163 suites green, `tsc --noEmit` clean** (backend), **84 tests and
 five gates green** (frontend).
 
 ## Resolved verifications

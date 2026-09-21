@@ -1621,6 +1621,31 @@ there in the same commit.**
 Subscription endpoint URLs are truncated in logs, because an endpoint is itself a
 capability: anyone holding it can push to that device.
 
+### What leaves in a notification, and how much of it *(S19)*
+
+The payload carries a task's name and its run summary — model output about the
+user's own data. Three facts make that acceptable, and each is a place a future
+change could quietly stop being true:
+
+* **It is encrypted to the browser, not to the push service.** `web-push` encrypts
+  the payload with the subscription's own keys (`aes128gcm`), so the service
+  relays ciphertext; VAPID is authentication, not the privacy layer.
+* **Nothing logs it.** `sendPush` logs a reason and counts, never a body, and the
+  endpoint appears truncated even in failure logs.
+* **The device decides what to show.** The summary does reach a lock screen, which
+  is a deliberate product choice — "tell me what happened while I was away" — and
+  the place a user would most reasonably ask for a shorter form.
+
+**Bound to the transport.** A push message is capped at 4,096 octets — the size a
+push service must accept — and `buildPushBody` clamps each text field well under
+that (title 240 bytes, body 600, url 512, tag 128, cut on a character boundary).
+Before it existed, a summary longer than the cap produced a message the service
+refused; the rejection is not 404/410, so the subscription was deliberately kept
+and **no notification arrived, silently, for exactly the runs with the most to
+report**. A notification is a pointer to the app, not the report: the tray
+truncates anyway, and the clamp says so with an ellipsis rather than pretending
+the text ended.
+
 ### 404 and 410 delete the subscription; nothing else does
 
 A `404` or `410` from the push service means the browser threw the subscription
