@@ -4693,8 +4693,10 @@ Three consequences worth keeping:
 
 What is *not* here, and must not be read as covered by "1.31 landed": the
 recovery UX (view the partial work, discard it), the unattended-run notification,
-the `orphaned_worktree` check, the interactive-wait timeout and the Design
-environment. Item 1.31 is a list, and only its state half is built.
+the interactive-wait timeout and the Design environment. Item 1.31 is a list, and
+its state half plus the `orphaned_worktree` check are built — the worktree half is
+described further down ("An orphaned worktree is reported, never reclaimed"), and
+this paragraph said otherwise until it was checked against the tree on 2026-09-21.
 
 ## Provenance is two fields, and both are derived *(Prompt 1.39 A6)*
 
