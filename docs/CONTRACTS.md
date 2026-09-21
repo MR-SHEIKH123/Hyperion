@@ -3516,6 +3516,13 @@ same table that says which argument is a glob subject. A `bash` subject is a com
 line, and running one through a path normaliser would rewrite the command
 (`cat a/../b` → `b`), which is a rule matching something its author did not write.
 
+**An agent that adds a tool in that table also has to pass a resolver**, or its path
+rules are matched lexically only — which is still better than the raw argument, and
+still not enough for an absolute or symlinked spelling. Today that is Code and
+nothing else: Cowork's tools are `cowork.*` and MCP wire names, Design's are
+`design.*`, and none of them has a path subject. Tomorrow's tool has one job beyond
+registering itself.
+
 A resolver that *refuses* the path (it escapes the scope) is not an error here: the
 tool refuses it with its own coded error moments later, so the lexical form stands
 and a permission check never fails for a different reason than the tool would.
