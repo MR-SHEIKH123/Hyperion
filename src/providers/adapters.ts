@@ -19,7 +19,9 @@ import { redactSecrets } from '../util/redact.ts';
 import { tryDecrypt } from '../security/keystore.ts';
 import { env } from '../config/env.ts';
 import { zdrFlagFor } from '../services/safety/zdr.ts';
+import { dispatcherFor } from './transport.ts';
 import { DEFAULT_PROVIDER_ZDR } from '../types/core.ts';
+import type { ProxyAgent } from 'undici';
 import type {
   ChatMessage,
   CompletionRequest,
@@ -108,8 +110,15 @@ function url(base: string, path: string): string {
  *
  * Distinguishing timeout from connection-refused matters: both are health
  * failures, but the messages the user sees are very different diagnoses.
+ *
+ * The provider is a parameter because of Part 1.37: when it has an `egressProxy`,
+ * every request to it is tunnelled through that proxy, and the dispatcher is the
+ * only thing that makes the configured route real. A provider without one passes
+ * no dispatcher at all and keeps using the global fetch exactly as before, so the
+ * unproxied path pays nothing for the feature.
  */
 async function httpFetch(
+  provider: Pick<ProviderRecord, 'egressProxy'>,
   target: string,
   init: RequestInit,
   timeoutMs: number,
@@ -118,8 +127,24 @@ async function httpFetch(
   const timer = AbortSignal.timeout(timeoutMs);
   const signal = externalSignal ? AbortSignal.any([timer, externalSignal]) : timer;
 
+  // Built outside the try so a construction failure is a typed error rather than
+  // a `provider_unreachable` that blames the network for a bad configuration.
+  let dispatcher: ProxyAgent | undefined;
   try {
-    return await fetch(target, { ...init, signal });
+    dispatcher = dispatcherFor(provider);
+  } catch (error) {
+    throw new AppError('provider_error', 'The configured egress proxy could not be initialised', {
+      cause: error,
+      retryable: false,
+    });
+  }
+
+  try {
+    return await fetch(target, {
+      ...init,
+      signal,
+      ...(dispatcher === undefined ? {} : { dispatcher }),
+    } as RequestInit);
   } catch (error) {
     if (externalSignal?.aborted) {
       throw new AppError('aborted', 'Request cancelled', { retryable: false });
@@ -303,6 +328,7 @@ export const openAiAdapter: ProviderAdapter = {
 
   async listModels(provider, signal) {
     const response = await httpFetch(
+      provider,
       url(provider.baseUrl, '/models'),
       { headers: { ...authHeaders(provider), Accept: 'application/json' } },
       15_000,
@@ -347,6 +373,7 @@ export const openAiAdapter: ProviderAdapter = {
 
   async *stream(provider, request) {
     const response = await httpFetch(
+      provider,
       url(provider.baseUrl, '/chat/completions'),
       {
         method: 'POST',
@@ -505,6 +532,7 @@ export const ollamaAdapter: ProviderAdapter = {
 
   async listModels(provider, signal) {
     const response = await httpFetch(
+      provider,
       url(provider.baseUrl, '/api/tags'),
       { headers: { Accept: 'application/json' } },
       10_000,
@@ -530,6 +558,7 @@ export const ollamaAdapter: ProviderAdapter = {
 
   async *stream(provider, request) {
     const response = await httpFetch(
+      provider,
       url(provider.baseUrl, '/api/chat'),
       {
         method: 'POST',
@@ -673,6 +702,7 @@ export const openCodexAdapter: ProviderAdapter = {
       }));
 
     const response = await httpFetch(
+      provider,
       url(provider.baseUrl, '/responses'),
       {
         method: 'POST',
@@ -833,6 +863,7 @@ export async function detectLocalProvider(baseUrl = env.ollamaUrl): Promise<Dete
     models: null,
     modelsFetchedAt: null,
     modelsError: null,
+    egressProxy: null,
     zdr: DEFAULT_PROVIDER_ZDR,
     createdAt: 0,
     updatedAt: 0,

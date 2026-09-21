@@ -15,7 +15,7 @@
 import { getDb } from './adapter.ts';
 import { findChat } from './chats.ts';
 import { isTemporaryChat } from './temporaryChats.ts';
-import { classifyProviderType, egressClassFor } from '../services/safety/outbound.ts';
+import { classifyProviderType, egressClassFor, tryEgressProxy } from '../services/safety/outbound.ts';
 import { zdrPreferenceUnmet } from '../services/safety/zdr.ts';
 import { isZdrRequirement } from '../types/core.ts';
 import { createLogger } from '../util/logger.ts';
@@ -120,12 +120,14 @@ export function computeCost(
  * turn "no such provider" into "no usage row at all". `undefined` means the row
  * does not exist, which is answered rather than guessed at by the caller.
  */
-function providerFacts(providerId: string | null): { type: string; base_url: string } | undefined {
+function providerFacts(
+  providerId: string | null,
+): { type: string; base_url: string; egress_proxy: string | null } | undefined {
   if (providerId === null) return undefined;
   try {
     return getDb()
-      .prepare<{ type: string; base_url: string }>(
-        `SELECT type, base_url FROM providers WHERE id = ?`,
+      .prepare<{ type: string; base_url: string; egress_proxy: string | null }>(
+        `SELECT type, base_url, egress_proxy FROM providers WHERE id = ?`,
       )
       .get(providerId);
   } catch {
@@ -187,7 +189,18 @@ export function recordUsage(input: RecordUsageInput): void {
     const egress = egressClassFor({
       type: (input.providerType ?? facts?.type ?? null) as ProviderType | null,
       baseUrl: facts?.base_url ?? null,
+      // The proxy is part of the route, not an extra: a request to a loopback
+      // provider that is tunnelled through a proxy elsewhere left the machine
+      // (Part 1.37), and a row that classified it `local` would understate egress
+      // — the one direction this classification refuses to fail in.
+      egressProxy: facts?.egress_proxy ?? null,
     });
+    // The audit stamp is `host:port` with no credentials: the question it answers
+    // is where the bytes went, and a usage row is exported and aggregated far
+    // more widely than the providers table is read. A proxy that cannot be parsed
+    // stamps NULL rather than the raw string — an audit value that might be a
+    // password must never be written on a guess.
+    const egressProxy = tryEgressProxy(facts?.egress_proxy ?? null)?.authority ?? null;
     const temporary = input.chatId != null && isTemporaryChat(input.chatId);
     if (temporary) {
       // The cost is the point of the row, so log that it was kept while the
@@ -211,9 +224,9 @@ export function recordUsage(input: RecordUsageInput): void {
       .prepare(
         `INSERT INTO usage_log
            (chat_id, message_id, tool, model_id, provider_id, provider_name, provider_type,
-            provider_egress, zdr_status, zdr_requirement, tokens_in, tokens_out, cost_usd,
-            status, duration_ms, task_id, run_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            provider_egress, egress_proxy, zdr_status, zdr_requirement, tokens_in, tokens_out,
+            cost_usd, status, duration_ms, task_id, run_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         unlinked ? null : input.chatId ?? null,
@@ -226,6 +239,7 @@ export function recordUsage(input: RecordUsageInput): void {
         // retyped or deleted afterwards, and history must not change retroactively.
         input.providerType ?? null,
         egress,
+        egressProxy,
         // Same rule, and it matters more here: a provider's recorded ZDR support
         // can be edited or attested at any time, and a row that re-derived its
         // status on read would silently restate history as the current settings.

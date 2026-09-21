@@ -217,6 +217,14 @@ export interface ProviderRecord {
   models: ModelInfo[] | null;
   modelsFetchedAt: number | null;
   modelsError: string | null;
+  /**
+   * The proxy every request to this provider is tunnelled through (Part 1.37).
+   *
+   * Stored verbatim, credentials included, because it is what the transport
+   * dials. Nothing returns this field: read paths use `egressProxyFor`, which
+   * yields the redacted form, and the audit column stores `host:port` alone.
+   */
+  egressProxy: string | null;
   /** Zero-data-retention facts (Part 1.26). Always present; defaults to `unknown`. */
   zdr: ProviderZdr;
   createdAt: number;
@@ -245,6 +253,14 @@ export interface ProviderPublic {
   modelCount: number | null;
   modelsFetchedAt: number | null;
   modelsError: string | null;
+  /**
+   * The egress proxy as the user may read it back: `user:***@host:port` at most.
+   *
+   * A redacted string rather than a structured object, because the only consumer
+   * is a disclosure — "this is where the traffic goes" — and a structure invites
+   * a consumer to reconstruct the URL, which is how a password comes back.
+   */
+  egressProxy: string | null;
   /**
    * ZDR facts, returned in full including `requestFlag.value`.
    *

@@ -81,7 +81,11 @@ npm run build
   status satisfies a requirement is decided server-side. The wire contract
   enumerates `egress` and the ZDR status/requirement values, so a value this
   frontend cannot label is refused as a contract mismatch rather than rendered as
-  an ambiguous badge.
+  an ambiguous badge. Since 1.37 it also names the egress proxy, in both
+  registers — `via proxy host:port (off this machine)` in the short line and the
+  redacted URL in the sentence — because a proxy the user has forgotten they
+  configured is exactly the fact that can make a "local" provider not be local;
+  the backend hands over a redacted URL, so there is no credential here to leak.
 - `src/dev-harness/` renders deterministic hard-to-reach states with production
   components. `/__dev/states` exists only under Vite development and is removed
   from production output. Every fixture names the surface that produces it, or

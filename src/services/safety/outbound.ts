@@ -50,17 +50,23 @@ import type { SecretKind } from '../../util/redact.ts';
 export type EgressClass = 'local' | 'remote' | 'unknown';
 
 /**
- * A provider as far as egress is concerned: what it declares itself to be, and
- * the URL it will actually be called at.
+ * A provider as far as egress is concerned: what it declares itself to be, the
+ * URL it will actually be called at, and any proxy the bytes go through first.
  *
- * Both are needed. The type alone cannot answer the question this module exists
- * to answer, because two of the four types — `local` and `colibri` — *claim*
- * locality and nothing used to check the claim against where the bytes go.
+ * All three are needed. The type alone cannot answer the question this module
+ * exists to answer, because two of the four types — `local` and `colibri` —
+ * *claim* locality and nothing used to check the claim against where the bytes
+ * go. And the URL alone is not enough once a proxy is configured: a request to
+ * `127.0.0.1:11434` through a proxy in another country never touches this
+ * machine's loopback at all, so "local" would be false for exactly the reason
+ * 019 exists (Part 1.37).
  */
 export interface EgressSubject {
   type: ProviderType | null | undefined;
   /** Absent, null or unparseable is treated as "not this machine". */
   baseUrl?: string | null;
+  /** The provider's configured egress proxy, if any. Credentials are allowed. */
+  egressProxy?: string | null;
 }
 
 /**
@@ -113,10 +119,10 @@ export function isLoopbackHost(hostname: string): boolean {
   return octets[0] === 127;
 }
 
-function isLoopbackBaseUrl(baseUrl: string | null | undefined): boolean {
-  if (typeof baseUrl !== 'string' || baseUrl.trim() === '') return false;
+function isLoopbackUrl(url: string | null | undefined): boolean {
+  if (typeof url !== 'string' || url.trim() === '') return false;
   try {
-    return isLoopbackHost(new URL(baseUrl).hostname);
+    return isLoopbackHost(new URL(url).hostname);
   } catch {
     return false;
   }
@@ -143,12 +149,127 @@ function isLoopbackBaseUrl(baseUrl: string | null | undefined): boolean {
 export function egressClassFor(provider: EgressSubject | null | undefined): EgressClass {
   const declared = classifyProviderType(provider?.type ?? null);
   if (declared !== 'local') return declared;
-  return isLoopbackBaseUrl(provider?.baseUrl) ? 'local' : 'remote';
+  if (!isLoopbackUrl(provider?.baseUrl)) return 'remote';
+  // Both the type and the URL say this machine — but a proxy the traffic has to
+  // reach first can still take it off the machine, and saying `local` then would
+  // be the same class of mistake 019 fixed, one hop further out.
+  return proxyLeavesMachine(provider) ? 'remote' : 'local';
 }
 
 /** True when a request to this provider leaves the machine. */
 export function isEgress(provider: EgressSubject | null | undefined): boolean {
   return egressClassFor(provider) === 'remote';
+}
+
+// --- egress proxy (Part 1.37) ----------------------------------------------
+
+/**
+ * A per-provider proxy, parsed and canonicalised.
+ *
+ * `url` is the value the transport dials and may contain credentials. Everything
+ * else here is what the rest of the process is allowed to see: `authority` is
+ * `host:port` with no userinfo, and it is what gets stamped into the audit
+ * column, compared for the local/remote question, and shown to the user.
+ */
+export interface EgressProxy {
+  /** The URL as configured, minus a trailing slash. Credentials included. */
+  url: string;
+  scheme: 'http' | 'https';
+  host: string;
+  port: number;
+  /** `host:port`, never credentials. The only form a read path may use. */
+  authority: string;
+  /** True when the configured URL carried a userinfo component. */
+  hasCredentials: boolean;
+  /** The URL as it may be shown or exported: `user:***@host:port` at most. */
+  redacted: string;
+}
+
+/**
+ * Parse a configured proxy URL.
+ *
+ * Throws `bad_request` rather than returning null for anything unusable, because
+ * every caller of this function is a write path: silently storing a proxy the
+ * transport cannot dial would produce exactly the failure 1.37 warns about — a
+ * provider that looks local, is reported as proxied, and is neither.
+ *
+ * Only `http` and `https` are accepted. A SOCKS URL would be a *different*
+ * transport, and accepting one that `undici` cannot dial would turn a typo into
+ * "traffic went direct while the user believed it did not" — the one direction
+ * this module refuses to fail in.
+ */
+export function parseEgressProxy(raw: string | null | undefined): EgressProxy | null {
+  if (raw === null || raw === undefined) return null;
+  const trimmed = raw.trim();
+  if (trimmed === '') return null;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new AppError('bad_request', `Could not read the egress proxy URL "${trimmed}"`);
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new AppError(
+      'bad_request',
+      `The egress proxy must be an http or https URL; "${parsed.protocol}//" is not supported`,
+    );
+  }
+  if (parsed.hostname === '') {
+    throw new AppError('bad_request', 'The egress proxy URL has no host');
+  }
+
+  const scheme = parsed.protocol === 'https:' ? 'https' : 'http';
+  const port = parsed.port === '' ? (scheme === 'https' ? 443 : 80) : Number(parsed.port);
+  const hasCredentials = parsed.username !== '' || parsed.password !== '';
+  const authority = `${parsed.hostname}:${String(port)}`;
+
+  return {
+    // A path on a proxy URL is meaningless to a CONNECT tunnel and would be
+    // silently ignored, so it is dropped here rather than stored and ignored.
+    url: `${scheme}://${hasCredentials ? `${parsed.username}:${parsed.password}@` : ''}${authority}`,
+    scheme,
+    host: parsed.hostname,
+    port,
+    authority,
+    hasCredentials,
+    // Only the *user* survives, and only so a reader can tell the proxy is
+    // authenticated: which account it authenticates as is a fact about the path
+    // the traffic takes, while the password is a credential and is never echoed.
+    redacted: `${scheme}://${hasCredentials ? `${parsed.username}:***@` : ''}${authority}`,
+  };
+}
+
+/** Parse without throwing: for read paths that must not fail on a stale row. */
+export function tryEgressProxy(raw: string | null | undefined): EgressProxy | null {
+  try {
+    return parseEgressProxy(raw);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The proxy as it may be shown or exported.
+ *
+ * Computed at parse time, from the parsed URL, rather than by string surgery on
+ * the dial URL later: a redactor that runs on a string has to find the password
+ * again, and every way of finding it is a way of missing it.
+ */
+export function redactEgressProxy(proxy: EgressProxy): string {
+  return proxy.redacted;
+}
+
+/**
+ * Whether a configured proxy sends traffic off this machine.
+ *
+ * Same literal loopback test as a provider URL, for the same reason: a proxy
+ * hostname that merely resolves to loopback is still a name handed to a resolver.
+ */
+export function proxyLeavesMachine(provider: EgressSubject | null | undefined): boolean {
+  const proxy = tryEgressProxy(provider?.egressProxy);
+  return proxy !== null && !isLoopbackHost(proxy.host);
 }
 
 // --- detection -------------------------------------------------------------

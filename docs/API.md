@@ -225,6 +225,7 @@ form** — only `hasKey` and a short `apiKeyHint`.
   lastError: string | null; lastErrorAt: number | null; lastSuccessAt: number | null;
   modelCount: number | null;          // null = never fetched
   modelsFetchedAt: number | null; modelsError: string | null;
+  egressProxy: string | null;         // redacted: user:***@host:port at most
   createdAt: number; updatedAt: number;
 }
 ```
@@ -245,7 +246,7 @@ Three routes also spread a registry summary into the response:
 | POST | `/api/providers/colibri/probe` | `ColibriProbeResult & { defaultBaseUrl }` |
 | GET | `/api/providers/active/models` | `{ providerId, providerName, models }` |
 | GET | `/api/providers/active/current` | `{ provider: ProviderPublic \| null }` |
-| GET | `/api/providers/active` | `{ provider: ProviderPublic \| null, egress, redactionCheckEnabled }` *(new in 1.23)* |
+| GET | `/api/providers/active` | `{ provider: ProviderPublic \| null, egress, egressProxy, redactionCheckEnabled }` *(1.23, `egressProxy` in 1.37)* |
 | GET | `/api/providers/:id` | `{ provider }` |
 | PATCH | `/api/providers/:id` | `{ provider }` |
 | DELETE | `/api/providers/:id` | **204**, no body |
@@ -256,12 +257,23 @@ Three routes also spread a registry summary into the response:
 
 **POST /api/providers** body: `name` (req), `type` (req, one of
 `remote` / `local` / `opencodex` / `colibri`), `baseUrl` (req), `apiKey?`,
-`priority?`, `enabled?`. `enabled` is body-only and defaults to false, so
-nothing — including local detection — can auto-enable a provider the user
-didn't turn on.
+`priority?`, `enabled?`, `egressProxy?`. `enabled` is body-only and defaults to
+false, so nothing — including local detection — can auto-enable a provider the
+user didn't turn on.
 
 **PATCH /api/providers/:id** body: `name?`, `baseUrl?`, `priority?`,
-`apiKey?` (nullable — send `null` to remove a stored key). `type` is immutable.
+`apiKey?` (nullable — send `null` to remove a stored key), `egressProxy?`
+(nullable the same way). `type` is immutable.
+
+**`egressProxy`** *(new in 1.37)* is an `http` or `https` URL that every request
+to this provider is tunnelled through. Only those two schemes are accepted: a
+SOCKS URL is a different transport, and storing one this process cannot dial
+would send traffic directly while the disclosure claimed otherwise — so it is a
+`400` at the write, not a silent fallback at the send. Credentials in the URL are
+allowed and are **never returned**: reads carry `user:***@host:port` at most, and
+the audit column stores `host:port` alone. Changing or clearing the proxy
+invalidates the model cache and the recorded health verdict, exactly as changing
+the base URL does — the old evidence describes a different route.
 
 **Enable** applies the single-active rule: enabling one disables the previous
 active provider (standby, not deleted). For `colibri` providers the body must
@@ -276,6 +288,9 @@ message go, and is it being checked?" in one call:
 
 ```json
 { "provider": { "…": "ProviderPublic" }, "egress": "remote",
+  "egressProxy": { "redacted": "http://alice:***@proxy.example.test:3128",
+                   "authority": "proxy.example.test:3128", "scheme": "http",
+                   "hasCredentials": true, "offMachine": true },
   "redactionCheckEnabled": true }
 ```
 
@@ -285,7 +300,13 @@ client-side because the answer is not guessable from the name — **`opencodex` 
 `remote`** (it routes to upstream vendors) and **`colibri` is `local` only when
 its URL really is this machine**. A `local` or `colibri` provider pointed at
 another host is `remote`, because that is where its bytes go; a declared `remote`
-provider is never downgraded to `local`, even at a loopback address. A frontend
+provider is never downgraded to `local`, even at a loopback address. **A
+configured `egressProxy` is part of that calculation** (1.37): a loopback
+provider tunnelled through a proxy elsewhere is `remote`, because the bytes never
+reach this machine's loopback at all. `egressProxy` is `null` for a provider with
+no proxy, and otherwise carries the redacted URL, the credential-free
+`authority`, and `offMachine` — the flag that says whether the proxy itself is on
+this machine, which is the fact that makes the class what it is. A frontend
 inferring any of this from the type string would get it backwards.
 
 With nothing enabled this is a **200** with `provider: null` and

@@ -29,7 +29,7 @@ import {
 } from '../providers/registry.ts';
 import { colibriAdvisory, probeColibri, requireSlowAcknowledgement } from '../providers/colibri.ts';
 import { redactionCheckEnabled, zdrRequirement } from '../db/settings.ts';
-import { egressClassFor } from '../services/safety/outbound.ts';
+import { egressClassFor, isLoopbackHost, tryEgressProxy } from '../services/safety/outbound.ts';
 import { zdrStatusFor } from '../services/safety/zdr.ts';
 import { isProviderType, PROVIDER_TYPES, ZDR_FLAG_LOCATIONS, ZDR_SUPPORTS } from '../types/core.ts';
 import { AppError } from '../util/errors.ts';
@@ -72,6 +72,11 @@ providersRouter.post(
       apiKey: input.apiKey === undefined ? null : asString(input.apiKey, 'apiKey'),
       priority: asNumber(input.priority, 'priority'),
       enabled: asBool(input.enabled, 'enabled'),
+      // `null` and absent both mean "no proxy"; the repository parses whatever it
+      // is given and rejects an unusable URL before writing anything.
+      egressProxy: input.egressProxy === undefined || input.egressProxy === null
+        ? null
+        : asString(input.egressProxy, 'egressProxy'),
     });
     res.status(201).json({ provider: toPublic(provider) });
   }),
@@ -153,10 +158,32 @@ providersRouter.get(
   '/active',
   wrap((_req, res) => {
     const active = getActiveProvider();
+    const proxy = tryEgressProxy(active?.egressProxy ?? null);
     res.json({
       provider: active ? toPublic(active) : null,
       egress: egressClassFor(active),
       redactionCheckEnabled: redactionCheckEnabled(),
+      /**
+       * Honest disclosure for the point-of-action privacy line (Part 1.37).
+       *
+       * Structured rather than a boolean because two different sentences have to
+       * be derivable: "this goes through a proxy" and "this goes through a proxy
+       * that is not on this machine". The second is the one that changes what the
+       * egress class above means, and a frontend that had only a flag would end
+       * up asserting the first while the class said `remote` for reasons it could
+       * not name. `redacted` is the only URL form that crosses the wire — the
+       * credentials in a proxy URL are a secret this interface has never carried.
+       */
+      egressProxy:
+        proxy === null
+          ? null
+          : {
+              redacted: proxy.redacted,
+              authority: proxy.authority,
+              scheme: proxy.scheme,
+              hasCredentials: proxy.hasCredentials,
+              offMachine: !isLoopbackHost(proxy.host),
+            },
       zdr: {
         // Null rather than a status when nothing is enabled: there is no request
         // this would describe, and inventing `zdr_unknown` would read as a fact
@@ -184,6 +211,9 @@ providersRouter.patch(
       baseUrl: input.baseUrl === undefined ? undefined : asString(input.baseUrl, 'baseUrl'),
       priority: asNumber(input.priority, 'priority'),
       apiKey: input.apiKey === undefined ? undefined : (input.apiKey === null ? null : asString(input.apiKey, 'apiKey')),
+      egressProxy: input.egressProxy === undefined
+        ? undefined
+        : (input.egressProxy === null ? null : asString(input.egressProxy, 'egressProxy')),
     });
     res.json({ provider: toPublic(provider) });
   }),

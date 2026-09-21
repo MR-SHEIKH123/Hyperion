@@ -29,8 +29,21 @@ const summary = { activeProviderId:z.string().nullable(), activeProviderName:z.s
 export const providersResponseSchema = z.object({ providers:z.array(providerSchema), ...summary }).passthrough();
 export const activeModelsResponseSchema = z.object({ providerId:z.string(), providerName:z.string(), models:z.array(modelSchema) }).passthrough();
 export const providerResponseSchema = z.object({ provider:providerSchema }).passthrough();
+/**
+ * The proxy a provider's traffic is tunnelled through (Part 1.37).
+ *
+ * Required-and-nullable rather than optional, and structured rather than a bare
+ * string: the disclosure has to be able to say *both* "through a proxy" and
+ * "through a proxy that is not on this machine", and the second is what changes
+ * what the egress class means. `redacted` is the only URL form the backend sends.
+ */
+export const egressProxySchema = z.object({
+  redacted:z.string(), authority:z.string(), scheme:z.enum(['http','https']),
+  hasCredentials:z.boolean(), offMachine:z.boolean(),
+}).passthrough();
 export const activeProviderResponseSchema = z.object({
   provider:providerSchema.nullable(), egress:egressClassSchema, redactionCheckEnabled:z.boolean(),
+  egressProxy:egressProxySchema.nullable(),
   // Required, not `.optional()`: the route always sends it, and a frontend that
   // treated a missing retention story as an absent one would render no badge
   // where the honest answer is "nothing has been recorded".
@@ -39,5 +52,6 @@ export const activeProviderResponseSchema = z.object({
 export type ProviderWire = z.infer<typeof providerSchema>;
 export type ModelWire = z.infer<typeof modelSchema>;
 export type EgressClassWire = z.infer<typeof egressClassSchema>;
+export type EgressProxyWire = z.infer<typeof egressProxySchema>;
 export type ZdrStatusWire = z.infer<typeof zdrStatusSchema>;
 export type ZdrRequirementWire = z.infer<typeof zdrRequirementSchema>;

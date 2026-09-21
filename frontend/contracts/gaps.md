@@ -18,7 +18,12 @@ behavior in the browser.
   listing.
 - No complete per-project active-task listing for switch warnings.
 - Health summary has no backup component and no explicit provider cooldown detail.
-- No Puter provider type and no per-provider egress-proxy contract.
+- ~~No per-provider egress-proxy contract.~~ **Closed 2026-09-21 (1.37).**
+  `ProviderPublic.egressProxy` carries the redacted URL, and
+  `GET /api/providers/active` adds `{redacted, authority, scheme, hasCredentials,
+  offMachine}` — the point-of-action privacy line renders it, and the egress class
+  already accounts for it (`local` + an off-machine proxy is `remote`).
+- Still no Puter provider type.
 - No global search endpoint; later shell search must report federated partial coverage.
 
 ## Later

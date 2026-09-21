@@ -6,6 +6,7 @@ function privacy(overrides: Partial<ProviderPrivacy> = {}): ProviderPrivacy {
   return {
     providerName: 'Ollama (this machine)',
     egress: 'local',
+    egressProxy: null,
     zdrStatus: 'local_no_egress',
     zdrRequirement: 'off',
     redactionCheckEnabled: true,
@@ -74,5 +75,55 @@ describe('PrivacyIndicator', () => {
     expect(screen.getByLabelText(/Zero-data-retention is preferred/)).toHaveTextContent(
       'zero-data-retention preferred',
     );
+  });
+  it('names the proxy a request is tunnelled through, in both registers', () => {
+    render(
+      <PrivacyIndicator
+        privacy={privacy({
+          egress: 'remote',
+          egressProxy: {
+            redacted: 'http://alice:***@proxy.example.test:3128',
+            authority: 'proxy.example.test:3128',
+            scheme: 'http',
+            hasCredentials: true,
+            offMachine: true,
+          },
+        })}
+      />,
+    );
+    const line = screen.getByLabelText(/tunnelled through the proxy/);
+    expect(line).toHaveAttribute('data-proxy', 'proxy.example.test:3128');
+    expect(line).toHaveTextContent('Remote · via proxy proxy.example.test:3128 (off this machine)');
+    const label = line.getAttribute('aria-label') ?? '';
+    expect(label).toContain('Requests are tunnelled through the proxy http://alice:***@proxy.example.test:3128, which is not on this machine.');
+    // The frontend is handed a redacted URL, so there is no password to leak here
+    // — this asserts the rendering does not reintroduce one from anywhere else.
+    expect(label).not.toMatch(/hunter|password/);
+  });
+
+  it('distinguishes a proxy on this machine from one off it', () => {
+    render(
+      <PrivacyIndicator
+        privacy={privacy({
+          egressProxy: {
+            redacted: 'http://127.0.0.1:3128',
+            authority: '127.0.0.1:3128',
+            scheme: 'http',
+            hasCredentials: false,
+            offMachine: false,
+          },
+        })}
+      />,
+    );
+    const line = screen.getByLabelText(/which is on this machine/);
+    expect(line).toHaveTextContent('Local · via proxy 127.0.0.1:3128 · no egress');
+    expect(line.textContent ?? '').not.toMatch(/off this machine/);
+  });
+
+  it('says nothing about a proxy when there is none', () => {
+    render(<PrivacyIndicator privacy={privacy()} />);
+    const line = screen.getByLabelText(/Requests go to a provider on this machine/);
+    expect(line).toHaveAttribute('data-proxy', 'none');
+    expect(line.textContent ?? '').not.toMatch(/proxy/);
   });
 });

@@ -1,5 +1,6 @@
 import type {
   EgressClassWire,
+  EgressProxyWire,
   ZdrRequirementWire,
   ZdrStatusWire,
 } from '../../contracts/wire/providers';
@@ -20,6 +21,16 @@ import styles from './PrivacyIndicator.module.css';
 export interface ProviderPrivacy {
   providerName: string | null;
   egress: EgressClassWire;
+  /**
+   * The proxy this provider's requests are tunnelled through, or null.
+   *
+   * Carried as its own fact rather than folded into the egress sentence: the
+   * class says whether the bytes leave the machine, and this says *how*. A
+   * provider reached through a proxy elsewhere is `remote` precisely because the
+   * backend looked at this field (Part 1.37), so a UI that dropped it would show
+   * "Remote" with no way for the user to learn why.
+   */
+  egressProxy: EgressProxyWire | null;
   zdrStatus: ZdrStatusWire | null;
   zdrRequirement: ZdrRequirementWire;
   redactionCheckEnabled: boolean;
@@ -98,14 +109,28 @@ export function PrivacyIndicator({ privacy }: { privacy: ProviderPrivacy }) {
     privacy.redactionCheckEnabled ? 'on.' : 'off.'
   }`;
   const provider = privacy.providerName === null ? '' : `Provider: ${privacy.providerName}.`;
+  // A proxied route is stated in both registers, because it is the fact a user
+  // is most likely to have forgotten they configured — and because it is the one
+  // fact that can make a provider they think of as local not be local at all.
+  const proxy = privacy.egressProxy;
+  const proxyShort =
+    proxy === null ? null : `via proxy ${proxy.authority}${proxy.offMachine ? ' (off this machine)' : ''}`;
+  const proxySentence =
+    proxy === null
+      ? ''
+      : `Requests are tunnelled through the proxy ${proxy.redacted}${
+          proxy.offMachine ? ', which is not on this machine' : ', which is on this machine'
+        }.`;
   const short = [
     egress.short,
+    ...(proxyShort === null ? [] : [proxyShort]),
     zdrShort,
     ...(requirementShort === null ? [] : [requirementShort]),
     redactionShort,
   ];
   const sentence = [
     egress.sentence,
+    proxySentence,
     provider,
     zdrSentence,
     requirementSentence ?? '',
@@ -119,6 +144,7 @@ export function PrivacyIndicator({ privacy }: { privacy: ProviderPrivacy }) {
       className={`${styles.indicator} ${styles[egress.tone]}`}
       data-egress={privacy.egress}
       data-zdr={privacy.zdrStatus ?? 'none'}
+      data-proxy={privacy.egressProxy?.authority ?? 'none'}
       aria-label={sentence}
       title={sentence}
     >

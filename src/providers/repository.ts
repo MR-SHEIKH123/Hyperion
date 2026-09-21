@@ -15,6 +15,7 @@ import { randomUUID } from 'node:crypto';
 import { getDb } from '../db/adapter.ts';
 import { encrypt, keyHint } from '../security/keystore.ts';
 import { AppError } from '../util/errors.ts';
+import { parseEgressProxy, tryEgressProxy } from '../services/safety/outbound.ts';
 import { findSensitive } from '../util/redact.ts';
 import { isZdrFlagLocation, isZdrSupport } from '../types/core.ts';
 import type {
@@ -45,6 +46,7 @@ interface ProviderRow {
   models_json: string | null;
   models_fetched_at: number | null;
   models_error: string | null;
+  egress_proxy: string | null;
   zdr_support: string | null;
   zdr_flag_location: string | null;
   zdr_flag_key: string | null;
@@ -105,6 +107,7 @@ function mapRow(row: ProviderRow): ProviderRecord {
     models: parseModels(row.models_json),
     modelsFetchedAt: row.models_fetched_at,
     modelsError: row.models_error,
+    egressProxy: row.egress_proxy,
     zdr: mapZdr(row),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -126,6 +129,19 @@ function parseModels(json: string | null): ModelInfo[] | null {
  * Wire format. Note what is missing: no `apiKeyEnc`, no `apiKey`, nothing
  * decryptable. `apiKeyHint` is the last 4 characters only, for identification.
  */
+/**
+ * The proxy as a read path may see it: redacted, or null.
+ *
+ * `tryEgressProxy` rather than the throwing parse: a row written by a newer build
+ * (or edited by hand in SQLite) must not make `GET /api/providers` fail. An
+ * unreadable value reads as "no proxy disclosed" — which is a disclosure gap, and
+ * the class derivation treats it as one by not vouching for locality.
+ */
+function proxyForRead(raw: string | null): string | null {
+  const proxy = tryEgressProxy(raw);
+  return proxy === null ? null : proxy.redacted;
+}
+
 export function toPublic(provider: ProviderRecord): ProviderPublic {
   return {
     id: provider.id,
@@ -143,6 +159,11 @@ export function toPublic(provider: ProviderRecord): ProviderPublic {
     modelCount: provider.models === null ? null : provider.models.length,
     modelsFetchedAt: provider.modelsFetchedAt,
     modelsError: provider.modelsError,
+    // Redacted at the boundary rather than by the caller. The row holds the dial
+    // URL with its credentials; this interface has never carried a credential,
+    // and the way to keep that true is to convert here, where the raw value is
+    // still in hand and cannot be forgotten by a new route.
+    egressProxy: proxyForRead(provider.egressProxy),
     // Carried across in full, `requestFlag.value` included. That value is a
     // policy declaration and never a credential — `setProviderZdr` rejects one
     // that looks like a credential — and a field maintained by hand is
@@ -155,8 +176,8 @@ export function toPublic(provider: ProviderRecord): ProviderPublic {
 
 const COLUMNS = `id, name, type, base_url, api_key_enc, api_key_hint, enabled, priority,
   health_status, last_error, last_error_at, last_success_at, models_json,
-  models_fetched_at, models_error, zdr_support, zdr_flag_location, zdr_flag_key,
-  zdr_flag_value, zdr_confirmed_at, zdr_confirmed_note, created_at, updated_at`;
+  models_fetched_at, models_error, egress_proxy, zdr_support, zdr_flag_location,
+  zdr_flag_key, zdr_flag_value, zdr_confirmed_at, zdr_confirmed_note, created_at, updated_at`;
 
 // --- reads -----------------------------------------------------------------
 
@@ -236,6 +257,8 @@ export interface CreateProviderInput {
   apiKey?: string | null;
   priority?: number;
   enabled?: boolean;
+  /** Proxy URL the requests are tunnelled through (Part 1.37). Validated here. */
+  egressProxy?: string | null;
 }
 
 export function createProvider(input: CreateProviderInput): ProviderRecord {
@@ -246,6 +269,9 @@ export function createProvider(input: CreateProviderInput): ProviderRecord {
   const name = input.name.trim();
   if (name === '') throw new AppError('bad_request', 'Provider name is required');
   const baseUrl = normalizeBaseUrl(input.baseUrl, input.type);
+  // Parsed before anything is written, so an unusable proxy is a rejected create
+  // rather than a stored value the transport cannot dial (Part 1.37).
+  const egressProxy = parseEgressProxy(input.egressProxy)?.url ?? null;
 
   if (findProviderByName(name)) {
     throw new AppError('conflict', `A provider named "${name}" already exists`);
@@ -261,8 +287,8 @@ export function createProvider(input: CreateProviderInput): ProviderRecord {
     db.prepare(
       `INSERT INTO providers
          (id, name, type, base_url, api_key_enc, api_key_hint, enabled, priority,
-          health_status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'unknown', ?, ?)`,
+          egress_proxy, health_status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'unknown', ?, ?)`,
     ).run(
       id,
       name,
@@ -272,6 +298,7 @@ export function createProvider(input: CreateProviderInput): ProviderRecord {
       hasKey ? keyHint(key) : null,
       input.enabled ?? false,
       input.priority ?? 100,
+      egressProxy,
       now,
       now,
     );
@@ -292,6 +319,8 @@ export interface UpdateProviderInput {
    *   string    — replace it
    */
   apiKey?: string | null;
+  /** Same tri-state as `apiKey`: undefined leaves it, null/'' removes it. */
+  egressProxy?: string | null;
 }
 
 export function updateProvider(id: string, input: UpdateProviderInput): ProviderRecord {
@@ -334,11 +363,18 @@ export function updateProvider(id: string, input: UpdateProviderInput): Provider
     }
   }
 
+  if (input.egressProxy !== undefined) {
+    const proxy = parseEgressProxy(input.egressProxy);
+    sets.push('egress_proxy = ?');
+    values.push(proxy?.url ?? null);
+  }
+
   if (sets.length === 0) return existing;
 
   // A changed base URL or key invalidates both the model cache and the recorded
   // health verdict — the old evidence describes a different endpoint.
-  const endpointChanged = input.baseUrl !== undefined || input.apiKey !== undefined;
+  const endpointChanged =
+    input.baseUrl !== undefined || input.apiKey !== undefined || input.egressProxy !== undefined;
   if (endpointChanged) {
     sets.push('models_json = NULL', 'models_fetched_at = NULL', 'models_error = NULL');
     sets.push("health_status = 'unknown'", 'last_error = NULL', 'last_error_at = NULL');

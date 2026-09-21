@@ -9,6 +9,7 @@ import type { ModelSelection } from './useModelSelection';
 const privacy: ProviderPrivacy = {
   providerName: 'Test Provider',
   egress: 'remote',
+  egressProxy: null,
   zdrStatus: 'zdr_requested',
   zdrRequirement: 'prefer',
   redactionCheckEnabled: true,
