@@ -66,6 +66,16 @@ content to fill holes.
 
 ## Landed since this register opened
 
+- **Sandbox working-state quirk (2026-09-21).** Session boundaries here can reset
+  the checked-out branch ref to `main` while the worktree keeps every file, and
+  `remote.origin.fetch` can come back narrowed to `refs/heads/main` — so a bare
+  `git fetch origin` silently creates no other remote-tracking ref and the branch
+  looks lost. Recovered twice now: `git fetch origin '+refs/heads/*:refs/remotes/origin/*'`,
+  confirm the worktree matches the remote tip (`git diff --stat <tip>`, and the
+  untracked set against the tip's added files), then `git reset --hard <tip>`.
+  Nothing is lost in this shape — the commits are on the remote and the worktree
+  content is identical — but do **not** reset before checking.
+
 - **Full suite + typecheck, first run this cycle** (2026-09-18): `npm test`
   green, 854/854 across 149 suites (13.5s); `tsc --noEmit` clean. This
   retires the v4 §7 checklist line "4 | Full suite run | ⬜ Never started" —
@@ -648,6 +658,89 @@ list of findings, all of them fixed. `P1-S1`, `P1-S3`, `P1-S4` and `P1-S17` need
 either their original files or the Prompt-1.39 requirement text before they can be
 built against the spec rather than against this table.
 
+## Prompt-1 series — the owner-supplied text, digested (2026-09-21)
+
+The owner converted the planning PDF (134 pages) to text and supplied it. It
+contains **Prompt 1** (backend core), **addenda 1.5 → 1.38**, Prompt 3's opening,
+the four consistency audits of that period, and the other workspace's coordination
+files (`STATUS.md`, `QUESTIONS.md`, `HANDOFF-LOG.md`). Two things it settles about
+the series itself, before any status:
+
+- **It does not contain 1.39, and it contains no item named `S1`/`S3`/`S4`/`S17`.**
+  The last addendum in it is **1.38** (Puter as a provider), so 1.39 is the document
+  *after* this batch — which is consistent with the ledger's "during Prompt 1.39 the
+  final five top-tier security items were specified", and means those four items'
+  requirement text is still not in hand. `1.13` appears three times (two
+  pre-correction copies and the corrected one); nothing else is duplicated.
+- **The original S-series is five items, not an open-ended list**: `S1`, `S3`, `S4`,
+  `S12` and `S17` — "the final five top-tier Security items", `S12` landed in PR #6,
+  the other four are the ones still undone. The `P1-` prefix stays (this register's
+  audit series numbered itself `S13`–`S22` and the two sequences collide on `S13`–
+  `S16` and `S18`+), but the series is now enumerated. `S2`, `S5`–`S11` and
+  anything above `S17` remain unknown — nothing in the source names them.
+
+**Status per addendum, verified against this tree.** "Landed" means the behaviour
+is in the code with its docs; "Partial" names exactly which clause is missing.
+This ledger is what a future session should read instead of re-deriving status from
+the prose.
+
+**Method, including one correction this table caught.** Every "landed" row is a
+file and a route, and every "not landed" row is a case-insensitive search that
+found nothing — not an impression. Writing it, `1.13` was first recorded as absent
+because the grep looked for `'/rules'` and the route is `'/code/rules'`; the
+re-check found all three endpoints. That is the failure shape this register's
+audit series exists for, committed while describing it, so: re-run the search
+before trusting an "absent" row, and prefer the router's own route list over a
+substring.
+
+| Addendum | Scope | Where it stands |
+| --- | --- | --- |
+| Prompt 1 | Backend core: registry + failover + Ollama detect, pause/resume, schema, encryption, scoped roots, MCP config CRUD, skills intake, cleanup sweep, usage + backup, single-active-job lock | **Landed**, and since corrected in places by this register's audit series (`S15`–`S22`) and `§6.2` |
+| 1.5 | mem0 as the Memory backend, wigolo as a default MCP server, opencodex as a provider type | **Landed.** `services/memory/index.ts` (`mem0ai/oss`, self-hosted, under the app's own data dir); `services/mcp/defaults.ts` seeds wigolo (and graphify) **disabled**; `ProviderType` carries `opencodex` with its own adapter; key encryption is 1.23's, unchanged |
+| 1.6 | Skill dependency provisioning (per-skill venv / scoped `node_modules`, `ready`/`partial`/`failed`) | **Landed** — `services/skills/{deps,provision,intake}.ts` |
+| 1.7 | 4-month retention, manual delete, archive, base-URL `/v1` normalization, sharp | **Landed** — 120-day retention; `/:id/archive` + `/:id/unarchive`; `OPENAI_COMPATIBLE_TYPES` gets the `/v1` fill; `sharp` 0.34.4 |
+| 1.8 | System-binary provisioning, configurable backup destination + schedule, cursor-paginated transcripts (the fallback Code-agent section stayed dormant) | **Landed** — `009_skill_binary_approval.sql` with the curated allow-list and the user-approval path; `services/backup/schedule.ts` (destination + schedule); transcripts are cursor-paginated |
+| 1.9 | Code parallelism: worktrees + a 2-slot lane separate from the global lock | **Landed** — `orchestrator/lock.ts` lane + `services/code/worktree.ts` |
+| 1.10 | `POST /api/resources/detect` (skill vs MCP server vs both vs invalid) | **Landed** — `services/resources/detect.ts`, mounted at `/api/resources` |
+| 1.11 | AIStudio → Hyperion rename | **Landed** (paths, env vars, DB filename) |
+| 1.12 | Colibrì as an optional local provider type, with the hardware/speed caveat surfaced | **Landed** — provider type + `colibriAdvisory` + the acknowledgement gate. (The egress half of this surface was `S21`.) |
+| 1.13 | `GET /api/code/{rules,agents,commands}` listing endpoints | **Landed** — all three at `http/agents.ts` (`/code/rules`, `/code/agents`, `/code/commands`), with the `HYPERION.md` fallback handled in the rules route as the correction in the source requires. The conventions themselves also load for the agent (`services/code/projectContext.ts`) |
+| 1.14 | Scheduled tasks, knowledge sources, push notifications | **Landed** — `services/cowork/{scheduledTasks,knowledge}.ts`, `services/notify/push.ts` (payload capped by `S19`) |
+| 1.15 | Error handling, `error_log`, `:id/state` reconnection endpoints | **Landed** — migration `007`, the error-log route, the three task-state routes |
+| 1.16 | Projects: CRUD + open/activate, scoping resolves against the active project | **Landed** — `http/projects.ts`, `fsScope.setProjectRoot` |
+| 1.17 | Health summary + activity feed | **Landed** |
+| 1.18 | Per-item export (chat / artifact / code task) | **Landed** — `services/export/index.ts`; bulk export reuses it |
+| 1.19 | Per-task ceiling, daily spending cap (autonomous only), subagent count limit | **Landed** — `services/limits/budget.ts` |
+| 1.20 | Response preferences, capability toggles, bulk export, bulk delete, temporary chats | **Landed** — incl. the temporary-chat guarantee, which `S20` then had to close for the memory plugin |
+| 1.21 | Structured memory, memory import, skill metadata, tool access mode, network egress, `blocked`/`ready_for_review` | **Partial.** All of it landed (`003`/`009`-era schema, `tool_access_mode`, `network_egress` enforcement, migration `010` states) **except `POST /api/memory/import` and a direct `POST /api/memory`** — the router serves list/delete/enable/disable, not paste-in add or import |
+| 1.22 | Brand-approved assets, distinct from pinning | **Landed** — `brandApproved`, `/api/design/assets/approved` |
+| 1.23 | Outbound data safety: local/remote indicator, opt-in redaction check, exposure summary | **Landed**, and `S21` fixed the class that made "local" a claim about the type rather than the URL |
+| 1.24 | Cancellation across Code/Design/Cowork | **Landed** — three `/tasks/:taskId/cancel` routes |
+| 1.25 | Cowork fallback reassignment Sol → Opus 5 | **Closed — nothing to build.** A dormant fallback assignment ("relevant only if Kimi becomes unavailable again"); the standing "1.25 unknown" item is now resolved |
+| 1.26 | ZDR: support/requestFlag/confirmation, `off`/`prefer`/`require`, honesty rule ("confirmed" only ever user-set) | **Landed** — `services/safety/zdr.ts`, `/api/settings/zdr`; `S21` made the local short-circuit URL-aware |
+| 1.27 | Permission engine + provenance, subagent deny-inheritance/recursion guard/cost roll-up, doom-loop detection, session fork, compression split, agent profiles | **Landed except two clauses**: session fork has its column (`chats.forked_from`, migration `017`) and no route; and the prune/summarize split ships as the owner-signed **AD-1** deviation (summarize is a receipt, not a model summary) |
+| 1.28 | Context ceiling: `maxContextTokens`, detection, resume-in-new-session, usage graph, `hidden`, parallel subagents, `reasoningTokens`/`cacheHitRate`, `defaultAgentProfile`, profile import, Reload Config | **Partial** — `providers.max_context_tokens`, `hidden`, `default_agent_profile`, `reasoningTokens`, parallel subagents and compaction are in; **`cacheHitRate` and `resume-in-new-session` are not** (no such route) |
+| 1.29 | Encrypted pluggable backup: Argon2id key from a passphrase, archive-level AES-256-GCM, destinations, retention, audited restore with a diff preview | **Not landed.** The tree's AES-256-GCM is `security/keystore.ts` — provider keys at rest (1.23), a different thing. Backup export is an archive with the `S18` key exclusion and no passphrase layer, no destinations, no retention, no restore preview |
+| 1.30 | Cowork Pulse, Design preview sandboxing | **Not landed** (no `pulse` anywhere; there is no Design preview surface yet to sandbox) |
+| 1.31 | `interrupted` state + boot reconciliation, resume/view-partial/discard, unattended notification, interactive-wait timeout, Design environment | **Partial.** `reconcileOrphanedTaskRuns()` demotes orphaned `running`/`blocked` rows on boot — which does release the lane — but it writes `error: internal_error`, not `interrupted` (migration `012`'s enum has no such value), and there is no recovery UX, no notification, no `orphaned_worktree` check, no wait timeout, and no Design environment |
+| 1.32 | `.hyperion/coordination/` three-file convention | **Folded.** `S-4` locked this register as the one canonical file; the source's own STATUS/QUESTIONS/HANDOFF-LOG never existed in this tree, and their state claims are stale by inspection (they describe the other workspace: 39 uncommitted files, HEAD `cf3a94e`). Two of their still-open questions are folded into Open decisions below |
+| 1.33 | Ask/Plan/Act complete pass: enumerated Ask shell allowlist, concise default, structured living plan, plan-suggestion heuristic, Verifier profile, two-tier loop-back, mode transitions, `reversibility`, learned patterns, walkthrough | **Partial, with one deliberate divergence.** Modes exist as permission-engine profiles; the rest is absent (no plan structure, no `verifier.md`, no `learned-patterns.md`, no `reversibility`, no mode-transition tool, no walkthrough). **The divergence:** §1's read-only Ask shell allowlist is *refused* here on purpose — `profiles.ts` argues a glob over a shell command line is not a security boundary (`git status*` matches `git status; rm -rf /`), so Ask grants no shell at all. Recorded in Open decisions as needing owner sign-off, the way AD-1 got it |
+| 1.34 | Plugins hub (`/api/plugins`), per-tool availability, offline security scan with a trust grade | **Not landed** (no plugins router — and the frontend contract snapshot already names this as a missing expected contract: `contracts/gaps.md`, `/api/plugins` + `/api/plugins/:id/availability` in `frontend-contracts.json`) |
+| 1.35 | browser-use as an MCP server in the Plugins hub | **Not landed** |
+| 1.36 | Failover hardening: per-error-type cooldowns (401/403 60m, 402 30m, 429 5m + `retry-after`, 404 2m, 5xx 1m, network 30s), capped backoff, deadlock reset, `ModelSlot` | **Not landed.** Failover is the original flat 2-consecutive-failure threshold; `providers/health.ts` counts failures but nothing keys off the status class |
+| 1.37 | Per-provider `egressProxy`, honest disclosure, audit field | **Not landed** (no proxy field anywhere; no `proxyProfile`) |
+| 1.38 | Puter as a provider type on the auth-token path | **Not landed** (`ProviderType` = `remote \| local \| opencodex \| colibri`) |
+
+**The audits in the same source** (consistency passes over 1.26–1.30 and the
+"atonement" pass) found fourteen issues, of which the ones that apply to *this*
+tree are already handled or recorded here: the terminal takeover exemption
+(Finding E) is the `P1-S17` seam; the header-UI collision and the Pulse/backup
+audit findings concern addenda that are not built here, so they stay part of
+those addenda's scope rather than separate items; and Finding 1's worry — that
+"Ask/Plan/Act re-expressed as permission profiles" was never verified against real
+code — is verified here: in this tree they **are** permission profiles
+(`services/agent/profiles.ts`, migration `017`).
+
 ## Prompt 1.39 — Frontend Expansion Layer (owner-supplied text, 2026-09-21)
 
 The owner supplied the 1.39 requirement text itself. It is an **addendum to
@@ -693,19 +786,23 @@ Where the scope says done, this is what was checked:
 | Scope | Where it stands |
 | --- | --- |
 | SPEC deliverables 1–9 (server + endpoint surface, schema/migrations, provider registry + failover + Ollama detect, pause/resume, MCP config CRUD + test, skills intake, storage sweep, encryption + bind guard + scoped roots, usage + backup) | **Landed.** Every route in the spec's suggested surface resolves (see `docs/API.md` §24 for the deliberate deltas). 19 migrations, `001`–`019`; the next is `020`. |
-| Increment series 1.1–1.28 | **Landed and documented**, with one exception: **`1.25` appears nowhere in the repo** — no heading, no tag, no test name. Either it was folded into a neighbour or it never shipped; only the owner can say which. |
+| Increment series (now known to run **1.5 → 1.38**, not 1.1–1.28) | **Mostly landed, and the exceptions are now enumerated.** `1.25` is resolved (Cowork fallback reassignment — dormant, nothing to build). Unlanded in full: `1.29` encrypted backup, `1.30` Pulse, `1.34` plugins hub, `1.35` browser-use, `1.36` failover hardening, `1.37` egress proxy, `1.38` Puter. Partial: `1.21` (memory add/import), `1.27` (fork route; prune/summarize is the AD-1 deviation), `1.28` (`cacheHitRate`, resume-in-new-session), `1.31` (reconciliation lands as `error`, not `interrupted`), `1.33` (spec pass; one deliberate refusal, in Open decisions). The per-addendum ledger above is the record. |
 | D-table decisions (D1/D4/D7/D8/D9/D11/D12/D13–D15, D-1.2) | **Landed**, each with the code and test the D-table entry names. |
 | v4 backend items `§6.1` context windows, `§6.3` approvals + continuation, `§6.4` unattended hardening, `§6.5` write-path downgrade, `§6.6` subagent isolation, `§6.7` profiles, `§6.8` observability + golden runs | **Landed.** |
 | v4 `§6.2` cost accounting per task | **Landed 2026-09-21.** `usage_log` gained `run_id` (migration `018`; `task_id` was `017`), the agent context records one priced row per provider request — so every task run is attributed whatever started it, and a delegated child's spend lands in its parent's task total — the task-state route returns a `usage` summary, and the activity feed carries each run's `spend`. The two findings this surfaced are S15 and S16 above. |
-| S-series audit (S12 fixed in PR #6; S13–S22 fixed 2026-09-21) | **Continuous.** The owner's ledger names four undone security items (`P1-S1`, `P1-S3`, `P1-S4`, `P1-S17` — recorded above) whose code is not in this repo; the rest of that list is still not enumerated here. |
+| S-series audit (S12 fixed in PR #6; S13–S22 fixed 2026-09-21) | **Continuous.** The original series is five items — `S1`, `S3`, `S4`, `S12`, `S17` — of which four are undone and are recorded above with a `P1-` prefix; their code is not in this repo and the 1.39 document that specifies them has not been supplied. `S2`, `S5`–`S11` and anything above `S17` are not named anywhere in the source text either. |
 | Prompt 1.39 (frontend addendum) | **In progress, ledger above.** A2 landed, A4/A5 largely, A3 frame landed, B landed for Chat; A1 (Attention Center) is the next piece and A6 has no target surface yet. |
 | Frontend (Prompt 2) | Out of this scope by design. Shell + Chat tool landed; Code, Cowork, Design, Playground, Plugins, Skills, Settings remain. Frontend-side items that *wait on backend contracts* are tracked in `frontend/contracts/gaps.md`, and one of them (no cross-tool pending-approval endpoint, no per-project active-task listing) is the earliest backend work the frontend will ask for. |
 
-**So: the backend core is complete, including `§6.2` as of 2026-09-21.** The
-remaining work in the series is the ledger's four undone security items
-(`P1-S1`, `P1-S3`, `P1-S4`, `P1-S17` — recorded above, blocked on their files or
-their requirement text), the frontend addendum's ledger above (next: 1.39 A1),
-whatever the rest of the original S-list turns out to be, and `1.25`. The audit
+**So: the backend core is complete, including `§6.2` as of 2026-09-21.** What is
+*not* complete is now enumerated rather than assumed: the series ledger above
+lists seven unlanded addenda and six partial ones, and the four undone security
+items (`P1-S1`, `P1-S3`, `P1-S4`, `P1-S17`) are blocked on the 1.39 document that
+specifies them. `1.25` is closed. The one item buildable from the material in hand
+is **`P1-S4`** — the ledger's three mechanisms (pre-spawn and pre-write canonical
+revalidation, `lstat` rejection of intermediate directory symlinks, realpath
+re-check at point of use) are specific enough to implement and test against
+`fsScope` without inventing policy. The audit
 queue is **empty**: HTTP input validation was S17, `mcp_config.json` S18,
 the push payload S19, the memory store S20, and the last item — per-provider
 egress in `colibri.ts` — became S21 (with S22 falling out of the same lookup).
@@ -825,6 +922,25 @@ the record of what was said); this section is the correction layer.
 - **v4 ratification.** §6.6 (S-1/S-2) was ratified and shipped 2026-09-11.
   The remaining v4 upgrade-track items not already marked landed above
   (§6.1, §6.4, §6.8) stay proposals until the owner ratifies them.
+- **Ask-mode shell allowlist — needs owner sign-off (raised 2026-09-21).**
+  Addendum 1.33 §1 enumerates a read-only `bash` allowlist for Ask mode. This
+  tree refuses that: `services/agent/profiles.ts` argues a glob over a shell
+  command line is not a security boundary (`git status*` matches
+  `git status; rm -rf /`, and every `;`, `&&` and `$( )` is another path), so Ask
+  grants no shell at all. That is a divergence from an owner-supplied
+  requirement, not an oversight — it needs either a signed deviation (the AD-1
+  precedent) or an explicit instruction to build the allowlist anyway.
+- **Terminal "Take over": keep or drop (folded from the source's `QUESTIONS.md`,
+  2026-08-28, still open).** No takeover surface exists in this tree, and 1.27 §1
+  carries the exemption forward ("commands entered directly by the user through
+  the terminal's 'Take over' control bypass the permission engine's `ask`/`deny`
+  evaluation"). `P1-S17` is that control's authentication — so the answer decides
+  whether S17 authenticates something that exists or is closed out as moot.
+- **Wigolo ships disabled — is silence the right fallback?** (Folded from the same
+  `QUESTIONS.md`.) `services/mcp/defaults.ts` seeds it (and graphify) disabled on
+  purpose, documented as possibly needing a one-time `wigolo init`. If Cowork's
+  research loop finds it off with nothing to fall through to, does it need an
+  explicit "not enabled, here is how" state? User decision, still open.
 
 ---
 
