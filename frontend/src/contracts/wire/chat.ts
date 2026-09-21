@@ -108,6 +108,49 @@ export const forkChatResponseSchema = z.object({
 }).passthrough();
 export type ForkChatResponse = z.infer<typeof forkChatResponseSchema>;
 
+/**
+ * `GET /api/chat/:id/context` (docs/API.md §4.5) — how full the conversation is.
+ *
+ * `window.assumed` is part of the contract rather than a detail: most
+ * OpenAI-compatible gateways report no context length, so the number the
+ * assessment is compared against is often the conservative default, and a
+ * surface that hides that would be presenting a guess as a measurement.
+ */
+export const chatContextSchema = z.object({
+  chatId: z.string(),
+  modelId: z.string().nullable(),
+  window: z.object({
+    tokens: z.number().int().positive(),
+    source: z.enum(['override', 'model', 'default']),
+    assumed: z.boolean(),
+  }).passthrough(),
+  estimatedTokens: z.number().nonnegative(),
+  ratio: z.number().nonnegative(),
+  messageCount: z.number().int().nonnegative(),
+  needsNewSession: z.boolean(),
+}).passthrough();
+export type ChatContext = z.infer<typeof chatContextSchema>;
+
+/**
+ * `POST /api/chat/:id/resume-in-new-session` (1.28).
+ *
+ * `messages` is the receipt followed by the copied tail, `droppedMessages` says
+ * how many were described instead of copied, and `assessment` carries the numbers
+ * the decision was made from so the surface can state them rather than re-derive
+ * them. `receipt` is the exact text of the first message: a surface can render it
+ * without parsing the transcript.
+ */
+export const resumeInNewSessionResponseSchema = z.object({
+  chat: chatRecordSchema,
+  messages: z.array(messageRecordSchema),
+  source: z.object({ id: z.string(), title: z.string() }).passthrough(),
+  droppedMessages: z.number().int().nonnegative(),
+  pausedPartials: z.number().int().nonnegative(),
+  receipt: z.string(),
+  assessment: chatContextSchema,
+}).passthrough();
+export type ResumeInNewSessionResponse = z.infer<typeof resumeInNewSessionResponseSchema>;
+
 export const chatRunsResponseSchema = z.object({
   latest: runStateSnapshotSchema.nullable(),
   paused: z.array(runStateSnapshotSchema),

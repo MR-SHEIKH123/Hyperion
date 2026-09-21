@@ -191,6 +191,15 @@ export function createChat(input: {
       details: { field: 'id', chatId: id },
     });
   }
+  // A caller-supplied id is a request, not an instruction to overwrite. Without
+  // this the INSERT would hit the primary key and surface as a 500 — a client
+  // that raced itself or repeated a request would read an internal error where
+  // the honest answer is "that id is taken".
+  if (input.id !== undefined && findChat(id) !== null) {
+    throw new AppError('conflict', `Chat "${id}" already exists.`, {
+      details: { field: 'id', chatId: id },
+    });
+  }
   const now = Date.now();
   getDb()
     .prepare(
@@ -389,6 +398,105 @@ export interface ForkResult {
  * process, and forking one would write down exactly what the user asked to leave
  * no trace of.
  */
+export interface CopyMessagesResult {
+  /** The copied rows, oldest first, read back out of the database. */
+  messages: MessageRecord[];
+  /** How many copies were mid-stream in the source and landed `paused`. */
+  pausedPartials: number;
+}
+
+/**
+ * Copy persisted messages into another chat, as new rows.
+ *
+ * One implementation, two callers — the session fork (1.27) and resume-in-a-new
+ * session (1.28) — because the properties that make a copy correct are the same
+ * in both cases and a second implementation would drift on exactly the ones that
+ * are easy to forget:
+ *
+ *   * new ids and fresh sequence numbers, so the copy is a conversation rather
+ *     than a view that shares rows with its source;
+ *   * timestamps preserved, because re-stamping a week-old exchange with "now"
+ *     rewrites the history it is supposed to carry;
+ *   * a `streaming` row lands `paused` — the copy has no writer, and `streaming`
+ *     would claim a process is about to complete it;
+ *   * an optional **receipt** as the first message, which is how a partial copy
+ *     explains the gap instead of quietly starting mid-conversation.
+ *
+ * Nothing is read back here: the caller has the source rows, and the ids it just
+ * wrote are not what a response should quote. `copyMessages` returns what a
+ * caller needs to count (`pausedPartials`), and the response is assembled from a
+ * fresh `listMessages` so it describes what is *stored* rather than what this
+ * function intended.
+ */
+export function copyMessages(
+  sourceId: string,
+  targetId: string,
+  messages: readonly MessageRecord[],
+  options: { receipt?: string } = {},
+): CopyMessagesResult {
+  const insert = getDb().prepare(
+    `INSERT INTO messages
+       (id, chat_id, role, content, tool, model_id, provider_id, provider_name, status,
+        error_code, error_message, tokens_in, tokens_out, seq, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+
+  const now = Date.now();
+  let pausedPartials = 0;
+  let seq = 0;
+  getDb().transaction(() => {
+    if (options.receipt !== undefined && options.receipt !== '') {
+      seq += 1;
+      insert.run(
+        randomUUID(),
+        targetId,
+        'system',
+        options.receipt,
+        null,
+        null,
+        null,
+        null,
+        'complete',
+        null,
+        null,
+        null,
+        null,
+        seq,
+        now,
+        now,
+      );
+    }
+    for (const message of messages) {
+      const status: MessageStatus = message.status === 'streaming' ? 'paused' : message.status;
+      if (message.status === 'streaming') pausedPartials += 1;
+      seq += 1;
+      insert.run(
+        randomUUID(),
+        targetId,
+        message.role,
+        message.content,
+        message.tool,
+        message.modelId,
+        message.providerId,
+        message.providerName,
+        status,
+        message.errorCode,
+        message.errorMessage,
+        message.tokensIn,
+        message.tokensOut,
+        seq,
+        message.createdAt,
+        message.updatedAt,
+      );
+    }
+  })();
+
+  // The copy is complete as stored, so the target's own `updated_at` reflects the
+  // moment of copying rather than the last thing said before it.
+  getDb().prepare('UPDATE chats SET updated_at = ? WHERE id = ?').run(now, targetId);
+  return { messages: listMessages(targetId, 500), pausedPartials };
+}
+
 export function forkChat(input: ForkChatInput): ForkResult {
   const sourceId = input.sourceId;
   if (isTemporaryChat(sourceId)) {
@@ -420,44 +528,7 @@ export function forkChat(input: ForkChatInput): ForkResult {
     ...(input.id !== undefined ? { id: input.id } : {}),
   });
 
-  const now = Date.now();
-  const insert = getDb().prepare(
-    `INSERT INTO messages
-       (id, chat_id, role, content, tool, model_id, provider_id, provider_name, status,
-        error_code, error_message, tokens_in, tokens_out, seq, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  );
-
-  let pausedPartials = 0;
-  getDb().transaction(() => {
-    messages.forEach((message, index) => {
-      const status: MessageStatus = message.status === 'streaming' ? 'paused' : message.status;
-      if (message.status === 'streaming') pausedPartials += 1;
-      const id = randomUUID();
-      insert.run(
-        id,
-        chat.id,
-        message.role,
-        message.content,
-        message.tool,
-        message.modelId,
-        message.providerId,
-        message.providerName,
-        status,
-        message.errorCode,
-        message.errorMessage,
-        message.tokensIn,
-        message.tokensOut,
-        index + 1,
-        message.createdAt,
-        message.updatedAt,
-      );
-    });
-  })();
-
-  // The copy is complete as stored, so the chat's own `updated_at` should reflect
-  // the moment of copying rather than the last thing said before it.
-  getDb().prepare('UPDATE chats SET updated_at = ? WHERE id = ?').run(now, chat.id);
+  const { pausedPartials } = copyMessages(source.id, chat.id, messages);
 
   // Read back rather than returning the objects built in the loop: a response
   // assembled from local variables describes what this function *meant* to write,

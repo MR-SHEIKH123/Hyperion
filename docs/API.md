@@ -465,6 +465,8 @@ no_healthy_provider | capability_mismatch | user_request`.
 | DELETE | `/api/chat/:id` | `{ deleted: true, id }` |
 | GET | `/api/chat/:id/messages` | `{ messages, nextBefore }` — query `limit` (default 50, max 500), `before` |
 | POST | `/api/chat/:id/fork` | **201** `{ chat, messages, forkedFrom, pausedPartials }` *(1.27)* |
+| GET | `/api/chat/:id/context` | `{ chatId, modelId, window, estimatedTokens, ratio, messageCount, needsNewSession }` *(1.28)* |
+| POST | `/api/chat/:id/resume-in-new-session` | **201** `{ chat, messages, source, droppedMessages, pausedPartials, receipt, assessment }` *(1.28)* |
 | POST | `/api/chat/:id/open` | `{ chat, messages, latestRun }` |
 | POST | `/api/chat/:id/pin` | `{ chat }` |
 | POST | `/api/chat/:id/archive` | `{ chat }` |
@@ -620,6 +622,76 @@ Body: `runId` (req), `modelId?`, `providerId?`, `tool?`. Same event stream.
 Requires the run to be in `paused` state — otherwise `run_not_paused` (409) as
 JSON. A manual model/provider switch resumes automatically on success and stays
 paused on failure.
+
+### 4.5 The context ceiling, and continuing in a new session  *(new in 1.28)*
+
+A long conversation eventually stops fitting in the model's window, and the
+provider answers that by rejecting the whole request. The agent loops compact
+their own context; a chat is the user's transcript, and dropping the middle of it
+behind their back would rewrite history they are reading. What a person can act
+on is a new session.
+
+**`GET /api/chat/:id/context`** — a read, no provider call, no write:
+
+```jsonc
+{
+  "chatId": "…", "modelId": "gpt-4o-mini",
+  "window": { "tokens": 128000, "source": "model", "assumed": false },
+  "estimatedTokens": 104321, "ratio": 0.815,
+  "messageCount": 42, "needsNewSession": true
+}
+```
+
+The window comes from the same ladder the agent loops use (`1.28`'s accounting):
+an explicit override, then the context length the provider reported for this
+model in its **cached** model list, then the conservative
+`DEFAULT_CONTEXT_TOKENS = 8 192`. `source` names which rung was used and
+`assumed: true` marks the default — most OpenAI-compatible gateways report no
+context length at all, so this is the common case rather than the edge case, and
+the route says so instead of presenting a guess as a measurement.
+`estimatedTokens` uses the adapter's own arithmetic (~4 characters per token plus
+per-message overhead), so the client and the provider never disagree about
+whether a conversation fits. `needsNewSession` is `ratio` against
+`COMPACTION_TRIGGER_RATIO` (0.8) — the same threshold that makes an agent run
+compact, so "nearly full" means one thing in this build. A chat that does not
+exist is a `404`.
+
+**`POST /api/chat/:id/resume-in-new-session`** — body `{}`, `title?`,
+`chatId?` (supply your own id for the new session).
+
+- **The source is never modified.** Nothing in it is deleted, truncated or
+  re-stamped, so the span the new session leaves behind still exists where it
+  always did — that is the only copy of it.
+- **The recent tail is kept, sized to `COMPACTION_TARGET_RATIO` (0.5) of the
+  window.** Messages are walked newest-first until the budget is spent. The most
+  recent message is kept even if it alone exceeds the budget: a session resumed
+  without the thing the user is working on has nothing to continue.
+- **The dropped span is described, never quoted.** The new session's first
+  message is a persisted `system` note — `[Earlier conversation left behind when
+  this session was resumed from "…": 7 user message(s), 6 assistant message(s).
+  …]` — counting roles and naming counts only. Quoting the dropped messages would
+  cost the tokens the resume exists to reclaim, and the text it would quote is
+  whatever the user happened to paste. The note is a row rather than a detail of
+  the response because a chat's transcript *is* its context: the next turn is
+  built from these rows, so a receipt that lived only in the response would
+  vanish at the next message and the model would meet a conversation starting
+  mid-sentence with no idea it had. `system` is the honest role — context
+  supplied by the harness, not words put in the model's mouth.
+- **Copied messages get new ids and fresh sequence numbers** (the receipt is
+  `seq: 1`), keep their original timestamps, and a message that was mid-stream in
+  the source lands `paused`, counted in `pausedPartials` — the copy has no
+  writer, and `streaming` would claim one is coming. Same rule as the fork.
+- **A conversation that already fits is refused with a `409`** naming both
+  numbers (`estimatedTokens`, `windowTokens`, `assumed` in `details`), because
+  "resume in a new session" exists to escape a limit and a copy that drops
+  nothing solves nothing; the message points at the fork instead.
+- **A temporary chat is refused** (`409`), like the fork: its messages exist only
+  in the process, and a new session would persist exactly what the user asked to
+  leave no trace of.
+
+The response carries `assessment` so a surface can state the numbers the decision
+was made from rather than re-deriving them, and `receipt` so it can render the
+note without parsing the transcript.
 
 ---
 

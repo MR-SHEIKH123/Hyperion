@@ -53,6 +53,7 @@
 
 .banner,
 .resumeBanner,
+.contextBanner,
 .errorBanner {
   display: flex;
   align-items: center;
@@ -69,6 +70,13 @@
 .resumeBanner {
   background: var(--surface-raised);
   border-left: 3px solid var(--status-warning);
+}
+
+/* The context ceiling offer. A quiet notice rather than an alert: nothing has
+   gone wrong yet — the point is to act before the provider refuses a request. */
+.contextBanner {
+  background: var(--surface-subtle);
+  border-left: 3px solid var(--border-strong, var(--border-subtle));
 }
 
 .resumeCopy {

@@ -195,6 +195,22 @@ test('a message that was still streaming lands paused, with no writer in the bra
   assert.equal(stillStreaming?.status, 'streaming');
 });
 
+test('a caller-supplied id that is already taken is a conflict, not a 500', async () => {
+  const source = seededChat();
+  const chatId = '22222222-2222-4222-8222-222222222222';
+  const first = await fork(source.id, { chatId });
+  assert.equal(first.status, 201);
+  assert.equal(first.body.chat?.id, chatId);
+
+  // `createChat` refuses a duplicate id rather than letting the INSERT fail at
+  // the primary key: the caller asked for an id, and "that id is taken" is the
+  // honest answer instead of an internal error.
+  const second = await fork(source.id, { chatId });
+  assert.equal(second.status, 409);
+  assert.equal(second.body.error?.code, 'conflict');
+  assert.equal(second.body.error?.details?.field, 'id');
+});
+
 test('the branch is independent: writing to it does not touch the source', async () => {
   const source = seededChat();
   const { body } = await fork(source.id);

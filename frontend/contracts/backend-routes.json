@@ -276,6 +276,20 @@
       "capability": "chat.write"
     },
     {
+      "method": "GET",
+      "path": "/api/chat/:id/context",
+      "source": "src/http/chat.ts:461",
+      "exposure": "frontend",
+      "capability": "chat.core"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/:id/resume-in-new-session",
+      "source": "src/http/chat.ts:478",
+      "exposure": "frontend",
+      "capability": "chat.write"
+    },
+    {
       "method": "POST",
       "path": "/api/chat/:id/open",
       "source": "src/http/chat.ts:365",

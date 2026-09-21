@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Archive, ArchiveRestore, GitFork, Pin, PinOff, RefreshCw } from 'lucide-react';
-import { archiveChat, forkChat, openChat, patchChat, pinChat, unarchiveChat } from '../../api/chat';
+import { Archive, ArchiveRestore, GitFork, Pin, PinOff, RefreshCw, Split } from 'lucide-react';
+import { archiveChat, forkChat, getChatContext, openChat, patchChat, pinChat, resumeInNewSession, unarchiveChat } from '../../api/chat';
 import type { ChatReconciliation } from '../../api/chat';
 import type { MessageRecord, RunStateSnapshot } from '../../contracts/wire/chat';
 import { Button } from '../../design-system/components/Button/Button';
@@ -40,6 +40,19 @@ export interface ForkNotice {
   pausedPartials: number;
 }
 
+/**
+ * What the resume handed to the session it opened (1.28). Carried on the
+ * navigation like the fork notice, for the same reason: it describes the act of
+ * continuing elsewhere, not the session.
+ */
+export interface SessionResumeNotice {
+  sourceTitle: string;
+  droppedMessages: number;
+  /** True when the window it was measured against was the assumed default. */
+  assumed: boolean;
+  windowTokens: number;
+}
+
 interface ConversationProps {
   chatId: string;
   /** A prompt the user typed before this chat existed (new-chat fast path). */
@@ -67,7 +80,9 @@ export function ChatConversation({ chatId, pendingSend, onPendingSendConsumed }:
   const navigate = useNavigate();
   const forkNotice: ForkNotice | null =
     (location.state as { forkNotice?: ForkNotice } | null)?.forkNotice ?? null;
-  const dismissForkNotice = useCallback(() => {
+  const sessionResumeNotice: SessionResumeNotice | null =
+    (location.state as { sessionResumeNotice?: SessionResumeNotice } | null)?.sessionResumeNotice ?? null;
+  const dismissNotice = useCallback(() => {
     void navigate(location.pathname, { replace: true, state: null });
   }, [navigate, location.pathname]);
 
@@ -178,6 +193,47 @@ export function ChatConversation({ chatId, pendingSend, onPendingSendConsumed }:
     },
   });
 
+  /**
+   * How full this conversation is (1.28).
+   *
+   * Fetched once when the conversation opens — the estimate only moves when
+   * messages are added, and a refetch per keystroke would be a provider-free way
+   * to still cost the user something. Refused rather than retried on failure:
+   * the read is an *offer*, and a surface that shouts about a metric nobody asked
+   * for is worse than one that stays quiet.
+   */
+  const context = useQuery({
+    queryKey: ['chat-context', chatId],
+    queryFn: ({ signal }) => getChatContext(chatId, signal),
+    retry: false,
+    staleTime: 30_000,
+  });
+
+  /**
+   * Continue this conversation in a new session.
+   *
+   * The response names the session it created, so the surface opens it rather
+   * than leaving the user on a transcript that is about to hit the ceiling. The
+   * source is not refetched: the backend leaves it byte-for-byte as it was, and
+   * refetching would suggest otherwise.
+   */
+  const continueInNewSession = useMutation({
+    mutationFn: () => resumeInNewSession(chatId),
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: ['chats'] });
+      void navigate(`/chat/${encodeURIComponent(result.chat.id)}`, {
+        state: {
+          sessionResumeNotice: {
+            sourceTitle: result.source.title,
+            droppedMessages: result.droppedMessages,
+            assumed: result.assessment.window.assumed,
+            windowTokens: result.assessment.window.tokens,
+          } satisfies SessionResumeNotice,
+        },
+      });
+    },
+  });
+
   const resume = useCallback(() => {
     const run = latestRun;
     if (run === null || run.state !== 'paused' || modelId === null) return;
@@ -256,6 +312,9 @@ export function ChatConversation({ chatId, pendingSend, onPendingSendConsumed }:
   useScrollAnchor(scrollRef, chatDraftKey(chatId), view, { enabled: !chatQuery.isPending });
 
   const pausedRun = latestRun !== null && latestRun.state === 'paused' ? latestRun : null;
+  // The offer, not an alarm: shown only when the read succeeded and said the
+  // transcript has reached the trigger the agent loops compact at.
+  const showContextBanner = context.data?.needsNewSession === true && stream.status.phase !== 'running';
   const showResumeBanner = pausedRun !== null && stream.status.phase !== 'running';
   const serverRunInFlight = latestRun?.state === 'running' && stream.status.phase !== 'running';
   const busyError = stream.status.phase === 'error' && stream.status.error?.code === 'busy' ? stream.status.error : null;
@@ -310,9 +369,54 @@ export function ChatConversation({ chatId, pendingSend, onPendingSendConsumed }:
               : ''}
             .
           </span>
-          <Button variant="quiet" onClick={dismissForkNotice}>
+          <Button variant="quiet" onClick={dismissNotice}>
             Dismiss
           </Button>
+        </p>
+      )}
+
+      {sessionResumeNotice !== null && (
+        <p className={styles.forkNotice} role="status">
+          <span className={styles.forkNoticeText}>
+            Continued from “{sessionResumeNotice.sourceTitle}” — {sessionResumeNotice.droppedMessages}{' '}
+            {sessionResumeNotice.droppedMessages === 1 ? 'earlier message was' : 'earlier messages were'} left
+            behind and described in the note at the top of this session. The original conversation still
+            has them.
+          </span>
+          <Button variant="quiet" onClick={dismissNotice}>
+            Dismiss
+          </Button>
+        </p>
+      )}
+
+      {showContextBanner && (
+        <div className={styles.contextBanner} role="status">
+          <div className={styles.resumeCopy}>
+            <h2 className={styles.resumeTitle}>This conversation is nearly full</h2>
+            <p className={styles.resumeDetail}>
+              ~{Math.round(context.data?.estimatedTokens ?? 0).toLocaleString()} of{' '}
+              {context.data?.window.tokens.toLocaleString()} tokens
+              {context.data?.window.assumed === true
+                ? ' — the limit is assumed, because this model reports no context length'
+                : ''}
+              . Continue in a new session to keep the recent part and leave the earlier messages
+              behind with a note describing them.
+            </p>
+          </div>
+          <Button
+            variant="primary"
+            onClick={() => continueInNewSession.mutate()}
+            disabled={continueInNewSession.isPending}
+          >
+            <Split className={styles.resumeIcon} aria-hidden="true" /> Continue in a new session
+          </Button>
+        </div>
+      )}
+
+      {continueInNewSession.isError && (
+        <p className={styles.problem} role="alert">
+          This conversation could not be continued in a new session.{' '}
+          {continueInNewSession.error instanceof Error ? continueInNewSession.error.message : ''}
         </p>
       )}
 

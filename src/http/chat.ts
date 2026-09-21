@@ -23,6 +23,7 @@ import { currentJob, isBusy, withLock } from '../orchestrator/lock.ts';
 import { latestRunForChat, listPausedRuns } from '../orchestrator/runState.ts';
 import { openStream } from '../orchestrator/sse.ts';
 import { exportChat } from '../services/export/index.ts';
+import { assessChatContext, resumeInNewSession } from '../services/chat/sessionResume.ts';
 import type { ToolName } from '../types/core.ts';
 import { AppError } from '../util/errors.ts';
 import { attachDownloadHeaders } from './download.ts';
@@ -445,6 +446,46 @@ chatRouter.get(
       latest: latestRunForChat(id),
       paused: listPausedRuns(id),
     });
+  }),
+);
+
+/**
+ * How full this conversation is (1.28's detection half).
+ *
+ * A read, and always a 200 for a chat that exists: an empty conversation and one
+ * about to be refused are both answers. `window.assumed` is carried because the
+ * estimate is only as good as the limit it is compared against, and most
+ * OpenAI-compatible gateways do not report one.
+ */
+chatRouter.get(
+  '/:id/context',
+  wrap(async (req, res) => {
+    res.json(assessChatContext(pathParam(req, 'id')));
+  }),
+);
+
+/**
+ * Continue this conversation in a new session (1.28).
+ *
+ * `201` with the new chat, the receipt, the copied tail and the numbers the
+ * decision was made from. The source is untouched — nothing is deleted or
+ * truncated in it — so the part that was left behind still exists where it
+ * always did. A conversation that already fits is refused with a `409` naming
+ * the estimate and the window, because a copy that leaves nothing behind would
+ * solve nothing; see `services/chat/sessionResume.ts`.
+ */
+chatRouter.post(
+  '/:id/resume-in-new-session',
+  wrap(async (req, res) => {
+    const id = pathParam(req, 'id');
+    const payload = body(req);
+    const title = asOptionalString(payload.title, 'title');
+    const chatId = asOptionalString(payload.chatId, 'chatId');
+    const result = resumeInNewSession(id, {
+      ...(title === undefined ? {} : { title }),
+      ...(chatId === undefined ? {} : { id: chatId }),
+    });
+    res.status(201).json(result);
   }),
 );
 
