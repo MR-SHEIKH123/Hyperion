@@ -28,7 +28,8 @@ behavior in the browser.
 - No Code file-tree, file-read, task-diff, or walkthrough retrieval contracts. (`GET /api/code/tasks`
   reports the live lane — running slots and held worktrees — which is what a task rail needs for
   *active* work; a per-project *history* of code tasks is still absent, and `GET /api/code/tasks/:id/export`
-  covers one task's diff.)
+  covers one task's diff. The Code surface (`src/tools/code/`) therefore shows the lane and says
+  that a finished task leaves no row here, rather than caching rows the server never sent.)
 - No Design file tree, version timeline, rendered diff, or design-system context contract.
 - ~~No general artifact lineage/list endpoint.~~ **Partly closed 2026-09-21**: `GET /api/artifacts/versions?key=…`
   lists one artifact's version chain with its derived parent (Prompt 1.39 A6). There is still no

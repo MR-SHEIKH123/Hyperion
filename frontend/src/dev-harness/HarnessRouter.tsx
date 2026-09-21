@@ -6,11 +6,20 @@ import { TaskStateBanner } from '../components/TaskStateBanner/TaskStateBanner';
 import { ApertureMark } from '../design-system/components/ApertureMark/ApertureMark';
 import styles from './HarnessRouter.module.css';
 import { AttentionList } from '../attention/AttentionList';
+import { CodeLaneRail, TaskSpend } from '../tools/code/CodeSurface';
 import {
   KnowledgeSourceList,
   VersionTimeline,
 } from '../components/Provenance/ProvenancePanel';
 import { artifactVersionsFixture, knowledgeSourcesFixture } from './fixtures/provenance';
+import {
+  codeLaneFixture,
+  idleCodeLaneFixture,
+  partiallyPricedTaskSpendFixture,
+  pricedTaskSpendFixture,
+  unrecordedTaskSpendFixture,
+  unpricedTaskSpendFixture,
+} from './fixtures/codeSurface';
 import { attentionQueueFixture } from './fixtures/attentionQueue';
 import { operationalFixtures } from './fixtures/operationalStates';
 import { taskStateFixtures } from './fixtures/taskStates';
@@ -120,6 +129,56 @@ function ProvenanceFixture() {
   );
 }
 
+/**
+ * The Code surface's parts, from fixtures (1.39 A3/A4).
+ *
+ * `CodeLaneRail` and `TaskSpend` take their data as props and never fetch, so the
+ * whole state set renders here without a server: a busy lane and an idle one, a
+ * slot that has no task id yet, tasks parked while holding a worktree, and every
+ * shape spend can take — priced, a floor, unpriced, and nothing recorded. The page
+ * that wires them into the shared frame is covered by its own tests against a fetch
+ * stub, because only a request can prove the failure states.
+ */
+function CodeSurfaceFixture() {
+  return (
+    <section aria-labelledby="code-fixture-heading" className={styles.section}>
+      <h2 className={styles.sectionHeading} id="code-fixture-heading">
+        Code surface fixtures
+      </h2>
+      <p className={styles.note}>
+        The lane, and a task's recorded spend. “Nothing recorded” and “unpriced” are shown
+        alongside the priced figures because those are the two states a summary gets wrong.
+      </p>
+      <div className={styles.provenanceGrid}>
+        <article className={styles.card} data-fixture="code-lane-busy">
+          <h3>Lane with work</h3>
+          <CodeLaneRail lane={codeLaneFixture} isPending={false} isError={false} selectedTaskId="task-7f2a" />
+        </article>
+        <article className={styles.card} data-fixture="code-lane-idle">
+          <h3>Lane with nothing</h3>
+          <CodeLaneRail lane={idleCodeLaneFixture} isPending={false} isError={false} selectedTaskId={null} />
+        </article>
+        <article className={styles.card} data-fixture="code-spend-priced">
+          <h3>Spend, fully priced</h3>
+          <TaskSpend taskId="task-7f2a" usage={pricedTaskSpendFixture} isPending={false} isError={false} />
+        </article>
+        <article className={styles.card} data-fixture="code-spend-floor">
+          <h3>Spend, a floor</h3>
+          <TaskSpend taskId="task-31c8" usage={partiallyPricedTaskSpendFixture} isPending={false} isError={false} />
+        </article>
+        <article className={styles.card} data-fixture="code-spend-unpriced">
+          <h3>Spend, unpriced</h3>
+          <TaskSpend taskId="task-9e01" usage={unpricedTaskSpendFixture} isPending={false} isError={false} />
+        </article>
+        <article className={styles.card} data-fixture="code-spend-unrecorded">
+          <h3>Spend, nothing recorded</h3>
+          <TaskSpend taskId="task-0bad" usage={unrecordedTaskSpendFixture} isPending={false} isError={false} />
+        </article>
+      </div>
+    </section>
+  );
+}
+
 export function Component() {
   if (!import.meta.env.DEV) {
     throw new Error('The state harness is unavailable outside development.');
@@ -170,6 +229,8 @@ export function Component() {
       <AttentionFixture />
 
       <ProvenanceFixture />
+
+      <CodeSurfaceFixture />
 
       <section aria-labelledby="dialog-fixtures-heading" className={styles.section}>
         <h2 className={styles.sectionHeading} id="dialog-fixtures-heading">Dialog fixtures</h2>

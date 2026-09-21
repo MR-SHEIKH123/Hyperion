@@ -146,9 +146,21 @@ describe('the attention list', () => {
   });
 
   it('says that a link cannot show the item yet instead of leaving the row silent', () => {
-    view();
-    // Both rows point at the Code surface, which is a placeholder.
-    expect(screen.getAllByRole('note', { name: '' }).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Code workspace is not built yet/).length).toBe(2);
+    // The fixture's two items are Code items, whose surface now exists: no row
+    // should claim the workspace is missing, and the links should be real.
+    const { container } = view();
+    expect(screen.queryByText(/Code workspace is not built yet/)).toBeNull();
+    expect(container.querySelectorAll('a[href^="/code?task="]').length).toBe(2);
+  });
+
+  it('still warns when a destination genuinely cannot show the item', () => {
+    view({
+      queue: queue({
+        items: [item({ tool: 'cowork' })],
+        total: 1,
+        counts: { approval_required: 1 },
+      }),
+    });
+    expect(screen.getByText(/Cowork workspace is not built yet/)).toBeInTheDocument();
   });
 });

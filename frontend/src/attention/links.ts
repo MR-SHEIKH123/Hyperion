@@ -64,11 +64,17 @@ export function attentionDestination(item: AttentionItem): AttentionDestination 
       const query = new URLSearchParams();
       if (item.taskId !== undefined) query.set('task', item.taskId);
       if (item.runId !== undefined) query.set('run', item.runId);
-      return {
-        href: `/${item.tool}${query.size === 0 ? '' : `?${query}`}`,
-        label: `Open in ${label}`,
-        caveat: `The ${label} workspace is not built yet — this opens the ${label} surface, which names the task and says so.`,
-      };
+      const href = `/${item.tool}${query.size === 0 ? '' : `?${query}`}`;
+      const destination = { href, label: `Open in ${label}` };
+      // Code's surface landed (1.39 A3), so a Code item is a real deep link to
+      // the task and carries no caveat. The remaining task tools still open their
+      // placeholders, and the placeholder is what tells the truth about them.
+      return item.tool === 'code'
+        ? destination
+        : {
+            ...destination,
+            caveat: `The ${label} workspace is not built yet — this opens the ${label} surface, which names the task and says so.`,
+          };
     }
     case 'scheduled_run_failed':
       return { href: '/cowork', label: 'Open Cowork', caveat: 'Scheduled tasks live in Cowork, whose surface is not built yet.' };

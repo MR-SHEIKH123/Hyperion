@@ -35,10 +35,19 @@ describe('attentionDestination', () => {
     expect(destination.href).toBe('/chat');
   });
 
-  it('carries the task ids to a tool surface that does not exist yet, and says so', () => {
+  it('deep-links a Code item to the Code surface, with no caveat to explain away', () => {
+    // Code's workspace landed (1.39 A3), so this is a real destination: the
+    // caveat would now be the lie, claiming the surface is missing.
     const destination = attentionDestination(item({}));
     expect(destination.href).toBe('/code?task=task-1&run=run-1');
     expect(destination.label).toBe('Open in Code');
+    expect(destination.caveat).toBeUndefined();
+  });
+
+  it('carries the task ids to a tool surface that does not exist yet, and says so', () => {
+    const destination = attentionDestination(item({ tool: 'cowork' }));
+    expect(destination.href).toBe('/cowork?task=task-1&run=run-1');
+    expect(destination.label).toBe('Open in Cowork');
     expect(destination.caveat).toMatch(/not built yet/);
   });
 

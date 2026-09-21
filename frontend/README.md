@@ -61,7 +61,19 @@ npm run build
   sources a Cowork run used *as evidence* — the usable ones, because a source that
   was consulted and found missing is not evidence and saying otherwise would
   overclaim. Both reads render their own failure; the panel is shown in the dev
-  harness, and the tool surfaces that will host it are still placeholders.
+  harness, and since 2026-09-21 the Code surface hosts the timeline at
+  `/code?file=<artifact key>`.
+- `src/tools/code/` is the first tool to populate the workspace frame (Prompt 1.39
+  A3): a read view of the Code lane (running slots, queue depth, capacity, and
+  parked worktrees listed apart because they hold disk rather than a slot), the
+  selected task's state through the task machine and its recorded spend, and the
+  version timeline for a named file. It refuses three lies by construction — it
+  does not start tasks (the composer says the work is unbuilt), it does not invent
+  a task history the backend cannot serve (the rail is the live lane), and it never
+  renders an absence as a figure: `requests: 0` reads "nothing was recorded, which
+  is not the same as free", a null total reads "unpriced", and a partly priced
+  total is labelled a floor. The Attention Center's Code items deep-link here with
+  no caveat; Cowork and Design still open placeholders, and those keep theirs.
 - `src/components/PrivacyIndicator/` is the point-of-action privacy line
   (Prompt 1.39 B): egress class, retention status, standing requirement and the
   redaction-check flag, rendered by the composer from
@@ -74,7 +86,10 @@ npm run build
   components. `/__dev/states` exists only under Vite development and is removed
   from production output. Every fixture names the surface that produces it, or
   says plainly that no surface does — interrupted tasks, provider cooldown and
-  design-preview failure are recorded as **not exposed** rather than faked. The
+  design-preview failure are recorded as **not exposed** rather than faked. The Code
+  surface's parts are fixtures too (a busy lane, an idle lane, and spend in every
+  shape), because those components take their data as props and never fetch — which
+  is why the harness still makes no network call. The
   dangerous-command confirmation is rendered with the production `Dialog` and
   labelled a primitive preview, because the Code approval surface does not exist
   yet.

@@ -10,9 +10,12 @@ import { AppShell } from '../shell/AppShell';
  */
 const AttentionCenter = lazy(() => import('../attention/AttentionCenter'));
 const ChatTool = lazy(() => import('../tools/chat/ChatTool'));
+const CodeTool = lazy(() => import('../tools/code/CodeTool'));
 const ToolPlaceholder = lazy(() => import('../shell/ToolPlaceholder'));
 
-const PLACEHOLDER_TOOLS = ['code', 'cowork', 'design', 'playground', 'plugins', 'skills', 'settings'] as const;
+// Code landed first (1.39 A3): it is the surface the attention queue already
+// deep-links to, so its items stop landing on a placeholder.
+const PLACEHOLDER_TOOLS = ['cowork', 'design', 'playground', 'plugins', 'skills', 'settings'] as const;
 
 function RouteFallback({ label }: { label?: string }) {
   return (
@@ -34,6 +37,7 @@ const shellChildren: RouteObject[] = [
   { index: true, element: <Navigate to="/chat" replace /> },
   { path: 'attention', ...lazyRoute(<AttentionCenter />) },
   { path: 'chat/*', ...lazyRoute(<ChatTool />) },
+  { path: 'code/*', ...lazyRoute(<CodeTool />) },
   ...PLACEHOLDER_TOOLS.map((tool) => ({
     path: `${tool}/*`,
     ...lazyRoute(<ToolPlaceholder />),
