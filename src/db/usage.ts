@@ -73,6 +73,18 @@ export interface RecordUsageInput {
   zdrRequirement?: ZdrRequirement | null;
   tokensIn: number;
   tokensOut: number;
+  /**
+   * The optional accounting fields from `TokenUsage` (1.28): prompt tokens the
+   * provider served from its own cache, prompt tokens it wrote into that cache,
+   * and thinking tokens it counted separately.
+   *
+   * `undefined` means the provider said nothing and is stored as NULL — which is
+   * not the same as a reported zero. A query for "how much of this was cached"
+   * has to be able to tell a month nobody measured from a month with no hits.
+   */
+  cacheReadTokens?: number | null;
+  cacheWriteTokens?: number | null;
+  reasoningTokens?: number | null;
   status?: 'ok' | 'error' | 'partial';
   durationMs?: number | null;
 }
@@ -174,6 +186,19 @@ function providerFacts(
  * NULL with the spend kept. `message_id` follows `chat_id`, since a message
  * without its chat is not a link either.
  */
+/** Sum two optional counts, keeping "nothing reported" as nothing reported. */
+function addNullable(a: number | null, b: number | null): number | null {
+  if (a === null) return b;
+  if (b === null) return a;
+  return a + b;
+}
+
+/** A reported count as a column value: `null` for "said nothing", rounded otherwise. */
+function optionalCount(value: number | null | undefined): number | null {
+  if (value === null || value === undefined || !Number.isFinite(value)) return null;
+  return Math.max(0, Math.round(value));
+}
+
 export function recordUsage(input: RecordUsageInput): void {
   try {
     const cost = computeCost(input.modelId, input.providerId ?? null, input.tokensIn, input.tokensOut);
@@ -225,8 +250,9 @@ export function recordUsage(input: RecordUsageInput): void {
         `INSERT INTO usage_log
            (chat_id, message_id, tool, model_id, provider_id, provider_name, provider_type,
             provider_egress, egress_proxy, zdr_status, zdr_requirement, tokens_in, tokens_out,
+            cache_read_tokens, cache_write_tokens, reasoning_tokens,
             cost_usd, status, duration_ms, task_id, run_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         unlinked ? null : input.chatId ?? null,
@@ -247,6 +273,11 @@ export function recordUsage(input: RecordUsageInput): void {
         input.zdrRequirement ?? null,
         Math.max(0, Math.round(input.tokensIn)),
         Math.max(0, Math.round(input.tokensOut)),
+        // Nullable on purpose: absent stays NULL, and a reported `0` is kept as
+        // the measurement it is. Rounding mirrors the two required counts.
+        optionalCount(input.cacheReadTokens),
+        optionalCount(input.cacheWriteTokens),
+        optionalCount(input.reasoningTokens),
         cost,
         input.status ?? 'ok',
         input.durationMs ?? null,
@@ -292,6 +323,32 @@ export interface UsageBucket {
   costUsd: number;
   /** Rows whose model/provider pair has no price entry. */
   unpricedRequests: number;
+  /**
+   * Prompt tokens the provider served from its own cache (1.28), summed over the
+   * rows that reported any. `null` when no row in the bucket reported a figure —
+   * which is not zero, and must not be shown as one.
+   */
+  cacheReadTokens: number | null;
+  /** Prompt tokens written into that cache, same rule. */
+  cacheWriteTokens: number | null;
+  /** Thinking tokens counted separately, same rule. */
+  reasoningTokens: number | null;
+  /**
+   * Share of prompt tokens served from cache: `cacheReadTokens / tokensIn`.
+   *
+   * `null` when nothing reported cache reads, so the UI says "not reported"
+   * rather than 0%.
+   *
+   * Read the direction of its error before quoting it: on gateways where
+   * `prompt_tokens` *includes* the cached part, `tokensIn` is the larger number
+   * and the rate is a floor (conservative); on gateways that report the cached
+   * part beside the uncached prompt, it is the literal share. Nothing here sums
+   * `cacheReadTokens` into `tokensIn` — see `TokenUsage` for why that is the
+   * safer mistake to make.
+   */
+  cacheHitRate: number | null;
+  /** Rows that reported cache reads at all — the denominator's caution. */
+  rowsWithCacheReporting: number;
 }
 
 export interface UsageSummary {
@@ -312,6 +369,10 @@ interface AggRow {
   tokens_out: number;
   cost_usd: number | null;
   unpriced: number;
+  cache_read: number | null;
+  cache_write: number | null;
+  reasoning: number | null;
+  cache_reported: number;
 }
 
 function where(query: UsageQuery): { sql: string; values: (string | number)[] } {
@@ -349,17 +410,30 @@ const AGG_COLUMNS = `
   COALESCE(SUM(tokens_in), 0)                    AS tokens_in,
   COALESCE(SUM(tokens_out), 0)                   AS tokens_out,
   COALESCE(SUM(cost_usd), 0)                     AS cost_usd,
-  SUM(CASE WHEN cost_usd IS NULL THEN 1 ELSE 0 END) AS unpriced
+  SUM(CASE WHEN cost_usd IS NULL THEN 1 ELSE 0 END) AS unpriced,
+  SUM(cache_read_tokens)                        AS cache_read,
+  SUM(cache_write_tokens)                       AS cache_write,
+  SUM(reasoning_tokens)                         AS reasoning,
+  SUM(CASE WHEN cache_read_tokens IS NULL THEN 0 ELSE 1 END) AS cache_reported
 `;
 
 function mapBucket(row: AggRow, fallbackKey = 'unknown'): UsageBucket {
+  const tokensIn = Number(row.tokens_in ?? 0);
+  const cacheReadTokens = row.cache_read === null || row.cache_read === undefined ? null : Number(row.cache_read);
+  const rowsWithCacheReporting = Number(row.cache_reported ?? 0);
   return {
     key: row.key ?? fallbackKey,
     requests: Number(row.requests ?? 0),
-    tokensIn: Number(row.tokens_in ?? 0),
+    tokensIn,
     tokensOut: Number(row.tokens_out ?? 0),
     costUsd: Number(row.cost_usd ?? 0),
     unpricedRequests: Number(row.unpriced ?? 0),
+    cacheReadTokens,
+    cacheWriteTokens: row.cache_write === null || row.cache_write === undefined ? null : Number(row.cache_write),
+    reasoningTokens: row.reasoning === null || row.reasoning === undefined ? null : Number(row.reasoning),
+    cacheHitRate:
+      cacheReadTokens === null || tokensIn <= 0 ? null : Math.min(1, cacheReadTokens / tokensIn),
+    rowsWithCacheReporting,
   };
 }
 
@@ -385,6 +459,10 @@ export function summarizeUsage(query: UsageQuery = {}): UsageSummary {
     tokens_out: 0,
     cost_usd: 0,
     unpriced: 0,
+    cache_read: null,
+    cache_write: null,
+    reasoning: null,
+    cache_reported: 0,
   });
 
   return {
@@ -734,16 +812,44 @@ export function summarizeExposure(query: UsageQuery = {}): ExposureSummary {
     byClass.push({ ...entry.bucket, key: cls, providerTypes: [...entry.types].sort() });
   }
 
+  // The exposure summary's total is folded here rather than aggregated in SQL,
+  // so the cache/reasoning fields have to be merged too. They keep the same rule
+  // as everywhere else: a merge of "nothing reported" and "nothing reported" is
+  // still nothing reported, not zero.
   const totals = byClass.reduce<UsageBucket>(
-    (accumulator, bucket) => ({
+    (accumulator, bucket) => {
+      const merged = {
+        key: 'total',
+        requests: accumulator.requests + bucket.requests,
+        tokensIn: accumulator.tokensIn + bucket.tokensIn,
+        tokensOut: accumulator.tokensOut + bucket.tokensOut,
+        costUsd: accumulator.costUsd + bucket.costUsd,
+        unpricedRequests: accumulator.unpricedRequests + bucket.unpricedRequests,
+        cacheReadTokens: addNullable(accumulator.cacheReadTokens, bucket.cacheReadTokens),
+        cacheWriteTokens: addNullable(accumulator.cacheWriteTokens, bucket.cacheWriteTokens),
+        reasoningTokens: addNullable(accumulator.reasoningTokens, bucket.reasoningTokens),
+        rowsWithCacheReporting: accumulator.rowsWithCacheReporting + bucket.rowsWithCacheReporting,
+        cacheHitRate: null as number | null,
+      };
+      merged.cacheHitRate =
+        merged.cacheReadTokens === null || merged.tokensIn <= 0
+          ? null
+          : Math.min(1, merged.cacheReadTokens / merged.tokensIn);
+      return merged;
+    },
+    {
       key: 'total',
-      requests: accumulator.requests + bucket.requests,
-      tokensIn: accumulator.tokensIn + bucket.tokensIn,
-      tokensOut: accumulator.tokensOut + bucket.tokensOut,
-      costUsd: accumulator.costUsd + bucket.costUsd,
-      unpricedRequests: accumulator.unpricedRequests + bucket.unpricedRequests,
-    }),
-    { key: 'total', requests: 0, tokensIn: 0, tokensOut: 0, costUsd: 0, unpricedRequests: 0 },
+      requests: 0,
+      tokensIn: 0,
+      tokensOut: 0,
+      costUsd: 0,
+      unpricedRequests: 0,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+      reasoningTokens: null,
+      cacheHitRate: null,
+      rowsWithCacheReporting: 0,
+    },
   );
 
   const zdr = summarizeZdr(query);

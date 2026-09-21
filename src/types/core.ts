@@ -375,9 +375,33 @@ export interface MessageRecord {
   updatedAt: number;
 }
 
+/**
+ * What one provider request consumed (1.28's `reasoningTokens`/`cacheHitRate`).
+ *
+ * `tokensIn`/`tokensOut` are exactly what the provider reported and are the only
+ * two the cost table prices. The three optional fields are **additional
+ * accounting some providers report separately**, and they are optional rather
+ * than defaulted to zero for the reason the whole dashboard turns on: a provider
+ * that does not report cache reads has *not* reported zero, and a total built
+ * from silent zeroes would say "nothing was cached" about traffic nobody
+ * measured.
+ *
+ * `cacheReadTokens` is deliberately **not** folded into `tokensIn`, even for
+ * gateways where `prompt_tokens` already includes it. Folding would change what
+ * `tokensIn` means overnight — and with it every historical row — while
+ * `computeCost` prices `tokensIn` at the input rate and the price table has no
+ * cache tier to price it with. The rate is computed from the parts instead, and
+ * the direction of its error is documented where it is computed.
+ */
 export interface TokenUsage {
   tokensIn: number;
   tokensOut: number;
+  /** Prompt tokens served from the provider's own cache, when it says so. */
+  cacheReadTokens?: number;
+  /** Prompt tokens written into that cache, when it says so. */
+  cacheWriteTokens?: number;
+  /** Thinking tokens, counted separately from the answer by some models. */
+  reasoningTokens?: number;
 }
 
 /** What a provider adapter yields while streaming. */

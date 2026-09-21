@@ -4856,3 +4856,37 @@ browser-use is a real stored decision that no code path consults today — which
 exactly what `consumers: []` on its hub entry says. Wiring a second server into a
 tool's context is per-tool MCP selection, and that is Prompt-2 work.
 
+## Cache and reasoning accounting: silence is not zero (1.28)
+
+`usage_log` has held `cache_read_tokens`, `cache_write_tokens` and
+`reasoning_tokens` since migration `017`. Nothing wrote them and nothing read
+them: the columns existed and the numbers did not. They are now fed by the
+adapters and rolled up, and the decisions worth keeping are about the *gaps*.
+
+1. **"Said nothing" and "reported zero" are different facts.** The columns are
+   nullable and absent stays NULL; a reported `0` is written as `0`. The rollup
+   answers `null` — displayed as "not reported" — for a bucket where no row
+   measured cache reads, and `0` for a row that measured zero. A dashboard that
+   showed 0% for the first case would be inventing a measurement, which is the
+   failure mode this whole family of fields invites.
+2. **`cacheReadTokens` is never added to `tokensIn`.** OpenAI-compatible gateways
+   report `cached_tokens` as a *subset* of `prompt_tokens`; Anthropic-shaped
+   blocks report the cache fields *beside* an uncached prompt count. One
+   convention is a subset and the other is a sibling, and folding either into
+   `tokens_in` would be wrong for the other — and wrong in the direction that
+   costs money, since `computeCost` prices `tokens_in`. The parts are kept
+   verbatim; the rate is derived, and the derived rate is documented as a floor
+   on the subset convention.
+3. **The rate is capped at 1.** A gateway whose figures imply that more than the
+   whole prompt was cached has a convention mismatch; "106% cached" is not a fact
+   about anything, so the share saturates at all of it. The raw reported counts are
+   preserved as reported — only the derived share is clamped.
+4. **`rowsWithCacheReporting` rides with the rate.** A 40% cache hit rate
+   computed from two rows out of a thousand is a fact about two rows, and a UI
+   that quotes it without the denominator is quoting a coincidence.
+
+The chat SSE `usage` frame carries the optional fields through and **omits** the
+ones the provider did not report, so a client cannot render a zero it was never
+given. Ollama reports no cache accounting at all: local rows stay NULL, and that
+is stated rather than papered over with a zero.
+

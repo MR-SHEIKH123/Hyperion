@@ -335,6 +335,11 @@ export async function sendMessage(input: SendMessageInput, sse: SseStream): Prom
   // Success.
   const tokensIn = outcome.usage?.tokensIn ?? 0;
   const tokensOut = outcome.usage?.tokensOut ?? 0;
+  // Cache and reasoning accounting (1.28) rides along exactly as reported:
+  // `undefined` when the provider said nothing, so the column stays NULL.
+  const cacheReadTokens = outcome.usage?.cacheReadTokens;
+  const cacheWriteTokens = outcome.usage?.cacheWriteTokens;
+  const reasoningTokens = outcome.usage?.reasoningTokens;
 
   updateMessage(assistant.id, {
     content,
@@ -367,6 +372,9 @@ export async function sendMessage(input: SendMessageInput, sse: SseStream): Prom
     zdrRequirement: requirementAtStart,
     tokensIn,
     tokensOut,
+    cacheReadTokens,
+    cacheWriteTokens,
+    reasoningTokens,
     status: 'ok',
     durationMs: Date.now() - startedAt,
   });
@@ -384,6 +392,12 @@ export async function sendMessage(input: SendMessageInput, sse: SseStream): Prom
       data: {
         tokensIn,
         tokensOut,
+        // Optional on the wire, and omitted rather than zeroed: a client that
+        // shows "cache 0%" for a provider that reports no cache accounting would
+        // be inventing a measurement.
+        ...(cacheReadTokens === undefined ? {} : { cacheReadTokens }),
+        ...(cacheWriteTokens === undefined ? {} : { cacheWriteTokens }),
+        ...(reasoningTokens === undefined ? {} : { reasoningTokens }),
         costUsd: computeCost(input.modelId, outcome.provider.id, tokensIn, tokensOut),
       },
     });

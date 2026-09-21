@@ -29,6 +29,7 @@ import type {
   ProviderAdapter,
   ProviderRecord,
   StreamChunk,
+  TokenUsage,
   ToolCall,
 } from '../types/core.ts';
 
@@ -461,6 +462,9 @@ export const openAiAdapter: ProviderAdapter = {
           usage: {
             tokensIn: frame.usage.prompt_tokens ?? 0,
             tokensOut: frame.usage.completion_tokens ?? 0,
+            // `cached_tokens` is a subset of `prompt_tokens` here, so it is kept
+            // beside `tokensIn` rather than added to it — see `TokenUsage`.
+            ...tokenDetails(frame.usage),
           },
         };
       }
@@ -488,8 +492,58 @@ interface OpenAiStreamFrame {
     delta?: { content?: string; tool_calls?: OpenAiToolCallDelta[] };
     finish_reason?: string;
   }[];
-  usage?: { prompt_tokens?: number; completion_tokens?: number };
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    /**
+     * Cache and reasoning accounting, as OpenAI-compatible gateways report it.
+     * Present only when the gateway actually reports it: an absent block must
+     * stay absent rather than becoming a zero, which would read as "measured,
+     * and nothing was cached".
+     */
+    prompt_tokens_details?: { cached_tokens?: number };
+    completion_tokens_details?: { reasoning_tokens?: number };
+  };
   error?: { message?: string };
+}
+
+/**
+ * Lift the optional accounting out of a provider's usage object.
+ *
+ * `undefined` when the gateway said nothing, a number when it did — including a
+ * reported `0`, which is a measurement and therefore different from silence.
+ * Every field is only copied when it is a finite number, so a gateway that sends
+ * `null` or a string lands on "said nothing" rather than on a NaN in a column.
+ */
+function tokenDetails(usage: {
+  prompt_tokens_details?: { cached_tokens?: number };
+  completion_tokens_details?: { reasoning_tokens?: number };
+}): Partial<TokenUsage> {
+  const cached = usage.prompt_tokens_details?.cached_tokens;
+  const reasoning = usage.completion_tokens_details?.reasoning_tokens;
+  return {
+    ...(typeof cached === 'number' && Number.isFinite(cached) ? { cacheReadTokens: cached } : {}),
+    ...(typeof reasoning === 'number' && Number.isFinite(reasoning) ? { reasoningTokens: reasoning } : {}),
+  } satisfies Partial<TokenUsage>;
+}
+
+/**
+ * Cache accounting from an Anthropic-shaped usage block.
+ *
+ * `cache_read_input_tokens` and `cache_creation_input_tokens` are reported
+ * *beside* `input_tokens` rather than inside it. Kept verbatim, and only when
+ * they are finite numbers, so "reported as 0" and "not reported" stay distinct.
+ */
+function anthropicTokenDetails(usage: {
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+}): Partial<TokenUsage> {
+  const read = usage.cache_read_input_tokens;
+  const write = usage.cache_creation_input_tokens;
+  return {
+    ...(typeof read === 'number' && Number.isFinite(read) ? { cacheReadTokens: read } : {}),
+    ...(typeof write === 'number' && Number.isFinite(write) ? { cacheWriteTokens: write } : {}),
+  } satisfies Partial<TokenUsage>;
 }
 
 /** ~4 characters per token. Only used when the provider reports no usage. */
@@ -771,6 +825,13 @@ export const openCodexAdapter: ProviderAdapter = {
           usage: {
             tokensIn: usage.input_tokens ?? 0,
             tokensOut: usage.output_tokens ?? 0,
+            // Anthropic-style cache accounting: reads and writes are reported
+            // apart from the uncached prompt, and both are kept as their own
+            // columns. Nothing is summed into `input_tokens`, because a gateway
+            // that *does* include the cached part would then be double-counted —
+            // the two conventions exist in the wild and the safer reading is the
+            // literal one.
+            ...anthropicTokenDetails(usage),
           },
         };
       }
@@ -798,7 +859,12 @@ interface ResponsesStreamFrame {
   delta?: string;
   error?: { message?: string; type?: string; code?: string };
   response?: {
-    usage?: { input_tokens?: number; output_tokens?: number };
+    usage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      cache_read_input_tokens?: number;
+      cache_creation_input_tokens?: number;
+    };
     incomplete_details?: { reason?: string };
     error?: { message?: string; type?: string; code?: string };
   };

@@ -133,6 +133,11 @@ export function createAgentContext(input: AgentContextInput): AgentContext {
       zdrRequirement: zdrRequirementAtStart,
       tokensIn: input.usage.tokensIn,
       tokensOut: input.usage.tokensOut,
+      // The same optional accounting the chat path records (1.28): undefined
+      // stays NULL, a reported zero stays a zero.
+      cacheReadTokens: input.usage.cacheReadTokens,
+      cacheWriteTokens: input.usage.cacheWriteTokens,
+      reasoningTokens: input.usage.reasoningTokens,
       status: input.status,
       durationMs: input.durationMs,
       taskId,
