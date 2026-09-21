@@ -1139,6 +1139,91 @@ they matter rather than discovered at a 401:
 because a future reader comparing our adapter against the vendor's README will
 otherwise reach for the same wrong conclusion.
 
+## 92 of 180 route pointers had drifted, and nothing was checking them (2026-09-21)
+
+Third find of the audit pass, and the first one in the *snapshot* rather than in
+product code. `frontend/contracts/backend-routes.json` records each route's
+`source` as `file:line`, which is how a reader jumps from the contract to the
+handler. Probing every entry against the tree showed **92 of 180 pointed at the
+wrong line** — `POST /api/code/run-task` at `agents.ts:493` was a closing brace,
+not a registration. The cause is mundane and worth naming: any file that gained
+lines above a route moved it, and nothing re-derived the pointer, because
+`check-contracts.mjs` only ever compared the *set* of routes. The set was right
+the whole time; the coordinates were not, so `npm run contracts` stayed green
+while a third of the file's pointers became noise.
+
+Two changes, in this order: the 92 stale pointers were regenerated from the tree
+(the other 88 already matched — the drift is per-file, not per-route), and the
+checker now compares each `source` against the registration line it discovers in
+its own pass, so the two cannot disagree. The check is deliberately *derived*:
+the expected line comes from discovery rather than from pattern-matching the
+route's path text on the recorded line, because multi-line registrations are
+normal here (`agentsRouter.post(` with the path literal on the next line) and the
+first version of the check — looking for the path segment on the recorded line —
+flagged 143 routes, 51 of them false, including `GET /api/health`, whose
+registration is `healthRouter.get('/', (_req, res) => {`. Comparing to the
+discovered line has no such false positives and needs no special cases.
+
+Lesson recorded for the register rather than for the code: **a gate that compares
+a set is not checking the metadata attached to that set.** The route set was
+verified; the pointers were decoration that looked like evidence. `frontend/contracts/README.md`
+now says what `source` promises and that the check enforces it.
+
+### Two audit findings of my own that did not survive verification
+
+Kept because the audit's value depends on it being able to be wrong out loud.
+
+- **`HYPERION_MODEL_CACHE_TTL_MS` is not a phantom knob.** The env-knob sweep
+  concluded it was undocumented-in-reverse (a doc naming an env var that does not
+  exist), and `docs/API.md` §3 was nearly edited to drop it. The knob is real:
+  `src/config/env.ts:141` — `modelCacheTtlMs: int('HYPERION_MODEL_CACHE_TTL_MS', 300_000)`,
+  read by `registry.ts:41` as the freshness window for a provider's model list,
+  and `?refresh=true` on the model routes is the per-request bypass of it. The
+  sweep's method was the flaw: it diffed the docs against `.env.example` and a
+  pattern for `HYPERION_*` names in `env.ts` rather than against the actual `int(`/
+  `flag(`/`str(` call sites, and this one is constructed by a helper whose first
+  argument is the name string. An audit needs the same scepticism for its own
+  findings as for the claims it is auditing.
+- **The `docs/API.md` error table was already complete.** The status note read
+  "no fix applied yet"; the tree had all 28 codes with the three previously-missing
+  ones added and the two throw-less ones (`permission_denied`, `approval_required`)
+  marked as refusal reasons rather than error codes. Re-diffed mechanically this
+  time — 28/28 codes, every status equal to `STATUS`, every `retryable` equal to
+  `DEFAULT_RETRYABLE` plus the four-code set — so the table is verified, not just
+  assumed fixed. Same treatment for `/api/providers/active/models`: the doc's 409
+  `no_active_provider` matches the live probe, and the 503 `no_healthy_provider`
+  it used to claim belongs to the sending path.
+
+## The API reference documented 163 of 180 routes, and numbered one section twice (2026-09-21)
+
+Fourth find of the audit pass, in `docs/API.md` itself. Two defects, both the kind
+that survive because nothing compares the document to the thing it describes:
+
+- **17 routes were documented nowhere.** The `{tool}` continuation family — the
+  approvals list, `approve`, `continue` across code/cowork/design — plus
+  `GET /api/code/permissions`, the three ZDR routes, `GET|PUT /api/settings/agents`,
+  `GET /api/settings/agent-profiles` and `POST /api/settings/reload-config` existed,
+  were tested, were used by the frontend, and appeared in no file under `docs/`
+  except as `CONTRACTS.md` prose. They now have a reference section each: §12.6
+  (approvals, continuation, permissions) and §20.7 (ZDR policy, agent profiles and
+  defaults, reload-config), plus a `PUT /api/providers/:id/zdr` row and paragraph
+  in §3.2. Written from the handlers' own comments, so the doc says what the code
+  does rather than what a reader would assume.
+- **Section 12.4 was used twice** — `12.4 Task state endpoints` (new in 1.15) and
+  `12.4 The Design agent` (the Design slice), with `12.5 Stopping a task` *between*
+  them. The Design section is now `12.7`; a numbered-heading sweep over
+  `docs/API.md`, `docs/CONTRACTS.md` and `docs/SPEC.md` found no other collision
+  (the SPEC's repeated `1./2./3.` are two lists under different `##` parents, which
+  is intentional local numbering).
+
+Coverage is now **180/180**, checked mechanically rather than by eye: every route in
+`frontend/contracts/backend-routes.json` appears in `docs/API.md`, with the
+`/api/{code|cowork|design}/…` placeholders expanded to the three concrete paths
+before comparison. That check is worth keeping in mind as a candidate for the
+contracts script; it is not there yet, because `docs/API.md` is prose and not a
+data file, and a checker that regexes prose is exactly how the 12.4 collision
+happened in the first place.
+
 ## Corrections to inherited claims (2026-09-18)
 
 Direct re-verifications against the code, recorded so stale plan wording stops

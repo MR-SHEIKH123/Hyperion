@@ -5,7 +5,7 @@
     {
       "method": "GET",
       "path": "/api/activity",
-      "source": "src/http/activity.ts:34",
+      "source": "src/http/activity.ts:35",
       "exposure": "frontend",
       "capability": "activity.read"
     },
@@ -19,42 +19,42 @@
     {
       "method": "POST",
       "path": "/api/code/run-task",
-      "source": "src/http/agents.ts:493",
+      "source": "src/http/agents.ts:496",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "POST",
       "path": "/api/cowork/run-task",
-      "source": "src/http/agents.ts:494",
+      "source": "src/http/agents.ts:497",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "POST",
       "path": "/api/design/run-task",
-      "source": "src/http/agents.ts:495",
+      "source": "src/http/agents.ts:498",
       "exposure": "frontend",
       "capability": "design.core"
     },
     {
       "method": "GET",
       "path": "/api/code/tasks",
-      "source": "src/http/agents.ts:505",
+      "source": "src/http/agents.ts:508",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "GET",
       "path": "/api/code/tasks/:taskId/state",
-      "source": "src/http/agents.ts:558",
+      "source": "src/http/agents.ts:598",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "GET",
       "path": "/api/cowork/tasks/:taskId/state",
-      "source": "src/http/agents.ts:559",
+      "source": "src/http/agents.ts:599",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
@@ -68,7 +68,7 @@
     {
       "method": "GET",
       "path": "/api/design/tasks/:taskId/state",
-      "source": "src/http/agents.ts:560",
+      "source": "src/http/agents.ts:600",
       "exposure": "frontend",
       "capability": "design.core"
     },
@@ -96,70 +96,70 @@
     {
       "method": "POST",
       "path": "/api/code/tasks/:taskId/cancel",
-      "source": "src/http/agents.ts:614",
+      "source": "src/http/agents.ts:674",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "POST",
       "path": "/api/cowork/tasks/:taskId/cancel",
-      "source": "src/http/agents.ts:615",
+      "source": "src/http/agents.ts:675",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "POST",
       "path": "/api/design/tasks/:taskId/cancel",
-      "source": "src/http/agents.ts:616",
+      "source": "src/http/agents.ts:676",
       "exposure": "frontend",
       "capability": "design.core"
     },
     {
       "method": "GET",
       "path": "/api/code/tasks/:taskId/export",
-      "source": "src/http/agents.ts:629",
+      "source": "src/http/agents.ts:689",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "GET",
       "path": "/api/code/rules",
-      "source": "src/http/agents.ts:659",
+      "source": "src/http/agents.ts:719",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "GET",
       "path": "/api/code/agents",
-      "source": "src/http/agents.ts:671",
+      "source": "src/http/agents.ts:731",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "GET",
       "path": "/api/code/commands",
-      "source": "src/http/agents.ts:677",
+      "source": "src/http/agents.ts:737",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "GET",
       "path": "/api/code/permissions",
-      "source": "src/http/agents.ts:696",
+      "source": "src/http/agents.ts:756",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "POST",
       "path": "/api/code/execute-command",
-      "source": "src/http/agents.ts:729",
+      "source": "src/http/agents.ts:789",
       "exposure": "deferred-frontend",
       "capability": "code.execute-command"
     },
     {
       "method": "GET",
       "path": "/api/agents/status",
-      "source": "src/http/agents.ts:745",
+      "source": "src/http/agents.ts:805",
       "exposure": "frontend",
       "capability": "agents.status"
     },
@@ -173,28 +173,28 @@
     {
       "method": "GET",
       "path": "/api/artifacts/:id/export",
-      "source": "src/http/artifacts.ts:19",
+      "source": "src/http/artifacts.ts:59",
       "exposure": "frontend",
       "capability": "artifacts.export"
     },
     {
       "method": "GET",
       "path": "/api/backup",
-      "source": "src/http/backup.ts:36",
+      "source": "src/http/backup.ts:68",
       "exposure": "frontend",
       "capability": "backup.manage"
     },
     {
       "method": "GET",
       "path": "/api/backup/export",
-      "source": "src/http/backup.ts:48",
+      "source": "src/http/backup.ts:80",
       "exposure": "frontend",
       "capability": "backup.manage"
     },
     {
       "method": "POST",
       "path": "/api/backup/export",
-      "source": "src/http/backup.ts:100",
+      "source": "src/http/backup.ts:101",
       "exposure": "frontend",
       "capability": "backup.manage"
     },
@@ -208,147 +208,147 @@
     {
       "method": "POST",
       "path": "/api/backup/inspect",
-      "source": "src/http/backup.ts:62",
+      "source": "src/http/backup.ts:131",
       "exposure": "frontend",
       "capability": "backup.manage"
     },
     {
       "method": "POST",
       "path": "/api/backup/import",
-      "source": "src/http/backup.ts:75",
+      "source": "src/http/backup.ts:145",
       "exposure": "frontend",
       "capability": "backup.manage"
     },
     {
       "method": "GET",
       "path": "/api/chat",
-      "source": "src/http/chat.ts:138",
+      "source": "src/http/chat.ts:139",
       "exposure": "frontend",
       "capability": "chat.core"
     },
     {
       "method": "POST",
       "path": "/api/chat",
-      "source": "src/http/chat.ts:159",
+      "source": "src/http/chat.ts:160",
       "exposure": "frontend",
       "capability": "chat.core"
     },
     {
       "method": "POST",
       "path": "/api/chat/bulk-delete",
-      "source": "src/http/chat.ts:196",
+      "source": "src/http/chat.ts:197",
       "exposure": "frontend",
       "capability": "chat.core"
     },
     {
       "method": "POST",
       "path": "/api/chat/stream",
-      "source": "src/http/chat.ts:213",
+      "source": "src/http/chat.ts:214",
       "exposure": "frontend",
       "capability": "chat.core"
     },
     {
       "method": "POST",
       "path": "/api/chat/resume",
-      "source": "src/http/chat.ts:243",
+      "source": "src/http/chat.ts:244",
       "exposure": "frontend",
       "capability": "chat.core"
     },
     {
       "method": "GET",
       "path": "/api/chat/runs/paused",
-      "source": "src/http/chat.ts:278",
+      "source": "src/http/chat.ts:279",
       "exposure": "frontend",
       "capability": "chat.core"
     },
     {
       "method": "GET",
       "path": "/api/chat/:id",
-      "source": "src/http/chat.ts:285",
+      "source": "src/http/chat.ts:286",
       "exposure": "frontend",
       "capability": "chat.core"
     },
     {
       "method": "PATCH",
       "path": "/api/chat/:id",
-      "source": "src/http/chat.ts:297",
+      "source": "src/http/chat.ts:298",
       "exposure": "frontend",
       "capability": "chat.core"
     },
     {
       "method": "DELETE",
       "path": "/api/chat/:id",
-      "source": "src/http/chat.ts:321",
+      "source": "src/http/chat.ts:322",
       "exposure": "frontend",
       "capability": "chat.core"
     },
     {
       "method": "GET",
       "path": "/api/chat/:id/messages",
-      "source": "src/http/chat.ts:345",
+      "source": "src/http/chat.ts:346",
       "exposure": "frontend",
       "capability": "chat.core"
     },
     {
       "method": "POST",
       "path": "/api/chat/:id/fork",
-      "source": "src/http/chat.ts:366",
+      "source": "src/http/chat.ts:367",
       "exposure": "frontend",
       "capability": "chat.write"
     },
     {
       "method": "GET",
       "path": "/api/chat/:id/context",
-      "source": "src/http/chat.ts:461",
+      "source": "src/http/chat.ts:460",
       "exposure": "frontend",
       "capability": "chat.core"
     },
     {
       "method": "POST",
       "path": "/api/chat/:id/resume-in-new-session",
-      "source": "src/http/chat.ts:478",
+      "source": "src/http/chat.ts:477",
       "exposure": "frontend",
       "capability": "chat.write"
     },
     {
       "method": "POST",
       "path": "/api/chat/:id/open",
-      "source": "src/http/chat.ts:365",
+      "source": "src/http/chat.ts:391",
       "exposure": "frontend",
       "capability": "chat.core"
     },
     {
       "method": "POST",
       "path": "/api/chat/:id/pin",
-      "source": "src/http/chat.ts:379",
+      "source": "src/http/chat.ts:405",
       "exposure": "frontend",
       "capability": "chat.core"
     },
     {
       "method": "POST",
       "path": "/api/chat/:id/archive",
-      "source": "src/http/chat.ts:396",
+      "source": "src/http/chat.ts:422",
       "exposure": "frontend",
       "capability": "chat.core"
     },
     {
       "method": "POST",
       "path": "/api/chat/:id/unarchive",
-      "source": "src/http/chat.ts:405",
+      "source": "src/http/chat.ts:431",
       "exposure": "frontend",
       "capability": "chat.core"
     },
     {
       "method": "GET",
       "path": "/api/chat/:id/runs",
-      "source": "src/http/chat.ts:414",
+      "source": "src/http/chat.ts:440",
       "exposure": "frontend",
       "capability": "chat.core"
     },
     {
       "method": "GET",
       "path": "/api/chat/:id/export",
-      "source": "src/http/chat.ts:438",
+      "source": "src/http/chat.ts:504",
       "exposure": "frontend",
       "capability": "chat.core"
     },
@@ -733,119 +733,119 @@
     {
       "method": "GET",
       "path": "/api/providers",
-      "source": "src/http/providers.ts:43",
+      "source": "src/http/providers.ts:44",
       "exposure": "frontend",
       "capability": "providers.manage"
     },
     {
       "method": "POST",
       "path": "/api/providers",
-      "source": "src/http/providers.ts:50",
+      "source": "src/http/providers.ts:51",
       "exposure": "frontend",
       "capability": "providers.manage"
     },
     {
       "method": "POST",
       "path": "/api/providers/detect-local",
-      "source": "src/http/providers.ts:85",
+      "source": "src/http/providers.ts:97",
       "exposure": "frontend",
       "capability": "providers.manage"
     },
     {
       "method": "GET",
       "path": "/api/providers/puter/advisory",
-      "source": "src/http/providers.ts:112",
+      "source": "src/http/providers.ts:119",
       "exposure": "frontend",
       "capability": "providers.manage"
     },
     {
       "method": "GET",
       "path": "/api/providers/colibri/advisory",
-      "source": "src/http/providers.ts:101",
+      "source": "src/http/providers.ts:131",
       "exposure": "frontend",
       "capability": "providers.manage"
     },
     {
       "method": "POST",
       "path": "/api/providers/colibri/probe",
-      "source": "src/http/providers.ts:113",
+      "source": "src/http/providers.ts:143",
       "exposure": "frontend",
       "capability": "providers.manage"
     },
     {
       "method": "GET",
       "path": "/api/providers/active/models",
-      "source": "src/http/providers.ts:125",
+      "source": "src/http/providers.ts:155",
       "exposure": "frontend",
       "capability": "providers.manage"
     },
     {
       "method": "GET",
       "path": "/api/providers/active",
-      "source": "src/http/providers.ts:152",
+      "source": "src/http/providers.ts:182",
       "exposure": "frontend",
       "capability": "providers.manage"
     },
     {
       "method": "GET",
       "path": "/api/providers/:id",
-      "source": "src/http/providers.ts:171",
+      "source": "src/http/providers.ts:223",
       "exposure": "frontend",
       "capability": "providers.manage"
     },
     {
       "method": "PATCH",
       "path": "/api/providers/:id",
-      "source": "src/http/providers.ts:178",
+      "source": "src/http/providers.ts:230",
       "exposure": "frontend",
       "capability": "providers.manage"
     },
     {
       "method": "PUT",
       "path": "/api/providers/:id/zdr",
-      "source": "src/http/providers.ts:208",
+      "source": "src/http/providers.ts:268",
       "exposure": "frontend",
       "capability": "providers.manage"
     },
     {
       "method": "DELETE",
       "path": "/api/providers/:id",
-      "source": "src/http/providers.ts:260",
+      "source": "src/http/providers.ts:320",
       "exposure": "frontend",
       "capability": "providers.manage"
     },
     {
       "method": "POST",
       "path": "/api/providers/:id/enable",
-      "source": "src/http/providers.ts:277",
+      "source": "src/http/providers.ts:337",
       "exposure": "frontend",
       "capability": "providers.manage"
     },
     {
       "method": "POST",
       "path": "/api/providers/:id/disable",
-      "source": "src/http/providers.ts:289",
+      "source": "src/http/providers.ts:349",
       "exposure": "frontend",
       "capability": "providers.manage"
     },
     {
       "method": "GET",
       "path": "/api/providers/:id/models",
-      "source": "src/http/providers.ts:296",
+      "source": "src/http/providers.ts:356",
       "exposure": "frontend",
       "capability": "providers.manage"
     },
     {
       "method": "POST",
       "path": "/api/providers/:id/test",
-      "source": "src/http/providers.ts:306",
+      "source": "src/http/providers.ts:366",
       "exposure": "frontend",
       "capability": "providers.manage"
     },
     {
       "method": "GET",
       "path": "/api/providers/active/current",
-      "source": "src/http/providers.ts:313",
+      "source": "src/http/providers.ts:373",
       "exposure": "frontend",
       "capability": "providers.manage"
     },
@@ -894,161 +894,161 @@
     {
       "method": "GET",
       "path": "/api/settings",
-      "source": "src/http/settings.ts:90",
+      "source": "src/http/settings.ts:91",
       "exposure": "frontend",
       "capability": "settings.manage"
     },
     {
       "method": "PUT",
-      "path": "/api/settings",
-      "source": "src/http/settings.ts:120",
-      "exposure": "frontend",
-      "capability": "settings.manage"
-    },
-    {
-      "method": "PATCH",
       "path": "/api/settings",
       "source": "src/http/settings.ts:121",
       "exposure": "frontend",
       "capability": "settings.manage"
     },
     {
+      "method": "PATCH",
+      "path": "/api/settings",
+      "source": "src/http/settings.ts:122",
+      "exposure": "frontend",
+      "capability": "settings.manage"
+    },
+    {
       "method": "GET",
       "path": "/api/settings/preferences",
-      "source": "src/http/settings.ts:133",
+      "source": "src/http/settings.ts:134",
       "exposure": "frontend",
       "capability": "settings.manage"
     },
     {
       "method": "PUT",
       "path": "/api/settings/preferences",
-      "source": "src/http/settings.ts:140",
+      "source": "src/http/settings.ts:141",
       "exposure": "frontend",
       "capability": "settings.manage"
     },
     {
       "method": "GET",
       "path": "/api/settings/capabilities",
-      "source": "src/http/settings.ts:161",
+      "source": "src/http/settings.ts:162",
       "exposure": "frontend",
       "capability": "settings.manage"
     },
     {
       "method": "PUT",
       "path": "/api/settings/capabilities",
-      "source": "src/http/settings.ts:171",
+      "source": "src/http/settings.ts:172",
       "exposure": "frontend",
       "capability": "settings.manage"
     },
     {
       "method": "GET",
       "path": "/api/settings/tool-access-mode",
-      "source": "src/http/settings.ts:217",
+      "source": "src/http/settings.ts:218",
       "exposure": "frontend",
       "capability": "settings.manage"
     },
     {
       "method": "PUT",
       "path": "/api/settings/tool-access-mode",
-      "source": "src/http/settings.ts:224",
+      "source": "src/http/settings.ts:225",
       "exposure": "frontend",
       "capability": "settings.manage"
     },
     {
       "method": "GET",
       "path": "/api/settings/network-egress",
-      "source": "src/http/settings.ts:242",
+      "source": "src/http/settings.ts:243",
       "exposure": "frontend",
       "capability": "settings.manage"
     },
     {
       "method": "PUT",
       "path": "/api/settings/network-egress",
-      "source": "src/http/settings.ts:254",
+      "source": "src/http/settings.ts:255",
       "exposure": "frontend",
       "capability": "settings.manage"
     },
     {
       "method": "GET",
       "path": "/api/settings/redaction-check",
-      "source": "src/http/settings.ts:278",
+      "source": "src/http/settings.ts:279",
       "exposure": "frontend",
       "capability": "settings.manage"
     },
     {
       "method": "PUT",
       "path": "/api/settings/redaction-check",
-      "source": "src/http/settings.ts:289",
+      "source": "src/http/settings.ts:290",
       "exposure": "frontend",
       "capability": "settings.manage"
     },
     {
       "method": "GET",
       "path": "/api/settings/zdr",
-      "source": "src/http/settings.ts:314",
+      "source": "src/http/settings.ts:315",
       "exposure": "frontend",
       "capability": "settings.manage"
     },
     {
       "method": "PUT",
       "path": "/api/settings/zdr",
-      "source": "src/http/settings.ts:326",
+      "source": "src/http/settings.ts:327",
       "exposure": "frontend",
       "capability": "settings.manage"
     },
     {
       "method": "GET",
       "path": "/api/settings/limits",
-      "source": "src/http/settings.ts:363",
+      "source": "src/http/settings.ts:352",
       "exposure": "frontend",
       "capability": "settings.manage"
     },
     {
       "method": "PUT",
       "path": "/api/settings/limits",
-      "source": "src/http/settings.ts:379",
+      "source": "src/http/settings.ts:373",
       "exposure": "frontend",
       "capability": "settings.manage"
     },
     {
       "method": "GET",
       "path": "/api/settings/agent-profiles",
-      "source": "src/http/settings.ts:448",
+      "source": "src/http/settings.ts:442",
       "exposure": "frontend",
       "capability": "settings.manage"
     },
     {
       "method": "GET",
       "path": "/api/settings/agents",
-      "source": "src/http/settings.ts:470",
+      "source": "src/http/settings.ts:464",
       "exposure": "frontend",
       "capability": "settings.manage"
     },
     {
       "method": "PUT",
       "path": "/api/settings/agents",
-      "source": "src/http/settings.ts:482",
+      "source": "src/http/settings.ts:476",
       "exposure": "frontend",
       "capability": "settings.manage"
     },
     {
       "method": "POST",
       "path": "/api/settings/reload-config",
-      "source": "src/http/settings.ts:516",
+      "source": "src/http/settings.ts:510",
       "exposure": "frontend",
       "capability": "settings.manage"
     },
     {
       "method": "PUT",
       "path": "/api/settings/:key",
-      "source": "src/http/settings.ts:570",
+      "source": "src/http/settings.ts:564",
       "exposure": "frontend",
       "capability": "settings.manage"
     },
     {
       "method": "DELETE",
       "path": "/api/settings/:key",
-      "source": "src/http/settings.ts:581",
+      "source": "src/http/settings.ts:575",
       "exposure": "frontend",
       "capability": "settings.manage"
     },
@@ -1153,49 +1153,49 @@
     {
       "method": "GET",
       "path": "/api/storage/stats",
-      "source": "src/http/storage.ts:51",
+      "source": "src/http/storage.ts:92",
       "exposure": "frontend",
       "capability": "storage.manage"
     },
     {
       "method": "GET",
       "path": "/api/storage/cleanup/log",
-      "source": "src/http/storage.ts:58",
+      "source": "src/http/storage.ts:99",
       "exposure": "frontend",
       "capability": "storage.manage"
     },
     {
       "method": "POST",
       "path": "/api/storage/cleanup",
-      "source": "src/http/storage.ts:69",
+      "source": "src/http/storage.ts:112",
       "exposure": "frontend",
       "capability": "storage.manage"
     },
     {
       "method": "GET",
       "path": "/api/storage/assets",
-      "source": "src/http/storage.ts:83",
+      "source": "src/http/storage.ts:126",
       "exposure": "frontend",
       "capability": "storage.manage"
     },
     {
       "method": "GET",
       "path": "/api/storage/assets/:id",
-      "source": "src/http/storage.ts:90",
+      "source": "src/http/storage.ts:133",
       "exposure": "frontend",
       "capability": "storage.manage"
     },
     {
       "method": "GET",
       "path": "/api/storage/assets/:id/file",
-      "source": "src/http/storage.ts:101",
+      "source": "src/http/storage.ts:144",
       "exposure": "frontend",
       "capability": "storage.manage"
     },
     {
       "method": "GET",
       "path": "/api/storage/worktrees",
-      "source": "src/http/storage.ts:60",
+      "source": "src/http/storage.ts:59",
       "exposure": "frontend",
       "capability": "storage.manage"
     },
@@ -1209,14 +1209,14 @@
     {
       "method": "POST",
       "path": "/api/storage/assets/:id/pin",
-      "source": "src/http/storage.ts:119",
+      "source": "src/http/storage.ts:162",
       "exposure": "frontend",
       "capability": "storage.manage"
     },
     {
       "method": "DELETE",
       "path": "/api/storage/assets/:id",
-      "source": "src/http/storage.ts:129",
+      "source": "src/http/storage.ts:172",
       "exposure": "frontend",
       "capability": "storage.manage"
     },

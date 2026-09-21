@@ -15,3 +15,15 @@ generation.
 Run `node frontend/scripts/check-contracts.mjs` after changing an HTTP route.
 Removing or changing a snapshotted route fails. Known missing contracts stay
 visible and do not fail the check.
+
+Each route's `source` is `file:line`, and it points at that route's own
+`router.verb(` registration so a reader can jump from the contract to the
+handler. Since 2026-09-21 the check compares every `source` against the
+registration it found, not just the set of routes: by then **92 of 180** entries
+had drifted to the wrong line (any file that gained lines above a route moved it),
+which no gate noticed because only the route *set* was ever compared. A stale
+pointer is a claim the snapshot cannot support, so it now fails the check.
+
+This is also why the line numbers here are honest rather than decorative: if you
+edit `src/http/*` above a route, regenerate the file's pointers (the check names
+the expected line for each one) instead of leaving them to rot.

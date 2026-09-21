@@ -35,9 +35,14 @@ this body, produced by `AppError.toJSON()` in `src/util/errors.ts`:
 `details` is omitted when nothing was attached. **Branch on `code`, never on the
 HTTP status or the message text** — codes are the stable contract.
 
-This is the complete set, transcribed from the module-private `STATUS` record in
-`src/util/errors.ts`. (It is not exported — this table is a transcription, so it
-has to be updated by hand when a code is added.) Only four codes default to
+This is every code in the module-private `STATUS` record in `src/util/errors.ts`,
+transcribed by hand — the record is not exported, so this table has to be updated
+when a code is added. (It said "the complete set" while missing three of the
+twenty-eight until 2026-09-21, which is the sort of claim a table cannot make on
+its own.) Two of the three have no throw site at all, and they are marked below
+rather than omitted: they are codes in the vocabulary that reach a client as a
+*refusal reason* or an attention item, not as an HTTP error, and a reader who sees
+them in the type union deserves to be told that. Only four codes default to
 `retryable: true` — `DEFAULT_RETRYABLE` in the same file — and every other code
 is `false` unless a call site overrides it explicitly.
 
@@ -64,6 +69,9 @@ is `false` unless a call site overrides it explicitly.
 | `network_egress_disabled` | 403 | false |
 | `spending_cap_reached` | 429 | false |
 | `redaction_flagged` | 409 | false |
+| `zdr_requirement_unmet` | 403 | false |
+| `permission_denied` | 403 | false — no throw site: the engine's refusal reason for a call a rule denied, reported as a step on the run |
+| `approval_required` | 409 | false — no throw site: the park reason for a call awaiting the user, delivered over SSE (`approval_required`) and as an attention item |
 | `scope_violation` | 403 | false |
 | `encryption_failed` | 500 | false |
 | `storage_error` | 500 | false |
@@ -250,6 +258,7 @@ Three routes also spread a registry summary into the response:
 | GET | `/api/providers/active` | `{ provider: ProviderPublic \| null, egress, egressProxy, redactionCheckEnabled }` *(1.23, `egressProxy` in 1.37)* |
 | GET | `/api/providers/:id` | `{ provider }` |
 | PATCH | `/api/providers/:id` | `{ provider }` |
+| PUT | `/api/providers/:id/zdr` | `{ provider }` |
 | DELETE | `/api/providers/:id` | **204**, no body |
 | POST | `/api/providers/:id/enable` | `{ provider, ...summary }` |
 | POST | `/api/providers/:id/disable` | `{ provider, ...summary }` |
@@ -288,13 +297,40 @@ the audit column stores `host:port` alone. Changing or clearing the proxy
 invalidates the model cache and the recorded health verdict, exactly as changing
 the base URL does — the old evidence describes a different route.
 
+**PUT /api/providers/:id/zdr** *(reference completed 2026-09-21)* records what is
+known about this provider's zero-data-retention behaviour. It is its own subroute
+rather than a nested field on `PATCH /:id` for two reasons: the generic patch is a
+"leave undefined alone" partial update, while ZDR needs tri-state semantics of its
+own on `requestFlag` plus a `confirmed` flag whose `false` clears two columns —
+which a nested optional object cannot express without making "not sent" and "sent
+as cleared" indistinguishable. And `confirmed: true` is a user *attestation*
+rather than a settings edit, so it deserves a request that cannot be made by
+accident while renaming a provider. The policy it feeds is `GET|PUT
+/api/settings/zdr` (§20.7).
+
+Body: `support` (required — `unknown` / `supported_default` / `supported_opt_in` /
+`not_supported` / `not_applicable`), `requestFlag` (tri-state: absent leaves the
+stored flag alone, `null` removes it, `{ location: 'header'|'body', key, value }`
+replaces it), `confirmed?` and `note?`. Omitting `confirmed` preserves an existing
+attestation, so recording a new support value does not silently discard one.
+`requestFlag.value` must be a non-empty string — a flag with no value sends
+nothing, and storing one would make the reported ZDR status claim a request that
+was never made — and it is refused if `findSensitive()` flags it, because the value
+is stored and returned in **plaintext** so the user can check a field they maintain
+by hand. Response: `{ provider }`.
+
 **Enable** applies the single-active rule: enabling one disables the previous
 active provider (standby, not deleted). For `colibri` providers the body must
 carry `acknowledgeSlow: true` — see §3.3.
 
 **Model lists** accept `?refresh=true` to bypass the cache
-(`HYPERION_MODEL_CACHE_TTL_MS`). `/active/models` 503s with `no_healthy_provider`
-when nothing is enabled.
+(`HYPERION_MODEL_CACHE_TTL_MS`). With **nothing enabled**, `/active/models`
+refuses with **409 `no_active_provider`** — and this line claimed a `503
+`no_healthy_provider` until 2026-09-21, which a live probe of the running app
+contradicted. The two codes are not interchangeable: `no_healthy_provider` means
+"enabled, and nothing can serve — try later", while `no_active_provider` means
+"nothing is switched on, and only you can change that". This route does not
+consult health at all; the 503 belongs to the sending path.
 
 **GET /api/providers/active** *(new in 1.23)* answers "where would my next
 message go, and is it being checked?" in one call:
@@ -1790,7 +1826,65 @@ Scheduled Cowork runs (§17.2) are cancellable through the same
 stopped scheduled run is recorded with status `skipped` and its `lastRunAt` is
 stamped, so it does not immediately come due again on the next tick.
 
-### 12.4 The Design agent  *(new — the Design slice)*
+### 12.6 Approvals, continuation and permissions  *(reference completed 2026-09-21)*
+
+These routes were built, tested and used by the frontend, but this reference did
+not describe them — the `{tool}` routes were only ever named in
+`docs/CONTRACTS.md`'s prose. The gap was found by diffing the route snapshot in
+`frontend/contracts/backend-routes.json` against this file, so the section says
+what the handlers do rather than pointing at a design note.
+
+| Method | Path | Response |
+| --- | --- | --- |
+| GET | `/api/{code\|cowork\|design}/tasks/:taskId/approvals` | `{ tool, taskId, state, pauseReason, count, approvals }` |
+| POST | `/api/{code\|cowork\|design}/tasks/:taskId/approve` | `{ tool, taskId, approvalId, state, applied, continuable }` |
+| POST | `/api/{code\|cowork\|design}/tasks/:taskId/continue` | SSE stream (the agent protocol) |
+| GET | `/api/code/permissions` | `{ project, mode, profile, layers }` |
+
+**Listing** answers "what is this task waiting on". `state` and `pauseReason` come
+from the task's latest run and are `null` when there is none, so a client can tell
+"parked on an approval" from "nothing is running". `approvals` carries each parked
+call's `arguments` **verbatim** — the point of showing an approval is that the user
+sees exactly what would run, and a summarised or reformatted call is a different
+call from the one they would be authorising. There is no `404` for a task with no
+approvals: an empty list is the honest answer, and the cross-task view is
+`GET /api/attention` (§19).
+
+**Approving** records a decision (`approvalId`, `decision` one of `allow_once` /
+`allow_session` / `deny`) and deliberately **does not start the agent** — that is
+`continue`'s job, and keeping them apart lets a client record a decision from a
+notification without committing to drive the run from that connection, which
+matters because continuing is an SSE stream and answering a prompt is a single JSON
+call. It is **idempotent**: approving an already-resolved approval returns the state
+it actually reached with `applied: false` rather than failing, because answering a
+moment after somebody else did is a race the user cannot avoid. A `deny` on a parked
+run finalises it (`stopped`, `pauseReason` `approval_denied` — or `loop_detected`
+when a doom loop was declined), and `continuable` says whether the caller still has
+work to do: true only for an allow, and only while the run's conversation still
+exists to continue.
+
+**Continuing** resumes a parked task as an SSE stream. Validation, the claim and
+the module lookup all happen **before** the response becomes a stream, so every
+refusal is JSON a client can read rather than an error buried in an SSE frame — the
+same discipline `run-task` follows. The body may carry `approvalId`/`decision` to
+resolve an approval and continue in one call. The agent rebuilds its own system
+prompt for the continuation, which is correct rather than wasteful: the profile,
+project rules and session permissions may all have changed while the task was
+parked, and that change is usually the reason it was continued. The last user
+message becomes the prompt — the task's own description is not replayed as a fresh
+turn, which would make the model read it twice.
+
+**`GET /api/code/permissions`** answers the one question the layers exist for:
+*why* is this refused. It returns the layers **separately and in evaluation order**
+(profile, project, session) rather than a merged map, because a merged answer tells
+the user what is allowed but not who said so; reading the layers top to bottom is
+exactly how the engine reaches its verdict. `?profile=` selects a profile the way a
+run does, `?mode=` supplies the base mode when no profile is named (Ask, Plan and
+Act resolve to different baselines, so showing one as "the" answer would be wrong
+for the other two), and `?taskId=` adds that run's session rules — omitted, there
+are simply no session rules to report.
+
+### 12.7 The Design agent  *(new — the Design slice)*
 
 Design registers at boot alongside Cowork and Code, so `/api/design/run-task`
 streams SSE like any other agent run. `taskId` is optional (unlike Code): with
@@ -2658,6 +2752,53 @@ accurate even where the gate could not intervene.
 ---
 
 ## 21. Temporary chats and bulk delete  *(new in 1.20)*
+
+### 20.7 ZDR, agent profiles and reload-config  *(reference completed 2026-09-21)*
+
+Four settings routes that existed only in the handler comments until the
+2026-09-21 sweep diffed the route snapshot against this file.
+
+**`GET /api/settings/zdr`** — `{ requirement, allowed, appliesTo: 'remote',
+enforced: 'provider_selection' }`. `allowed` is the full enum
+(`off` / `prefer` / `require`), so a settings screen can render the options without
+duplicating the list. `appliesTo: 'remote'` is not decoration: a local provider is
+always eligible, so turning `require` on never affects local work — which is the
+fact that makes the setting safe to switch on before every provider has been
+assessed. `enforced` names where the enforcement lives (provider candidate
+selection in `providers/router.ts`), so a reader does not go looking for a
+network-level control.
+
+**`PUT /api/settings/zdr`** — body `{ requirement }`, response `{ requirement,
+appliesTo }`. An unrecognised value is a `400` naming the field rather than a stored
+one: a stored value the reader does not recognise falls back to `off`, so accepting
+a typo here would silently switch the policy **off** while the settings screen
+showed whatever was typed.
+
+**`GET /api/settings/agent-profiles`** — `{ count, defaultProfile, profiles }`.
+`?includeHidden=true` is how the settings panel shows a profile the user chose to
+keep out of the run picker; hidden is a **listing** concern only — a hidden profile
+stays resolvable by name — so an editor that could not see one would have no way to
+un-hide it. `?project=` reads that project's `.hyperion` profiles.
+
+**`GET|PUT /api/settings/agents`** — the stored default profile, plus
+`resolvedFor: { ask, plan, act }` and the built-ins. `resolvedFor` spells out what
+each mode actually resolves to, because the answer is not "the stored default" for
+two of the three: Ask and Plan outrank it deliberately, and a settings panel that
+implied otherwise would be showing the user a control that does not do what it
+says. `PUT` validates the name against the **built-ins only** — a project profile
+cannot be checked here without knowing which project the next run will use, and
+rejecting a name this endpoint cannot see would make a perfectly valid default
+impossible to set — so resolution rechecks it per run and a name that never
+resolves falls back to `act` rather than breaking every task.
+
+**`POST /api/settings/reload-config`** — `?project=` (or `{ project }` in the body,
+defaulting to `.`) re-reads and validates the on-disk configuration, returning
+`{ project, settings, defaultAgentProfile, permissions, profiles, validated: true }`.
+It adds **no cache**, and that is the whole design: settings are deliberately
+un-cached and project files are read per task, so there is nothing stale for a
+reload to clear. Its real value is reporting a malformed `.hyperion/permissions.json`
+or a profile with a broken front-matter block *here*, on demand, instead of halfway
+through the next run.
 
 ### 21.1 Opening a temporary chat
 
