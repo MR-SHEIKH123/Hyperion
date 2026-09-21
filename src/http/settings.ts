@@ -7,6 +7,7 @@ import {
   asEnum,
   asNumber,
   asOptionalString,
+  asPositiveInteger,
   body,
   pathParam,
   queryString,
@@ -341,18 +342,6 @@ settingsRouter.put(
   }),
 );
 
-/** A ceiling of 0 is rejected rather than stored — see the note on the route. */
-function positiveLimit(value: unknown, field: string): number | undefined {
-  const parsed = asNumber(value, field);
-  if (parsed === undefined) return undefined;
-  if (parsed <= 0 || !Number.isInteger(parsed)) {
-    throw new AppError('bad_request', `${field} must be a positive whole number.`, {
-      details: { field },
-    });
-  }
-  return parsed;
-}
-
 /**
  * Spending cap and runaway ceilings, plus where today's spend currently stands.
  *
@@ -375,6 +364,11 @@ settingsRouter.get(
  * would otherwise mean "refuse all autonomous work", which nobody types on
  * purpose, and the reader already treats it as unset — writing the row anyway
  * would leave a value that displays as a cap but behaves as none.
+ *
+ * The three ceilings go through `asPositiveInteger`, so 0, negative and
+ * fractional are all refused — the same rule the list routes apply to `limit`.
+ * This file used to have a private copy of that check, which is how one rule
+ * came to be spelled three ways across the routers.
  */
 settingsRouter.put(
   '/limits',
@@ -393,19 +387,19 @@ settingsRouter.put(
       updated.push('dailySpendCapUsd');
     }
 
-    const tokenCeiling = positiveLimit(payload.tokenCeiling, 'tokenCeiling');
+    const tokenCeiling = asPositiveInteger(payload.tokenCeiling, 'tokenCeiling');
     if (tokenCeiling !== undefined) {
       setSetting(TASK_TOKEN_CEILING_KEY, tokenCeiling);
       updated.push('tokenCeiling');
     }
 
-    const iterationCeiling = positiveLimit(payload.iterationCeiling, 'iterationCeiling');
+    const iterationCeiling = asPositiveInteger(payload.iterationCeiling, 'iterationCeiling');
     if (iterationCeiling !== undefined) {
       setSetting(TASK_ITERATION_CEILING_KEY, iterationCeiling);
       updated.push('iterationCeiling');
     }
 
-    const subagentLimit = positiveLimit(payload.subagentLimit, 'subagentLimit');
+    const subagentLimit = asPositiveInteger(payload.subagentLimit, 'subagentLimit');
     if (subagentLimit !== undefined) {
       setSetting(SUBAGENT_COUNT_LIMIT_KEY, subagentLimit);
       updated.push('subagentLimit');

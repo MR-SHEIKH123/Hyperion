@@ -48,7 +48,7 @@ import {
   asString,
   body,
   pathParam,
-  queryNumber,
+  queryLimit,
 } from './params.ts';
 
 export const coworkRouter: Router = Router();
@@ -231,7 +231,7 @@ coworkRouter.get(
   wrap(async (req, res) => {
     const id = pathParam(req, 'id');
     requireScheduledTask(id);
-    const runs = listTaskRuns(id, queryNumber(req, 'limit') ?? 50);
+    const runs = listTaskRuns(id, queryLimit(req, 'limit', { fallback: 50, max: 500 }));
     res.json({ taskId: id, count: runs.length, runs });
   }),
 );

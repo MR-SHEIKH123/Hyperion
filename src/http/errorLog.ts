@@ -14,7 +14,7 @@
 import { Router } from 'express';
 
 import { countErrors, queryErrorLog } from '../db/errorLog.ts';
-import { asEnum, queryNumber, queryString } from './params.ts';
+import { asEnum, queryLimit, queryNumber, queryString } from './params.ts';
 import { wrap } from './errors.ts';
 
 export const errorLogRouter: Router = Router();
@@ -32,7 +32,7 @@ const SEVERITIES = ['warning', 'error'] as const;
 errorLogRouter.get(
   '/',
   wrap((req, res) => {
-    const limit = queryNumber(req, 'limit') ?? 100;
+    const limit = queryLimit(req, 'limit', { fallback: 100, max: 500 });
     const severity = asEnum(queryString(req, 'severity'), 'severity', SEVERITIES);
     const since = queryNumber(req, 'since');
 

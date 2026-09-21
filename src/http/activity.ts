@@ -10,7 +10,7 @@ import { Router } from 'express';
 
 import { activityFeed } from '../services/activity/feed.ts';
 import { AppError } from '../util/errors.ts';
-import { queryNumber } from './params.ts';
+import { queryLimit, queryNumber } from './params.ts';
 import { wrap } from './errors.ts';
 
 export const activityRouter: Router = Router();
@@ -21,7 +21,8 @@ const DEFAULT_LIMIT = 50;
  * Both queries take `limit` rows, so an unbounded value is an unbounded scan of
  * two tables. Capped rather than silently clamped — a caller asking for 5000
  * should be told it will not happen, not handed 200 and left to conclude the
- * feed only ever holds that many.
+ * feed only ever holds that many. `queryLimit` now enforces exactly that rule
+ * for every list route; this one was the first to write it down.
  */
 const MAX_LIMIT = 200;
 
@@ -34,14 +35,7 @@ const MAX_LIMIT = 200;
 activityRouter.get(
   '/',
   wrap((req, res) => {
-    const limit = queryNumber(req, 'limit') ?? DEFAULT_LIMIT;
-    if (!Number.isInteger(limit) || limit < 1 || limit > MAX_LIMIT) {
-      throw new AppError(
-        'bad_request',
-        `limit must be a whole number between 1 and ${MAX_LIMIT}.`,
-        { details: { field: 'limit' } },
-      );
-    }
+    const limit = queryLimit(req, 'limit', { fallback: DEFAULT_LIMIT, max: MAX_LIMIT });
 
     const before = queryNumber(req, 'before');
     if (before !== undefined && (!Number.isInteger(before) || before < 0)) {

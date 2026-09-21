@@ -4157,3 +4157,37 @@ unique index and a conflict target that names it. The general lesson is worth
 keeping in view: a uniqueness claim that involves NULLs is not enforced by the
 obvious constraint, and a silent duplicate read back as "the" value is a wrong
 number rather than a failure.
+
+## A row count is a whole number within a bound *(S17)*
+
+`limit` is the only query value whose *type* SQLite refuses to coerce. Every
+other number arrives in a comparison, where `2.5` compares perfectly well, so
+`asNumber` is the right parser for it. A limit is different in both directions,
+and neither failure is visible at the call site:
+
+```
+LIMIT 2.5  ->  SQLite raises "datatype mismatch"; the client gets a 500
+               internal_error quoting the driver, and error_log gains a row
+               that claims the server broke
+LIMIT -1   ->  SQLite reads a negative limit as *no limit* and returns the
+               whole table, so "-1 rows" silently means "everything"
+```
+
+So every list route takes its limit from `queryLimit(req, name, { fallback,
+max })`, and an out-of-range value is a 400 naming the field — with the bound in
+the message when the value is simply too large.
+
+**Refused, not clamped.** `LIMIT` is captured in a service layer several of
+these routes already clamped inside (`gallery.ts` caps at 1000, `cleanup.ts` at
+500, `memory/index.ts` at 200), and clamping is the wrong answer at the
+boundary: a caller handed 200 rows after asking for 5000 concludes the table
+holds 200. The internal clamps stay — they also guard the agent-side callers
+that never pass through HTTP — but they are a backstop, not the contract.
+
+The consequence worth stating plainly: **the bound is part of the API**, so
+raising one is a documented change rather than an implementation detail. Nine
+routes carry one today (`chat` 500, `chat/:id` 500, `chat/:id/messages` 500,
+`storage/assets` 1000, `storage/cleanup/log` 500, `errors` 500,
+`design/assets/approved` 500, `cowork/.../history` 500, `memory` 200), and
+`test/listlimits.test.ts` drives all nine — adding a list route that skips
+`queryLimit` fails there.

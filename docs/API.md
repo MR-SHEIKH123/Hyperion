@@ -98,6 +98,15 @@ All of these throw `bad_request` with `details: { field }`:
   else → `"<field> must be a boolean."`
 - Enums list the legal values in the message and in
   `details: { field, allowed: [...] }`.
+- **`limit` is a positive whole number no greater than the route's own maximum;
+  `offset` is a whole number of zero or more.** Anything else is a 400 naming the
+  field, and above the maximum the message names the bound (`"limit must be a
+  positive integer no greater than 500."`). Refused rather than clamped: a caller
+  handed 200 rows when it asked for 5000 is left to conclude the table only holds
+  200. Every list route's bound is given with its route below. *(Tightened in the
+  S17 fix — see `docs/CONTRACTS.md`; the two ways an unchecked limit used to fail
+  were a 500, from `LIMIT 2.5` raising SQLite's "datatype mismatch", and a
+  full-table read, because SQLite treats `LIMIT -1` as no limit at all.)*
 
 Tri-state string fields (documented as *nullable* below) follow one rule
 everywhere: **omit to keep the current value, send `null` or `""` to clear it.**
@@ -376,15 +385,15 @@ no_healthy_provider | capability_mismatch | user_request`.
 
 | Method | Path | Response |
 | --- | --- | --- |
-| GET | `/api/chat` | `{ chats }` — query `tool`, `includeArchived`, `archivedOnly`, `limit` |
+| GET | `/api/chat` | `{ chats }` — query `tool`, `includeArchived`, `archivedOnly`, `limit` (default 200, max 500) |
 | POST | `/api/chat` | **201** `{ chat }` |
 | POST | `/api/chat/stream` | **SSE** |
 | POST | `/api/chat/resume` | **SSE** |
 | GET | `/api/chat/runs/paused` | `{ runs }` — query `chatId` |
-| GET | `/api/chat/:id` | `{ chat, messages }` — query `limit` (default 500) |
+| GET | `/api/chat/:id` | `{ chat, messages }` — query `limit` (default 500, max 500) |
 | PATCH | `/api/chat/:id` | `{ chat }` |
 | DELETE | `/api/chat/:id` | `{ deleted: true, id }` |
-| GET | `/api/chat/:id/messages` | `{ messages, nextBefore }` — query `limit` (default 50, 1–500), `before` |
+| GET | `/api/chat/:id/messages` | `{ messages, nextBefore }` — query `limit` (default 50, max 500), `before` |
 | POST | `/api/chat/:id/open` | `{ chat, messages, latestRun }` |
 | POST | `/api/chat/:id/pin` | `{ chat }` |
 | POST | `/api/chat/:id/archive` | `{ chat }` |
@@ -764,10 +773,12 @@ against a local copy of the file the user picked.
 | POST | `/api/storage/assets/:id/pin` | `{ asset }` |
 | DELETE | `/api/storage/assets/:id` | `{ deleted: true, keepFile, bytesFreed }` |
 | POST | `/api/storage/cleanup` | `CleanupResult` (bare) |
-| GET | `/api/storage/cleanup/log` | `{ entries: CleanupLogEntry[] }` — query `limit` (default 50) |
+| GET | `/api/storage/cleanup/log` | `{ entries: CleanupLogEntry[] }` — query `limit` (default 50, max 500) |
 
 `GET /assets` query: `chatId`, `tool`, `origin` (`uploaded` \| `generated`),
-`pinned`, `brandApproved`, `search` (filename substring), `limit`, `offset`.
+`pinned`, `brandApproved`, `search` (filename substring), `limit` (default 200,
+max 1000), `offset` (default 0). The listing echoes both back, so a client can
+tell what it actually received.
 
 `brandApprovedAt` is `null` whenever `brandApproved` is `false`. Approval is
 managed through `/api/design` (§23), not here — this router only reports and
@@ -1324,8 +1335,9 @@ ErrorLogEntry {
 | --- | --- | --- |
 | GET | `/api/errors` | `{ entries: ErrorLogEntry[], total: number }` |
 
-Query parameters: `limit` (default 100), `severity` (`warning` \| `error`),
-`since` (epoch milliseconds). All three narrow the result. `total` counts every
+Query parameters: `limit` (default 100, max 500), `severity` (`warning` \|
+`error`), `since` (epoch milliseconds — a comparison value, so a fractional one
+is quietly useless rather than refused). All three narrow the result. `total` counts every
 row matching the same filters ignoring `limit`, so a console can say "showing
 100 of 4213" without a second request.
 
@@ -1525,10 +1537,11 @@ nothing is known and must not be rendered as `$0.00`; within a present value,
 | --- | --- | --- |
 | GET | `/api/activity` | `{ entries: ActivityEntry[], nextBefore: number \| null }` |
 
-Query parameters: `limit` (default 50, 1–200) and `before` (a timestamp cursor,
+Query parameters: `limit` (default 50, max 200) and `before` (a timestamp cursor,
 exclusive). Both are validated, so `limit=0`, `limit=201`, `limit=1.5`,
 `limit=lots` and `before=-1` are all **400 `bad_request`** with the offending
-field in `details.field`.
+field in `details.field`. This route was the first to keep the rule §1.2 now
+states for every list route.
 
 ```json
 {
@@ -1662,7 +1675,7 @@ TaskRun       { id, taskId, startedAt, finishedAt: number|null,
 `chatId?` / `cwd?` (nullable), `enabled?`. Update takes the same fields, all
 optional, and an omitted one is left alone — so the enable/disable toggle is a
 one-key PATCH rather than a read, merge and write. `/history` takes `limit`
-(default 50).
+(default 50, max 500).
 
 **`schedule` has exactly two forms**: `daily:HH:MM` and `weekly:D:HH:MM` (`D` is
 0–6, Sunday = 0). Anything else — including a bare `daily`, or a cron expression
@@ -1965,7 +1978,7 @@ Body fields, all optional — only what is present is written:
 | Field | Rule |
 | --- | --- |
 | `dailySpendCapUsd` | **`0` clears the cap.** Negative → 400. |
-| `tokenCeiling` | positive whole number; `0`, negative and fractional all → 400 |
+| `tokenCeiling` | positive whole number; `0`, negative and fractional all → 400 (`asPositiveInteger`, the same helper the list routes use for `limit`) |
 | `iterationCeiling` | same |
 | `subagentLimit` | same |
 
@@ -2240,7 +2253,7 @@ not a record with a rationale.
 
 | Method | Path | Response |
 | --- | --- | --- |
-| GET | `/api/design/assets/approved` | `{ assets, total }` — query `limit` (default 100) |
+| GET | `/api/design/assets/approved` | `{ assets, total }` — query `limit` (default 100, max 500) |
 | POST | `/api/design/assets/:id/approve` | `{ asset }` |
 | POST | `/api/design/assets/:id/unapprove` | `{ asset }` |
 

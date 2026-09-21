@@ -38,8 +38,7 @@ import {
   body,
   pathParam,
   queryBool,
-  queryNumber,
-
+  queryLimit,
   queryString,
   requireTool,
 } from './params.ts';
@@ -142,7 +141,7 @@ chatRouter.get(
       tool: asTool(queryString(req, 'tool')),
       includeArchived: queryBool(req, 'includeArchived'),
       archivedOnly: queryBool(req, 'archivedOnly'),
-      limit: queryNumber(req, 'limit'),
+      limit: queryLimit(req, 'limit', { fallback: 200, max: 500 }),
     });
     res.json({ chats });
   }),
@@ -289,7 +288,7 @@ chatRouter.get(
     const chat = requireChat(id);
     res.json({
       chat,
-      messages: listMessages(id, queryNumber(req, 'limit') ?? 500),
+      messages: listMessages(id, queryLimit(req, 'limit', { fallback: 500, max: 500 })),
     });
   }),
 );
@@ -348,12 +347,7 @@ chatRouter.get(
     const id = pathParam(req, 'id');
     requireChat(id);
 
-    const limit = queryNumber(req, 'limit') ?? 50;
-    if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
-      throw new AppError('bad_request', 'limit must be an integer between 1 and 500.', {
-        details: { field: 'limit' },
-      });
-    }
+    const limit = queryLimit(req, 'limit', { fallback: 50, max: 500 });
 
     const page = listMessagePage(id, limit, queryString(req, 'before'));
     res.json({ messages: page.messages, nextBefore: page.nextBefore });

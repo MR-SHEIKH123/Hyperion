@@ -174,6 +174,7 @@ findings.
 | S14 | `primaryArgument`'s comment described a raw-JSON fallback the engine deliberately does not implement, next to a test that pins the opposite. | **Fixed** 2026-09-21 — comment corrected in the same commit as S13; no behaviour change. |
 | S15 | A **global** model price could not be updated: `ON CONFLICT(model_id, provider_id)` never fires when `provider_id IS NULL` (SQLite treats NULLs as distinct), so saving one twice inserted a duplicate and the lookup kept returning the older row. The user's edit did nothing, and the stale figure stayed in force for cost reporting and the daily spend cap. | **Fixed** 2026-09-21 — partial unique index + NULL-aware upsert target (migration 018); found by the §6.2 tests, which is the audit finding its own class. |
 | S16 | A chat id with no chat row behind it raised the FK on `usage_log`, and `recordUsage` swallows its own errors — so the spend row was **discarded**. The agent path passes exactly such an id (`linkedChatId` nulls it for the task row for this reason), which meant §6.2's recording could have failed invisibly. | **Fixed** 2026-09-21 — the linkage is resolved at write time (an id with no row is stored as NULL, the spend kept), same treatment a temporary chat already got. |
+| S17 | `limit` reached SQL unchecked on seven of the nine list routes: `limit=2.5` was a **500** quoting SQLite ("datatype mismatch"), and `limit=-1` returned the **whole table**, because SQLite reads a negative `LIMIT` as no limit at all. The two routes that got it right (`/api/activity`, `/api/chat/:id/messages`) proved the rule was known and simply not applied. | **Fixed** 2026-09-21 — `queryLimit`/`queryOffset` in `src/http/params.ts`, one bound per route; found by the HTTP-input audit, pinned by `test/listlimits.test.ts` (nine routes, five of its eight cases failed before the fix). |
 
 ### S13 in full — a path rule matched the string, not the file
 
@@ -251,6 +252,77 @@ a different reason.
 Both are pinned in `test/taskcost.test.ts`, and both were verified against the
 unfixed code before being fixed.
 
+### S17 in full — a limit is a whole number, and the bound is the API
+
+**How it was found.** Not by reading `params.ts`, which is careful, but by
+asking which query values reach SQL as a *type* rather than as a value to
+compare. `limit` is the only one `queryNumber` could not safely serve: every
+other number lands in a comparison, where `2.5` compares fine, while `LIMIT 2.5`
+is a driver error and `LIMIT -1` is SQLite's spelling of *no limit at all*.
+
+**The evidence, before the fix** (real app on an ephemeral port, `limitprobe.mjs`
+at the repo root, deleted after use):
+
+```
+500  internal_error  "datatype mismatch"   /api/chat?limit=2.5
+500  internal_error  "datatype mismatch"   /api/chat/:id?limit=2.5
+500  internal_error  "datatype mismatch"   /api/storage/assets?limit=2.5
+500  internal_error  "datatype mismatch"   /api/storage/cleanup/log?limit=2.5
+500  internal_error  "datatype mismatch"   /api/errors?limit=2.5
+500  internal_error  "datatype mismatch"   /api/design/assets/approved?limit=2.5
+500  internal_error  "datatype mismatch"   /api/storage/assets?offset=2.5
+200  the whole table                        /api/chat?limit=-1
+200  the whole table                        /api/errors?limit=-1
+200  (clamped to 1 row by the service)      /api/storage/assets?limit=-5
+400  bad_request, correctly                  /api/activity?limit=2.5
+400  bad_request, correctly                  /api/chat/:id/messages?limit=2.5
+```
+
+Two things make this a finding rather than a rough edge. The 500 is
+**mislabelled**: the request was wrong and the response says the server broke,
+quoting the driver, and `error_log` gains a row asserting a server fault — so the
+error console fills with rows caused by clients and the log stops being a
+statement about the server. And the two routes that already validated (`activity`,
+`chat/:id/messages`, both with a test asserting `1.5` → 400) show the rule was
+understood; it simply was not applied to the other seven, which is exactly the
+drift the audit exists to catch.
+
+**The fix.** `queryLimit(req, name, { fallback, max })` and
+`queryOffset(req, name, fallback)` in `src/http/params.ts`, built on
+`asPositiveInteger`, which gained an optional `max`. Every list route passes its
+own bound in its own call, so the number a caller can exceed is visible where it
+is enforced: `chat` 500, `chat/:id` 500, `chat/:id/messages` 500, `storage/assets`
+1000, `storage/cleanup/log` 500, `errors` 500, `design/assets/approved` 500,
+`cowork/.../history` 500, `memory` 200. Out of range is a **400 naming the field**,
+with the bound in the message when the value is only too large.
+
+**Refused rather than clamped, deliberately.** Three of the services already
+clamped internally (`gallery.ts` 1000, `cleanup.ts` 500, `memory/index.ts` 200) —
+which is why those routes were "safe" for `limit=-5` and still 500 on `2.5`. The
+internal clamps stay, because the agent-side callers never pass through HTTP, but
+at the boundary a clamp is the wrong answer: a caller handed 200 rows after asking
+for 5000 concludes the table holds 200. `activity.ts` had already reasoned this
+out in a comment; the section title above is that reasoning made general.
+
+**Adjacent, fixed in passing:** `settings.ts` had a private `positiveLimit` that
+duplicated `asPositiveInteger` with a different message — the same rule written
+three times across the routers is how the limit routes drifted apart, so the copy
+is gone.
+
+**Adjacent, verified — not a finding:** `errors?since=2.5` is accepted, and should
+be: `since` is a comparison value, so a fractional timestamp is merely useless, not
+a driver error. Every other query parameter outside the two helpers is an enum, a
+string, a boolean or a timestamp (`usage?from`/`to`), and none of them reach SQL as
+a type. The `/api/activity` `before` cursor was already validated as a whole number.
+
+**Tests.** `test/listlimits.test.ts` — nine routes as a table, each with its
+documented maximum: fractional, above-max, zero and negative are 400 naming the
+field (and naming the bound when too large), the boundary values 1 and `max` are
+accepted, an omitted limit falls back to the route default, and the two offset
+rules are pinned separately. Run against the unfixed code first: 5 of its 8 cases
+failed (`1.5` → 500, above-max → 200, `0` → 200, `offset=1.5` → 500,
+`offset=-1` → 200). A new list route that bypasses `queryLimit` fails here.
+
 **Adjacent, verified — not findings.** Checked while here and found sound:
 `resolveInScope`/`resolveInSubtree` (realpath for existing ancestors, sibling-prefix
 trap avoided, NUL rejected), layer ordering (`permissionLayers` puts `inherited`
@@ -264,10 +336,21 @@ keystore (AES-256-GCM, key outside the DB, `0o600`). Also verified sound during
 a caller must say which work it is), `TaskBudget`'s read-once ceilings, and
 `usageByRun`'s parameterised `IN` list (the ids are bound, never interpolated).
 
-**Not yet audited** (next sessions, in the order they look worth the time): HTTP
-route input validation outside the agent routers, `mcp_config.json` writes,
-web-push payload privacy, the memory plugin's local store, and per-provider egress
-handling in `colibri.ts`.
+**Audited in this pass — input validation across the HTTP routers** (S17 above is
+what it found). All of `src/http/*` was read against the contract each router
+states: the only raw `req.body`/`req.query`/`req.params` access outside
+`params.ts` is the sanitized copy `errors.ts` keeps for the error log, and the
+only path built from a caller-supplied string is `projects.ts`, which resolves
+through the same scope guard the file tools use. Verified sound: the settings
+catch-all `/:key` is declared last (the literal routes above it cannot be
+shadowed), `publicSettings()` filters the two secret keys, `storage/assets/:id/file`
+resolves through `assetPath` rather than the request, `download.ts` strips quotes
+from the filename it puts in `Content-Disposition`, and the `multer` routes take a
+buffer, never a client-chosen destination.
+
+**Not yet audited** (next sessions, in the order they look worth the time):
+`mcp_config.json` writes, web-push payload privacy, the memory plugin's local
+store, and per-provider egress handling in `colibri.ts`.
 
 ## Prompt-1 scope — status (2026-09-21, verified against the code, not transcribed)
 
@@ -288,13 +371,15 @@ Where the scope says done, this is what was checked:
 | D-table decisions (D1/D4/D7/D8/D9/D11/D12/D13–D15, D-1.2) | **Landed**, each with the code and test the D-table entry names. |
 | v4 backend items `§6.1` context windows, `§6.3` approvals + continuation, `§6.4` unattended hardening, `§6.5` write-path downgrade, `§6.6` subagent isolation, `§6.7` profiles, `§6.8` observability + golden runs | **Landed.** |
 | v4 `§6.2` cost accounting per task | **Landed 2026-09-21.** `usage_log` gained `run_id` (migration `018`; `task_id` was `017`), the agent context records one priced row per provider request — so every task run is attributed whatever started it, and a delegated child's spend lands in its parent's task total — the task-state route returns a `usage` summary, and the activity feed carries each run's `spend`. The two findings this surfaced are S15 and S16 above. |
-| S-series audit (S12 fixed in PR #6; S13/S14 fixed 2026-09-21) | **Continuous.** `S2`–`S11` are not recoverable from this repo — like `1.25`, their list lived in conversation. If they exist in a local note, they need pasting in to be verified or closed. |
+| S-series audit (S12 fixed in PR #6; S13–S17 fixed 2026-09-21) | **Continuous.** `S2`–`S11` are not recoverable from this repo — like `1.25`, their list lived in conversation. If they exist in a local note, they need pasting in to be verified or closed. |
 | Frontend (Prompt 2) | Out of this scope by design. Shell + Chat tool landed; Code, Cowork, Design, Playground, Plugins, Skills, Settings remain. Frontend-side items that *wait on backend contracts* are tracked in `frontend/contracts/gaps.md`, and one of them (no cross-tool pending-approval endpoint, no per-project active-task listing) is the earliest backend work the frontend will ask for. |
 
 **So: the backend core is complete, including `§6.2` as of 2026-09-21.** The
 remaining work in the series is the audit queue above and whatever `S2`–`S11` and
-`1.25` turn out to be. Suite baseline for every future claim in this file:
-**872 tests / 155 suites green, `tsc --noEmit` clean** (backend), **84 tests and
+`1.25` turn out to be. The HTTP-input item of that queue is done (`S17`), which
+leaves `mcp_config.json` writes, web-push payload privacy, the memory plugin's
+local store, and `colibri.ts` egress. Suite baseline for every future claim in this file:
+**882 tests / 160 suites green, `tsc --noEmit` clean** (backend), **84 tests and
 five gates green** (frontend).
 
 ## Resolved verifications

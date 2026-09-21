@@ -1,7 +1,7 @@
 import { Router } from 'express';
 
 import { wrap } from './errors.ts';
-import { pathParam, queryNumber, queryString } from './params.ts';
+import { pathParam, queryLimit, queryString } from './params.ts';
 import {
   clearMemories,
   deleteMemory,
@@ -24,7 +24,7 @@ memoryRouter.get(
   wrap(async (req, res) => {
     const memories = await listMemories({
       query: queryString(req, 'query'),
-      limit: queryNumber(req, 'limit'),
+      limit: queryLimit(req, 'limit', { fallback: 50, max: 200 }),
     });
     res.json({ memories });
   }),

@@ -10,7 +10,8 @@ import {
   body,
   pathParam,
   queryBool,
-  queryNumber,
+  queryLimit,
+  queryOffset,
   queryString,
 } from './params.ts';
 import {
@@ -39,8 +40,8 @@ function readQuery(req: Request): AssetQuery {
     pinned: queryBool(req, 'pinned'),
     brandApproved: queryBool(req, 'brandApproved'),
     search: queryString(req, 'search'),
-    limit: queryNumber(req, 'limit'),
-    offset: queryNumber(req, 'offset'),
+    limit: queryLimit(req, 'limit', { fallback: 200, max: 1000 }),
+    offset: queryOffset(req, 'offset'),
   };
 }
 
@@ -58,7 +59,9 @@ storageRouter.get(
 storageRouter.get(
   '/cleanup/log',
   wrap(async (req, res) => {
-    res.json({ entries: listCleanupLog(queryNumber(req, 'limit') ?? 50) });
+    res.json({
+      entries: listCleanupLog(queryLimit(req, 'limit', { fallback: 50, max: 500 })),
+    });
   }),
 );
 
