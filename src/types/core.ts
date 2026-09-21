@@ -256,6 +256,42 @@ export interface ProviderRecord {
 }
 
 /**
+ * How a provider failed, for the failures worth pausing for (1.36).
+ *
+ * Declared here rather than in `providers/cooldowns.ts` because it is a
+ * client-visible fact now: `ProviderCooldown` carries it across the wire, and a
+ * badge that could not tell a rejected key from an exhausted balance could not
+ * tell the user what to fix.
+ */
+export type ProviderFailureClass =
+  | 'auth'
+  | 'payment'
+  | 'rate_limit'
+  | 'not_found'
+  | 'server'
+  | 'network';
+
+/**
+ * Why a provider is being left alone for now, as a client reads it (1.36).
+ *
+ * `until` is a deadline rather than a length, because a client rendering a length
+ * keeps rendering it after the wait is over — the fact a countdown needs is when
+ * the provider comes back, not how long it was once given. `reason` is the
+ * sentence the provider layer already writes for its switch messages
+ * (`cooldowns.ts`, whose wording is user-facing by design): the routing decision
+ * and the disclosure describe the same event, and a UI phrasing its own would
+ * drift from what actually happened.
+ */
+export interface ProviderCooldown {
+  /** Epoch ms at which the provider may be tried again. */
+  until: number;
+  failureClass: ProviderFailureClass;
+  /** Where the duration came from — the class table, or the provider's Retry-After. */
+  source: 'table' | 'retry_after';
+  reason: string;
+}
+
+/**
  * Provider as sent to the frontend.
  *
  * Deliberately has no key field of any kind — `hasKey` and `apiKeyHint` (last 4
@@ -285,6 +321,18 @@ export interface ProviderPublic {
    * a consumer to reconstruct the URL, which is how a password comes back.
    */
   egressProxy: string | null;
+  /**
+   * The cooldown this provider is serving, or null when it is not cooling (1.36).
+   *
+   * In-memory state rather than a column, and deliberately so: a cooldown dies
+   * with the process (`cooldowns.ts` argues why a persisted one would punish a key
+   * the user has since fixed), so this field answers "may I use it right now" and
+   * not "what happened last week". It rides the provider read rather than a route
+   * of its own because the question it answers is asked on every screen that lists
+   * providers, and because `docs/CONTRACTS.md` records the enforcement and the
+   * disclosure as one feature.
+   */
+  cooldown: ProviderCooldown | null;
   /** The declared ceiling, so a settings screen can show and edit it (Part 1.28). */
   maxContextTokens: number | null;
   /**

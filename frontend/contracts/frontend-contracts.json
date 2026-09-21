@@ -123,8 +123,8 @@
       "id": "providers.cooldown",
       "method": "GET",
       "expectedPath": "/api/providers",
-      "status": "partial",
-      "reason": "Enforced, not reported: 1.36 classifies every provider failure and applies a cooldown per class (401/403 60m, 402 30m, 429 5m or Retry-After, 404 2m, 5xx 1m, network 30s), and the router skips a cooled provider \u2014 but no read route says which provider is cooling or until when. The provider list is where that belongs, and nothing renders it yet."
+      "status": "implemented",
+      "reason": "Enforced *and* disclosed since 2026-09-22. 1.36 classifies every provider failure and applies a cooldown per class (401/403 60m, 402 30m, 429 5m or Retry-After, 404 2m, 5xx 1m, network 30s) and the router skips a cooled provider; `ProviderPublic.cooldown` now carries the class, the `until` deadline, which length won (`table` or the provider's own `retry_after`) and the same sentence `cooldowns.ts` writes into switch events, on every provider read. `PrivacyIndicator` renders it at the point of send, including the fact that being skipped is not being disabled. The field is live in-memory state, so a cooldown clears with the process \u2014 which is the design (`cooldowns.ts` argues a persisted one would punish a key the user has since fixed), not a missing read."
     },
     {
       "id": "providers.egress-proxy",

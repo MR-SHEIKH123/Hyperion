@@ -16,6 +16,23 @@ export const providerSchema = z.object({
    * is still missing, which `frontend/contracts/gaps.md` records.
    */
   maxContextTokens:z.number().int().positive().nullable(),
+  /**
+   * The cooldown this provider is serving (1.36), or null when it is not cooling.
+   *
+   * Enumerated fields rather than `z.unknown()`: the class decides what the user
+   * is told to fix (a rejected key and an exhausted balance are both refusals, and
+   * the fix is not the same), and `until` is a deadline a countdown can be built on
+   * — a length would keep counting after the wait was over. Required-and-nullable
+   * because every provider read sends it: a frontend that treated a missing field
+   * as "not cooling" would render the state it most needs to disclose as its
+   * absence.
+   */
+  cooldown:z.object({
+    until:z.number(),
+    failureClass:z.enum(['auth','payment','rate_limit','not_found','server','network']),
+    source:z.enum(['table','retry_after']),
+    reason:z.string(),
+  }).nullable(),
   createdAt:z.number(), updatedAt:z.number(),
 }).passthrough();
 export const modelSchema = z.object({ id:z.string(), label:z.string().optional(), ownedBy:z.string().optional(), contextLength:z.number().int().positive().optional() }).passthrough();
@@ -59,6 +76,7 @@ export const activeProviderResponseSchema = z.object({
   zdr:z.object({ status:zdrStatusSchema.nullable(), requirement:zdrRequirementSchema }).passthrough(),
 }).passthrough();
 export type ProviderWire = z.infer<typeof providerSchema>;
+export type ProviderCooldownWire = NonNullable<ProviderWire['cooldown']>;
 export type ModelWire = z.infer<typeof modelSchema>;
 export type EgressClassWire = z.infer<typeof egressClassSchema>;
 export type EgressProxyWire = z.infer<typeof egressProxySchema>;

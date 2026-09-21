@@ -1,6 +1,7 @@
 import type {
   EgressClassWire,
   EgressProxyWire,
+  ProviderCooldownWire,
   ZdrRequirementWire,
   ZdrStatusWire,
 } from '../../contracts/wire/providers';
@@ -34,6 +35,15 @@ export interface ProviderPrivacy {
   zdrStatus: ZdrStatusWire | null;
   zdrRequirement: ZdrRequirementWire;
   redactionCheckEnabled: boolean;
+  /**
+   * The cooldown this provider is serving, or null (1.36).
+   *
+   * Live state rather than a stored fact, and it is disclosure rather than
+   * decoration: a provider that is being skipped is exactly the case where a user
+   * asks "why is it not using the one I configured", and the answer — which class
+   * of failure, and for how much longer — was previously only in the server log.
+   */
+  cooldown: ProviderCooldownWire | null;
 }
 
 interface EgressCopy {
@@ -109,6 +119,16 @@ export function PrivacyIndicator({ privacy }: { privacy: ProviderPrivacy }) {
     privacy.redactionCheckEnabled ? 'on.' : 'off.'
   }`;
   const provider = privacy.providerName === null ? '' : `Provider: ${privacy.providerName}.`;
+  // The reason sentence is the backend's own (`cooldowns.ts` writes the same words
+  // into switch events), so the panel and the routing decision cannot describe the
+  // same cooldown differently. The routing half is stated because it is the part a
+  // user cannot infer from the reason: being skipped is not being disabled.
+  const cooldown = privacy.cooldown;
+  const cooldownShort = cooldown === null ? null : 'cooling down';
+  const cooldownSentence =
+    cooldown === null
+      ? ''
+      : `It is being left alone for now: ${cooldown.reason}. Another provider is preferred until then, and this one is used again only if nothing else can serve the model.`;
   // A proxied route is stated in both registers, because it is the fact a user
   // is most likely to have forgotten they configured — and because it is the one
   // fact that can make a provider they think of as local not be local at all.
@@ -124,6 +144,7 @@ export function PrivacyIndicator({ privacy }: { privacy: ProviderPrivacy }) {
   const short = [
     egress.short,
     ...(proxyShort === null ? [] : [proxyShort]),
+    ...(cooldownShort === null ? [] : [cooldownShort]),
     zdrShort,
     ...(requirementShort === null ? [] : [requirementShort]),
     redactionShort,
@@ -132,6 +153,7 @@ export function PrivacyIndicator({ privacy }: { privacy: ProviderPrivacy }) {
     egress.sentence,
     proxySentence,
     provider,
+    cooldownSentence,
     zdrSentence,
     requirementSentence ?? '',
     redactionSentence,
@@ -145,6 +167,7 @@ export function PrivacyIndicator({ privacy }: { privacy: ProviderPrivacy }) {
       data-egress={privacy.egress}
       data-zdr={privacy.zdrStatus ?? 'none'}
       data-proxy={privacy.egressProxy?.authority ?? 'none'}
+      data-cooldown={cooldown?.failureClass ?? 'none'}
       aria-label={sentence}
       title={sentence}
     >

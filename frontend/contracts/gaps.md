@@ -20,7 +20,13 @@ behavior in the browser.
   read and screen; see the fuller entry below, which `tasks.recovery` is declared
   `partial` against.
 - No complete per-project active-task listing for switch warnings.
-- Health summary has no backup component and no explicit provider cooldown detail.
+- Health summary has no backup component (`health.backup` stays `partial`).
+- ~~No explicit provider cooldown detail.~~ **Closed 2026-09-22 (1.36).**
+  `ProviderPublic.cooldown` carries the class, the `until` deadline, which of the two
+  lengths won and the module's own sentence, so the provider read says why a provider
+  is being skipped instead of leaving it to the server log; `providers.cooldown` is
+  `implemented` here. The point-of-action chip renders it (`PrivacyIndicator`), which
+  is the surface a user actually sees before a send.
 - ~~No per-provider egress-proxy contract.~~ **Closed 2026-09-21 (1.37).**
   `ProviderPublic.egressProxy` carries the redacted URL, and
   `GET /api/providers/active` adds `{redacted, authority, scheme, hasCredentials,

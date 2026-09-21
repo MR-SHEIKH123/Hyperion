@@ -46,10 +46,18 @@
  */
 import { AppError } from '../util/errors.ts';
 import { createLogger } from '../util/logger.ts';
+import type { ProviderCooldown, ProviderFailureClass } from '../types/core.ts';
 
 const log = createLogger('cooldown');
 
-export type FailureClass = 'auth' | 'payment' | 'rate_limit' | 'not_found' | 'server' | 'network';
+/**
+ * The failure classes, declared once in `types/core.ts`.
+ *
+ * A type alias rather than a second union: the class now crosses the wire inside
+ * `ProviderCooldown`, so a class added here without being added there (or the
+ * reverse) would be a frontend that cannot label a state the backend enforces.
+ */
+export type FailureClass = ProviderFailureClass;
 
 /** The addendum's table. Values in milliseconds. */
 export const COOLDOWN_MS: Record<FailureClass, number> = {
@@ -225,15 +233,38 @@ function humanRemaining(remainingMs: number): string {
 }
 
 /**
+ * The cooldown as one object for a reader that has to *show* it, or null.
+ *
+ * The facts and the sentence come out of a single read at a single instant, which
+ * is the point: a caller composing them from two calls could catch the moment a
+ * cooldown expires and produce "waiting 0s" beside no cooldown at all. The
+ * sentence is built here rather than by the caller for the same reason
+ * `parkSummary` exists — the routing decision and the disclosure are describing
+ * one event, and two phrasings of it drift.
+ */
+export function cooldownSnapshot(
+  providerId: string,
+  now: number = Date.now(),
+): (ProviderCooldown & { failureClass: FailureClass }) | null {
+  const cooldown = cooldownFor(providerId, now);
+  if (cooldown === null) return null;
+  return {
+    until: cooldown.until,
+    failureClass: cooldown.failureClass,
+    source: cooldown.source,
+    reason: `${CLASS_LABEL[cooldown.failureClass]} — waiting ${humanRemaining(cooldown.until - now)}`,
+  };
+}
+
+/**
  * Why this provider is being skipped, worded for a person, or null.
  *
  * The class is named rather than the status code: "the credentials were
- * rejected" tells the user what to fix, and "401" does not.
+ * rejected" tells the user what to fix, and "401" does not. A view of the
+ * snapshot above rather than a second phrasing of it.
  */
 export function describeCooldown(providerId: string, now: number = Date.now()): string | null {
-  const cooldown = cooldownFor(providerId, now);
-  if (cooldown === null) return null;
-  return `${CLASS_LABEL[cooldown.failureClass]} — waiting ${humanRemaining(cooldown.until - now)}`;
+  return cooldownSnapshot(providerId, now)?.reason ?? null;
 }
 
 /**

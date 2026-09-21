@@ -234,9 +234,26 @@ form** — only `hasKey` and a short `apiKeyHint`.
   modelCount: number | null;          // null = never fetched
   modelsFetchedAt: number | null; modelsError: string | null;
   egressProxy: string | null;         // redacted: user:***@host:port at most
+  cooldown: {                         // null when the provider is not cooling (1.36)
+    until: number;                    // epoch ms it may be tried again
+    failureClass: 'auth' | 'payment' | 'rate_limit' | 'not_found' | 'server' | 'network';
+    source: 'table' | 'retry_after';
+    reason: string;                   // "the credentials were rejected — waiting 60m"
+  } | null;
+  maxContextTokens: number | null;    // declared ceiling (1.28)
+  zdr: ProviderZdr;                   // support / requestFlag / confirmedAt / confirmedNote
   createdAt: number; updatedAt: number;
 }
 ```
+
+`cooldown` is live process state rather than a column, and it is here rather than on
+a route of its own because it answers a question asked on every screen that lists
+providers: *why is this one being skipped?* The `reason` string is the same sentence
+`cooldowns.ts` writes into provider-switch events, so the disclosure and the routing
+decision cannot describe one cooldown two ways; `until` is a deadline rather than a
+length, because a client rendering a length keeps rendering it after the wait is
+over. A provider that is not cooling sends `null` — never an absent field — so a
+client cannot mistake "no cooldown" for "we did not say".
 
 `ModelInfo` (in the model-list routes): `{ id, label?, ownedBy?, contextLength? }`.
 

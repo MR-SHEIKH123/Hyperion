@@ -18,9 +18,11 @@ import { AppError } from '../util/errors.ts';
 import { parseEgressProxy, tryEgressProxy } from '../services/safety/outbound.ts';
 import { findSensitive } from '../util/redact.ts';
 import { isZdrFlagLocation, isZdrSupport } from '../types/core.ts';
+import { cooldownSnapshot } from './cooldowns.ts';
 import type {
   HealthStatus,
   ModelInfo,
+  ProviderCooldown,
   ProviderPublic,
   ProviderRecord,
   ProviderType,
@@ -144,6 +146,19 @@ function proxyForRead(raw: string | null): string | null {
   return proxy === null ? null : proxy.redacted;
 }
 
+/**
+ * The cooldown as the client reads it, or null when the provider is not cooling.
+ *
+ * Composed here rather than in each route, for the reason the redaction above is:
+ * a route that had to remember this would eventually forget, and every read of a
+ * provider already goes through this function. The state is in-memory on purpose
+ * (`cooldowns.ts` explains why a persisted cooldown would punish a key the user
+ * has since fixed), so this is the one field here that is not a column.
+ */
+function cooldownForRead(providerId: string): ProviderCooldown | null {
+  return cooldownSnapshot(providerId);
+}
+
 export function toPublic(provider: ProviderRecord): ProviderPublic {
   return {
     id: provider.id,
@@ -166,6 +181,7 @@ export function toPublic(provider: ProviderRecord): ProviderPublic {
     // and the way to keep that true is to convert here, where the raw value is
     // still in hand and cannot be forgotten by a new route.
     egressProxy: proxyForRead(provider.egressProxy),
+    cooldown: cooldownForRead(provider.id),
     maxContextTokens: provider.maxContextTokens,
     // Carried across in full, `requestFlag.value` included. That value is a
     // policy declaration and never a credential — `setProviderZdr` rejects one

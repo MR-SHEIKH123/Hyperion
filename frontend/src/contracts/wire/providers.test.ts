@@ -1,6 +1,6 @@
 import { describe,expect,it } from 'vitest';
 import { activeProviderResponseSchema, providerSchema, providerTypeSchema } from './providers';
-const provider={id:'p1',name:'Local',type:'local',baseUrl:'http://localhost:11434',hasKey:false,apiKeyHint:null,enabled:true,priority:1,healthStatus:'healthy',lastError:null,lastErrorAt:null,lastSuccessAt:1,modelCount:1,modelsFetchedAt:1,modelsError:null,maxContextTokens:null,createdAt:1,updatedAt:1};
+const provider={id:'p1',name:'Local',type:'local',baseUrl:'http://localhost:11434',hasKey:false,apiKeyHint:null,enabled:true,priority:1,healthStatus:'healthy',lastError:null,lastErrorAt:null,lastSuccessAt:1,modelCount:1,modelsFetchedAt:1,modelsError:null,maxContextTokens:null,cooldown:null,createdAt:1,updatedAt:1};
 const active={provider,egress:'local',egressProxy:null,redactionCheckEnabled:true,zdr:{status:'local_no_egress',requirement:'prefer'}};
 describe('provider wire contract',()=>{
  it('accepts additive backend fields but never requires a credential',()=>{expect(providerSchema.parse({...provider,futureField:true})).toMatchObject({id:'p1'});expect(providerSchema.keyof().options).not.toContain('apiKey');});
@@ -35,10 +35,26 @@ it('accepts puter, whose credential is a token rather than a vendor key',()=>{ex
   expect(activeProviderResponseSchema.safeParse({...active,egressProxy:{redacted:'socks5://p:1080',authority:'p:1080',scheme:'socks5',hasCredentials:false,offMachine:true}}).success).toBe(false);
  });
 
+it('requires the cooldown to be stated, null included, and refuses a class it cannot label',()=>{
+  // 1.36's disclosure. The route always sends it (`null` when the provider is
+  // cooling nothing), and a schema that let it be absent would render "not
+  // cooling" for a payload that simply does not say — the same direction the
+  // retention and proxy arguments refuse, on the one fact that explains why a
+  // provider the user configured is being skipped.
+  const {cooldown,...withoutCooldown}=provider;
+  expect(cooldown).toBeNull();
+  expect(providerSchema.safeParse(withoutCooldown).success).toBe(false);
+  expect(providerSchema.safeParse({...provider,cooldown:{until:1_790_000_000_000,failureClass:'auth',source:'table',reason:'the credentials were rejected — waiting 60m'}}).success).toBe(true);
+  // A class the chip cannot label must not parse as one it can: the class is what
+  // decides whether the user is told to fix a key, a balance or a network path.
+  expect(providerSchema.safeParse({...provider,cooldown:{until:1,failureClass:'quota',source:'table',reason:'x'}}).success).toBe(false);
+  expect(providerSchema.safeParse({...provider,cooldown:{until:1,failureClass:'auth',source:'guess',reason:'x'}}).success).toBe(false);
+});
+
 it('accepts a declared context ceiling, and refuses one that could not be honoured',()=>{
   const base={id:'p1',name:'P',type:'remote',baseUrl:'https://example.test/v1',hasKey:true,apiKeyHint:'abcd',enabled:true,priority:100,
     healthStatus:'unknown',lastError:null,lastErrorAt:null,lastSuccessAt:null,modelCount:null,modelsFetchedAt:null,modelsError:null,
-    createdAt:1,updatedAt:1};
+    cooldown:null,createdAt:1,updatedAt:1};
   // Carried as a contract rather than ignored: the backend serves it on every read,
   // and null means "declared nothing", which is not the same as zero.
   expect(providerSchema.parse({...base,maxContextTokens:200000}).maxContextTokens).toBe(200000);

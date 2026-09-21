@@ -7,6 +7,7 @@ function privacy(overrides: Partial<ProviderPrivacy> = {}): ProviderPrivacy {
     providerName: 'Ollama (this machine)',
     egress: 'local',
     egressProxy: null,
+    cooldown: null,
     zdrStatus: 'local_no_egress',
     zdrRequirement: 'off',
     redactionCheckEnabled: true,
@@ -118,6 +119,38 @@ describe('PrivacyIndicator', () => {
     const line = screen.getByLabelText(/which is on this machine/);
     expect(line).toHaveTextContent('Local · via proxy 127.0.0.1:3128 · no egress');
     expect(line.textContent ?? '').not.toMatch(/off this machine/);
+  });
+
+  it('discloses a cooling provider, in the backend\'s own words', () => {
+    render(
+      <PrivacyIndicator
+        privacy={privacy({
+          cooldown: {
+            until: 1_790_000_000_000,
+            failureClass: 'auth',
+            source: 'table',
+            reason: 'the credentials were rejected — waiting 60m',
+          },
+        })}
+      />,
+    );
+    const line = screen.getByLabelText(/left alone for now/);
+    expect(line).toHaveAttribute('data-cooldown', 'auth');
+    // The chip's visible register is the short list; the sentence carries both the
+    // backend's reason verbatim and the one fact a user cannot infer from it —
+    // that being skipped is not being disabled.
+    expect(line).toHaveTextContent('Local · cooling down · no egress');
+    const label = line.getAttribute('aria-label') ?? '';
+    expect(label).toContain('It is being left alone for now: the credentials were rejected — waiting 60m.');
+    expect(label).toContain('this one is used again only if nothing else can serve the model');
+  });
+
+  it('says nothing about a cooldown when the provider is not cooling', () => {
+    render(<PrivacyIndicator privacy={privacy()} />);
+    const line = screen.getByLabelText(/Requests go to a provider on this machine/);
+    expect(line).toHaveAttribute('data-cooldown', 'none');
+    expect(line.textContent ?? '').not.toMatch(/cooling|left alone/);
+    expect(line.getAttribute('aria-label') ?? '').not.toMatch(/left alone|waiting/);
   });
 
   it('says nothing about a proxy when there is none', () => {

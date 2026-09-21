@@ -52,6 +52,9 @@ export function useModelSelection(preferred: string | null): ModelSelection {
             providerName: active.provider?.name ?? null,
             egress: active.egress,
             egressProxy: active.egressProxy,
+            // Live, and null for a provider that is not cooling: the indicator says
+            // nothing about a cooldown it was not told about (1.36).
+            cooldown: active.provider?.cooldown ?? null,
             zdrStatus: active.zdr.status,
             zdrRequirement: active.zdr.requirement,
             redactionCheckEnabled: active.redactionCheckEnabled,

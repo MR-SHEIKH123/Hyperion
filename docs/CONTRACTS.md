@@ -4915,6 +4915,44 @@ tracker and the cooldown are forgotten. That is the part of 1.36's "deadlock
 reset" that has a mechanism behind it: nothing here can hold a provider out of
 rotation permanently.
 
+### Enforcement without disclosure was half a feature
+
+The table above was enforced from the day it landed and *reported* nowhere except
+the server log and the switch event: a provider serving an hour-long auth cooldown
+was skipped by the router, and every read of it said exactly what it said about a
+provider that had never been tried. `frontend-contracts.json` carried that as
+`providers.cooldown: partial` and named where the missing half belonged — the
+provider list — and it is there now, as `ProviderPublic.cooldown`.
+
+Three decisions, each of which could have gone the other way:
+
+1. **`until`, not a length.** The router is holding the provider until an instant.
+   A client given `ms` renders "60m" — and keeps rendering it after the hour is up,
+   because it does not know when the clock started. The deadline is the fact; a
+   countdown is arithmetic the client can do on it.
+2. **The sentence is the module's own.** `describeCooldown` already wrote these
+   words for the switch event ("the credentials were rejected — waiting 60m"), and
+   the read returns that same string rather than letting a UI phrase a second
+   version of a decision the router made. This is the `parkSummary` rule again: one
+   event, one wording, wherever it is displayed. The snapshot is taken once, so a
+   cooldown expiring between the facts and the words cannot produce a sentence with
+   nothing behind it.
+3. **It rides every provider read, not a route of its own.** `toPublic` composes it
+   the way it already redacts `egressProxy` — at the one boundary every provider
+   read passes through, so a route added later cannot forget to disclose it. It is
+   the same argument the redaction makes: doing it per route is how a field goes
+   missing on the route nobody thought about.
+
+**What the disclosure must not say is that the provider is broken.** A cooldown is
+reordering, not removal (`orderByCooldown` sorts cooling providers last rather than
+dropping them, and the only-one-that-can-serve case still uses it), so the chip says
+both halves: why it is being left alone, and that it is used again if nothing else
+can serve the model. `test/cooldownread.test.ts` asserts the read is live (an
+expired cooldown disappears with no write), that a cleared one is gone, and that a
+provider that never cooled sends `null` rather than an absent field — an absent
+field is a client's default, and the default for this fact must not be "not
+cooling" when the answer is unknown.
+
 **What 1.36 names and this does not implement: `ModelSlot`.** The addendum lists
 it with no mechanism, and nothing in this tree resembles a slot abstraction over
 models, so inventing one would be a guess wearing the addendum's name. It is
