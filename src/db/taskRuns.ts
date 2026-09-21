@@ -40,6 +40,13 @@ const log = createLogger('taskruns');
  * configured (Part 1.19), with `pause_reason = 'ceiling_reached'`. It is not
  * `error` because nothing broke, and not `paused` because there is nothing to
  * resume into — the same ceiling would trip again immediately.
+ *
+ * `interrupted` is terminal too, and means the run ended because something
+ * outside it stopped the process (a restart, most often — migration `020`, item
+ * 1.31). Not `error`, because the work did not fail; not `paused`, because a
+ * task run has no resume path. The cause still rides in `error_code`
+ * (`internal_error`), and rows written before `020` keep their old shape
+ * (`state = 'error'` with that code), so history is never rewritten.
  */
 export type TaskRunState =
   | 'running'
@@ -48,7 +55,8 @@ export type TaskRunState =
   | 'error'
   | 'blocked'
   | 'ready_for_review'
-  | 'stopped';
+  | 'stopped'
+  | 'interrupted';
 
 /** Tools that own a task run. Chat has `chat_runs` and its own state machine. */
 export type TaskRunTool = 'code' | 'cowork' | 'design';
@@ -126,9 +134,9 @@ export function startTaskRun(input: StartTaskRunInput): TaskRun {
 /**
  * Move a run to a terminal or paused state.
  *
- * `complete`, `error` and `stopped` stamp `completed_at`; `paused` and `running`
- * clear it, so a resumed run does not carry a completion time it has not
- * reached. The reason columns are always rewritten — a run that resumes must not
+ * `complete`, `error`, `stopped` and `interrupted` stamp `completed_at`;
+ * `paused` and `running` clear it, so a resumed run does not carry a completion
+ * time it has not reached. The reason columns are always rewritten — a run that resumes must not
  * keep the error that paused it, or the UI will show a stale failure over live
  * output.
  */
@@ -138,7 +146,7 @@ export function finishTaskRun(
   reason?: { pauseReason?: string | undefined; code?: string | undefined; message?: string | undefined },
 ): void {
   const now = Date.now();
-  const terminal = state === 'complete' || state === 'error' || state === 'stopped';
+  const terminal = state === 'complete' || state === 'error' || state === 'stopped' || state === 'interrupted';
   const run = terminal ? getTaskRun(runId) : null;
 
   getDb()
@@ -298,9 +306,13 @@ export function latestRunForTask(tool: TaskRunTool, taskId: string): TaskRun | n
  *
  * A row saying `running` after a restart is a lie the state endpoint would
  * repeat forever, leaving a client waiting on a stream nothing will ever write
- * to. `error` rather than `paused`: unlike a chat run there is no resume path
- * for a task whose agent process is gone, so claiming it is resumable would be
- * the same lie in a different shape.
+ * to. `interrupted` rather than `paused`: unlike a chat run there is no resume
+ * path for a task whose agent process is gone, so claiming it is resumable
+ * would be the same lie in a different shape. `interrupted` rather than `error`
+ * as well: nothing about the task failed, the process running it went away, and
+ * a state that cries error on every unclean shutdown teaches the user to ignore
+ * errors. The cause rides in `error_code`, so a reader that only knows the old
+ * shape still finds `internal_error` there.
  *
  * **`blocked` is demoted too, and that is the subtle half.** A blocked run waits
  * for an answer only its own live process can consume — a confirmation is
@@ -323,7 +335,7 @@ export function reconcileOrphanedTaskRuns(): number {
       // SET expressions see the pre-update row, so this CASE reads the state the
       // crash left behind and names the right cause for each.
       `UPDATE task_runs
-          SET state = 'error',
+          SET state = 'interrupted',
               error_code = 'internal_error',
               error_message = CASE state
                 WHEN 'blocked'

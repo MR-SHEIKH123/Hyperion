@@ -4480,9 +4480,12 @@ without noticing:
 
 1. **Live state only.** A run in `error` is not an item — a failure the user
    already saw fail is not waiting on them, and putting it in the queue would
-   rebuild the feed with worse ordering. The exception is `error_code:
-   'internal_error'`, which is what a restart leaves behind: that run is a thing to
-   restart, so it appears as `interrupted`.
+   rebuild the feed with worse ordering. The exception is an interruption: a run
+   the server left mid-flight is a thing to restart, so it appears as
+   `interrupted`. That is the `interrupted` state itself since migration `020`,
+   and the pair that preceded it (`error` with `error_code: 'internal_error'`) is
+   still reported, because every existing database holds rows in that shape and a
+   queue that went quiet on them would drop the items that waited longest.
 2. **One item per thing, not one per symptom.** A `ready_for_review` run that
    produced a plan becomes `plan_ready` and not both items, because the plan is
    *why* it wants review and the user has one decision to make.
@@ -4567,3 +4570,37 @@ not do is pretend: nothing is retried and nothing is reported as saved.
 (`usePersistedDraft`, `useScrollAnchor`); `frontend/src/tools/chat/drafts.ts` owns
 the draft keys, so the key space is one place rather than a convention spread over
 call sites.
+
+## `interrupted` is its own state, not another flavour of error *(Prompt 1, item 1.31; migration `020`)*
+
+Boot reconciliation has to demote a run that was mid-flight when the process died
+— a row still saying `running` is a lie the state endpoint would repeat forever.
+It used to write `error` with `error_code: 'internal_error'`, which was the
+closest word the vocabulary had and the wrong one. Migration `012` made exactly
+this argument for `stopped`, and it applies twice over here:
+
+| candidate | why it is not the right word |
+| --- | --- |
+| `error` | nothing about the task failed. The process running it went away. And this state arrives on *every* unclean shutdown, so a vocabulary that calls it an error teaches users to ignore errors. |
+| `paused` | promises a resume. A task run has none: the agent loop that could continue it is gone, and Chat's resume path does not exist for Code/Cowork/Design. `012` rejected `paused` for the same reason. |
+| `interrupted` | says the third true thing: the run ended because something outside it stopped the process. Terminal, not resumable, and the cause still rides in `error_code` (`internal_error`), so a reader that only knows the old shape loses nothing. |
+
+Three consequences worth keeping:
+
+- **History is not rewritten.** Rows written before `020` keep `state = 'error'`
+  with `error_code: 'internal_error'`, and readers that must keep showing them as
+  interrupted (the attention queue does) recognise that pair explicitly. There is
+  no data migration that rewrites the past into the new vocabulary.
+- **The frontend has a case for it.** `interrupted` is in the wire enum, in
+  `TaskViewState`, and in the state banner — a switch that met an unknown state
+  would have returned `undefined`, so the mapping is asserted to be total.
+- **The state is the constraint's, not the application's.** `task_runs.state` is
+  a `CHECK`, so `020` rebuilds the table (the procedure `010` documents); a
+  migration test applies it to a pre-`020` database and asserts both directions —
+  the pre-`020` schema refuses `interrupted`, and after the migration an unknown
+  word is still refused.
+
+What is *not* here, and must not be read as covered by "1.31 landed": the
+recovery UX (view the partial work, discard it), the unattended-run notification,
+the `orphaned_worktree` check, the interactive-wait timeout and the Design
+environment. Item 1.31 is a list, and only its state half is built.

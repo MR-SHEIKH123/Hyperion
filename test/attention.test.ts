@@ -34,7 +34,7 @@ const { createChat } = await import('../src/db/chats.ts');
 const { logError } = await import('../src/db/errorLog.ts');
 const { setSetting } = await import('../src/db/settings.ts');
 const { recordStep } = await import('../src/db/taskSteps.ts');
-const { finishTaskRun, startTaskRun } = await import('../src/db/taskRuns.ts');
+const { finishTaskRun, reconcileOrphanedTaskRuns: reconcileTaskRuns, startTaskRun } = await import('../src/db/taskRuns.ts');
 const { setPrice } = await import('../src/db/usage.ts');
 const { recordUsage } = await import('../src/db/usage.ts');
 const { createRun, pauseRun, reconcileOrphanedRuns } = await import('../src/orchestrator/runState.ts');
@@ -133,7 +133,7 @@ describe('what the queue contains, and in what order', () => {
   const approvals: { id: string }[] = [];
   const chatId = { value: '' };
   const pausedRun = { value: '' };
-  const taskRuns = { plan: '', review: '', interrupted: '', ordinaryFailure: '' };
+  const taskRuns = { plan: '', review: '', interrupted: '', legacyInterrupted: '', ordinaryFailure: '' };
   const scheduled = { id: '', failedRun: '' };
 
   before(() => {
@@ -185,12 +185,17 @@ describe('what the queue contains, and in what order', () => {
     startTaskRun({ runId: taskRuns.review, taskId: 'task-attention-review', tool: 'design' });
     finishTaskRun(taskRuns.review, 'ready_for_review', { pauseReason: 'ready_for_review' });
 
+    // Two interruptions, because both shapes are real. The current one is
+    // produced the way production produces it — a run left `running`, then boot
+    // reconciliation (migration 020 writes `interrupted`). The other keeps the
+    // pre-020 shape on purpose: `error` with `internal_error` is what every
+    // existing database holds, and a queue that stopped reporting those would go
+    // silent on exactly the items that have been waiting longest.
     taskRuns.interrupted = 'run-attention-interrupted';
     startTaskRun({ runId: taskRuns.interrupted, taskId: 'task-attention-interrupted', tool: 'cowork' });
-    finishTaskRun(taskRuns.interrupted, 'error', {
-      code: 'internal_error',
-      message: 'The server restarted while this task was running.',
-    });
+    taskRuns.legacyInterrupted = 'run-attention-legacy-interrupted';
+    startTaskRun({ runId: taskRuns.legacyInterrupted, taskId: 'task-attention-legacy-interrupted', tool: 'code' });
+    reconcileTaskRuns();
 
     taskRuns.ordinaryFailure = 'run-attention-failed';
     startTaskRun({ runId: taskRuns.ordinaryFailure, taskId: 'task-attention-failed', tool: 'code' });
@@ -230,7 +235,16 @@ describe('what the queue contains, and in what order', () => {
     assert.equal(item(page, `plan:${taskRuns.plan}`).kind, 'plan_ready');
     assert.equal(item(page, `review:${taskRuns.review}`).kind, 'ready_for_review');
     assert.equal(item(page, `interrupted:${taskRuns.interrupted}`).kind, 'interrupted');
-    assert.equal(kinds(page).filter((kind) => kind === 'interrupted').length, 2, 'the chat run too');
+    assert.equal(
+      item(page, `interrupted:${taskRuns.legacyInterrupted}`).kind,
+      'interrupted',
+      'a row written before the interrupted state existed is still a thing to restart',
+    );
+    assert.equal(
+      kinds(page).filter((kind) => kind === 'interrupted').length,
+      3,
+      'two task runs and the chat run',
+    );
     assert.equal(item(page, `schedule:${scheduled.id}`).kind, 'scheduled_run_failed');
     assert.equal(kinds(page).filter((kind) => kind === 'backup_failure').length, 1);
 
@@ -293,13 +307,14 @@ describe('what the queue contains, and in what order', () => {
     assert.equal(summed, page.total);
     assert.equal(page.counts.approval_required, 1);
     assert.equal(page.counts.plan_ready, 1);
+    assert.equal(page.counts.interrupted, 3, 'two task runs and a chat run');
   });
 
   test('says which sources it could not read instead of omitting them', async () => {
     const page = await queue();
 
     assert.equal(source(page, 'pending_approvals').status, 'ok');
-    assert.equal(source(page, 'task_runs').count, 3, 'plan, review and interrupted');
+    assert.equal(source(page, 'task_runs').count, 4, 'plan, review and two interruptions');
     assert.equal(source(page, 'chat_runs').count, 2);
     assert.equal(source(page, 'scheduled_task_runs').status, 'ok');
 

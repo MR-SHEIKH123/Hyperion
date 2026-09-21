@@ -187,12 +187,15 @@ function taskRunItem(run: TaskRunRow, plan: string | null): AttentionItem | null
   };
   const state = run.state as TaskRunState;
 
-  if (state === 'error') {
-    // Only the reconciled interruption is a queue item: it means "the server
-    // restarted under this run", which leaves something to restart. Any other
-    // `error` is a failure the user was already told about, and a queue is not a
-    // history — that is what the feed and the error console are for.
-    if (run.error_code !== 'internal_error') return null;
+  if (state === 'interrupted' || (state === 'error' && run.error_code === 'internal_error')) {
+    // `interrupted` is the state boot reconciliation writes (migration 020). The
+    // second half of the condition is history, not belt-and-braces: rows written
+    // before 020 are `error` with that code, and a queue that stopped showing
+    // them would lose exactly the items that have been waiting longest.
+    //
+    // Any *other* `error` is still not an item — a failure the user was already
+    // told about is not waiting on them, and a queue is not a history. That is
+    // what the feed and the error console are for.
     return {
       id: `interrupted:${run.run_id}`,
       kind: 'interrupted',
@@ -339,7 +342,7 @@ export function attentionQueue(now = Date.now()): AttentionQueue {
     .prepare<TaskRunRow>(
       `SELECT run_id, task_id, tool, chat_id, state, pause_reason, error_code, error_message, updated_at
          FROM task_runs
-        WHERE state IN ('paused', 'blocked', 'ready_for_review', 'error')`,
+        WHERE state IN ('paused', 'blocked', 'ready_for_review', 'error', 'interrupted')`,
     )
     .all();
   const plans = new Map(

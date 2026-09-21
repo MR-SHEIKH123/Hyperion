@@ -58,14 +58,6 @@ export const operationalFixtures = [
     source: 'GET /api/providers/active → provider: null',
   },
   {
-    id: 'interrupted-gap',
-    title: 'Interrupted task',
-    detail:
-      'Not exposed: the TaskRun contract has no interrupted state. An interrupted run is recorded stopped or error, and the frontend derives "interrupted" from the transport state (docs/CONTRACTS.md, task machine).',
-    tone: 'neutral' as const,
-    source: 'none yet — recorded, not rendered as real',
-  },
-  {
     id: 'design-preview-failure',
     title: 'Design preview failure',
     detail:

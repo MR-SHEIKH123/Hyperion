@@ -337,7 +337,7 @@ describe('GET /api/{tool}/tasks/:taskId/state', () => {
 });
 
 describe('a process that died leaves rows claiming to be running', () => {
-  test('reconciliation demotes them to error rather than leaving the lie', async () => {
+  test('reconciliation demotes them to interrupted rather than leaving the lie', async () => {
     // Written directly, because that is exactly what a crash leaves behind: a
     // row with no process attached. Racing a live run to catch it mid-flight
     // would test the timing of the test, not the reconciliation.
@@ -350,10 +350,13 @@ describe('a process that died leaves rows claiming to be running', () => {
     for (const runId of ['orphan-1', 'orphan-2']) {
       const record = getTaskRun(runId);
       assert.ok(record);
-      // `error`, not `paused`: unlike a chat run there is no resume path for a
-      // task whose agent process is gone, so `paused` would be the same lie in
-      // a different shape — a client would wait for a resume that cannot come.
-      assert.equal(record.state, 'error');
+      // `interrupted`, not `paused`: unlike a chat run there is no resume path
+      // for a task whose agent process is gone, so `paused` would be the same
+      // lie in a different shape — a client would wait for a resume that cannot
+      // come. And not `error` either: nothing about the task failed, the process
+      // running it went away, and a state that cries error on every unclean
+      // shutdown is a state users learn to ignore (migration 020).
+      assert.equal(record.state, 'interrupted');
       assert.equal(record.errorCode, 'internal_error');
       assert.match(record.errorMessage ?? '', /restarted/);
       assert.notEqual(record.completedAt, null);
@@ -383,7 +386,7 @@ describe('a process that died leaves rows claiming to be running', () => {
     const body = (await res.json()) as { run: { state: string; errorMessage: string } };
 
     assert.equal(res.status, 200);
-    assert.equal(body.run.state, 'error');
+    assert.equal(body.run.state, 'interrupted');
     assert.match(body.run.errorMessage, /restarted/);
   });
 
@@ -399,7 +402,7 @@ describe('a process that died leaves rows claiming to be running', () => {
 
     const record = getTaskRun('orphan-blocked');
     assert.ok(record);
-    assert.equal(record.state, 'error');
+    assert.equal(record.state, 'interrupted');
     assert.equal(record.errorCode, 'internal_error');
     // Named for what the user actually lost: not just "it was running", but that
     // the question it asked can no longer be answered.

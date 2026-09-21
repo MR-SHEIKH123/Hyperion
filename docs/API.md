@@ -1165,7 +1165,7 @@ TaskRun {
   runId: string; taskId: string; tool: 'code'|'cowork'|'design';
   chatId: string|null;
   state: 'running'|'paused'|'complete'|'error'
-       |'blocked'|'ready_for_review'|'stopped';
+       |'blocked'|'ready_for_review'|'stopped'|'interrupted';
   pauseReason: string|null; errorCode: string|null; errorMessage: string|null;
   startedAt: number; updatedAt: number; completedAt: number|null;
 }
@@ -2391,7 +2391,7 @@ recorded:
 | `approval_required` | `pending_approvals` | a call the engine parked, across every task |
 | `paused`, `blocked`, `ready_for_review` | `task_runs` | live run states; a paused run is resumable, a blocked one needs something the run cannot supply |
 | `plan_ready` | `task_runs` + `task_steps(kind='plan')` | a `ready_for_review` run that produced a plan — **one item, not two**, because the plan is why it wants review |
-| `interrupted` | `task_runs`, `chat_runs` | `error: internal_error` (a task run reconciled after a restart) and a paused chat run with the same code, which is the one a user sees as "the reply stopped halfway" |
+| `interrupted` | `task_runs`, `chat_runs` | a task run in the `interrupted` state (migration `020`: boot reconciliation demotes what a dead process left mid-flight) plus the pre-`020` shape of the same event (`error` with `error_code: internal_error`, which existing databases hold and which is still reported), and a paused chat run with that code — the one a user sees as "the reply stopped halfway" |
 | `scheduled_run_failed` | `scheduled_tasks.last_status` | the scheduler's own verdict, so a later success clears it with no window to expire |
 | `backup_failure` | `error_log` | **detected**: a backup has no run record, so a failed request in the last 24h is the only evidence, and `sources[].reason` says so |
 | `spending_cap` | `usage` + the cap setting | warns at 80% of the daily cap and states the refusal at 100%; when any request today is unpriced the detail says the total is a floor |

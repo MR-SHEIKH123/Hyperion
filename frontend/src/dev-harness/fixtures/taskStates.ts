@@ -54,6 +54,12 @@ export const taskStateFixtures = {
     runId: 'fixture-run',
     completedAt: fixtureNow,
   },
+  interrupted: {
+    kind: 'interrupted',
+    ...base,
+    runId: 'fixture-run',
+    reason: 'The server restarted while this task was running.',
+  },
   error: {
     kind: 'error',
     ...base,

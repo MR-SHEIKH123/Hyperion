@@ -11,9 +11,11 @@ behavior in the browser.
   plans waiting for review, interrupted runs, failed scheduled runs, backup failures, the
   spend cap and MCP disconnects, each with the call that resolves it. The UI landed with it
   on 2026-09-21 (`src/attention/`, the `/attention` surface and its rail entry), so
-  `attention.queue` is `implemented` here. Two things it does not close: the `TaskRun` union still has no `interrupted` state — an interrupted task is a
-  reconciled `error: internal_error`, which is what the queue reports rather than a state
-  the machine gained — and there is still no per-project active-task listing.
+  `attention.queue` is `implemented` here, and so is `attention.interrupted`: the `TaskRun`
+  union gained the `interrupted` state on 2026-09-21 (migration `020`, written by boot
+  reconciliation), so an interruption is a state the backend holds rather than one this
+  frontend derives. One thing it does not close: there is still no per-project active-task
+  listing.
 - No complete per-project active-task listing for switch warnings.
 - Health summary has no backup component and no explicit provider cooldown detail.
 - No Puter provider type and no per-provider egress-proxy contract.
