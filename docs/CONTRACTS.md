@@ -4709,3 +4709,69 @@ rotation permanently.
 it with no mechanism, and nothing in this tree resembles a slot abstraction over
 models, so inventing one would be a guess wearing the addendum's name. It is
 recorded in the register as unavailable rather than approximated.
+
+---
+
+## A backup passphrase is not a stored key (1.29)
+
+The archive this app writes is the artifact most likely to leave the machine —
+emailed to yourself, copied to a cloud folder, left on a USB stick — and until
+1.29 the only protection it had was the decision not to include `secret.key`.
+That decision is still right (a leaked archive should expose conversations, not
+credentials) but it is not encryption, and the requirement asked for the real
+thing.
+
+Four decisions underneath the container in `services/backup/crypto.ts`:
+
+1. **Argon2id, because the secret is a human passphrase.** The defense that
+   matters for a guessable input is cost per guess, in memory as well as time.
+   The parameters (64 MiB, 3 iterations, 1 lane) live **in the container header**,
+   not in the code's defaults, so raising the default later cannot make yesterday's
+   archive unopenable and a user on slow hardware can still write something a
+   faster machine reads.
+2. **AES-256-GCM over the whole archive, with the header as additional data.**
+   Authentication is the point: a flipped bit fails the tag and the archive is
+   refused, rather than decrypting into garbage that then *restores* garbage. The
+   header is authenticated so the recorded cost parameters cannot be edited — and
+   the length field is checked before the key is derived, because a truncated
+   upload should not cost a second of Argon2id to discover.
+3. **The passphrase is never stored, anywhere, by design.** Not in the archive, the
+   manifest, the settings table or a log line; there is no column in
+   `restore_audit` it could be written into; and the routes take it in a **body**,
+   never a query string, because a URL ends up in browser history, `Referer`
+   headers and request logs. The consequence is stated where a user will meet it:
+   there is no recovery, and losing the passphrase loses the archive.
+4. **One message for two causes.** The tag covers ciphertext and header together,
+   so "wrong passphrase" and "edited file" are indistinguishable by construction.
+   The refusal says both rather than guessing — while the two cases that *can* be
+   precise (a file that is not our container, a container that is truncated) say
+   what they are.
+
+Scheduled backups are deliberately **not** encrypted: a job that runs with nobody
+present has nowhere to keep a passphrase except the settings table, and a key
+stored beside the lock is not encryption. Protected exports are an explicit user
+action, which is also why they are the only kind the `.hypbak` extension marks.
+Destinations and retention are unchanged — the mirror directory
+(`HYPERION_BACKUP_DEST`) and the automatic-backup retention count are what exist
+today, and neither gained a passphrase setting in this pass.
+
+## A restore is audited, and a restore's own record survives it (1.29)
+
+`restore_audit` (migration `024`) records every attempt: dry runs, refusals and
+real restores. Two properties are structural rather than conventional:
+
+- **The row for a successful restore is written after the swap**, against the
+  reopened handle, so the record lives *inside* the database that restore
+  produced. Written before the swap it would be discarded along with the database
+  it described — which is the one entry a user asks about a week later.
+- **A refusal is recorded too.** The interesting entry is the near-miss: a stale
+  archive someone reached for, or a protected file with no passphrase. It is
+  written on the refusal path, where nothing has been touched, and it is
+  best-effort there — the refusal's own error is the message the user needs, and a
+  failed log write must not replace it.
+
+`ArchiveInspection.diff` is a **count** diff, not a row diff, and that is the
+honest shape: a restore replaces the database rather than merging it, so the
+pre-confirmation question is "does this archive know more or less than I have, and
+where". `onlyInArchive` and `onlyHere` name schema drift, which counts alone
+cannot express — a table on one side only is not "zero rows".

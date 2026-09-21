@@ -994,19 +994,28 @@ summary that guessed would understate exposure. `totals` always equals the plain
 ```ts
 BackupFile   { filename, bytes, createdAt }
 BackupManifest { format, app, createdAt, createdAtIso, schemaMigrations: string[],
-                 contents: {...}, counts: Record<string, number>, warning?: string }
-ArchiveInspection { valid, manifest: BackupManifest|null, hasDatabase, hasMcpConfig,
+                 contents: {...}, counts: Record<string, number>, encrypted?: boolean,
+                 warning?: string }
+ArchiveInspection { valid, encrypted, manifest: BackupManifest|null, hasDatabase, hasMcpConfig,
                  hasEncryptionKey, skillFiles, attachmentFiles,
-                 counts: Record<string, number>, problems: string[], warnings: string[] }
+                 counts: Record<string, number>, diff: ArchiveDiff,
+                 problems: string[], warnings: string[] }
+ArchiveDiff  { tables: { table, current, archive, delta }[], onlyInArchive: string[],
+                 onlyHere: string[], missingFromArchive: string[],
+                 currentMigrations, archiveMigrations }
 RestoreResult { restored, dryRun, inspection, preRestoreBackup: string|null,
                  filesWritten: { database, mcpConfig, skills, attachments },
                  restartRequired }
+RestoreAuditEntry { id, createdAt, filename, bytes, sha256, encrypted, dryRun, restored,
+                 outcome: 'dry_run'|'restored'|'refused', detail, preRestoreBackup }
 ```
 
 | Method | Path | Response |
 | --- | --- | --- |
-| GET | `/api/backup` | `{ backups: BackupFile[] }` |
+| GET | `/api/backup` | `{ backups: BackupFile[] }` (`.zip` and `.hypbak`) |
 | GET | `/api/backup/export` | **a file download**, not JSON |
+| POST | `/api/backup/export` | **a file download** — `{ passphrase }` *(1.29)* |
+| GET | `/api/backup/restores` | `{ restores: RestoreAuditEntry[] }`, newest first *(1.29)* |
 | POST | `/api/backup/inspect` | `{ inspection: ArchiveInspection }` |
 | POST | `/api/backup/import` | `RestoreResult` (bare) |
 
@@ -1025,7 +1034,63 @@ and why the manifest carries a `warning` — which also names the omitted file w
 `POST /inspect` and `POST /import` take the archive either as an upload —
 `multipart/form-data`, field name **`file`**, one file (note this differs from
 skills, which uses `files`) — or as JSON `{ file: "<name>" }` naming an archive
-already in the backups directory.
+already in the backups directory. Both accept a **`passphrase`** field, required
+when the file is a protected container (§10.1).
+
+### 10.1 Passphrase-protected archives *(new in 1.29)*
+
+`POST /api/backup/export` with `{ "passphrase": "…" }` writes a **`.hypbak`**
+container instead of a `.zip`: Argon2id derives a 256-bit key from the passphrase
+(64 MiB, 3 iterations, 1 lane by default), AES-256-GCM encrypts the archive, and
+the parameters travel in the container header so an archive written today opens
+on a build that has since changed its defaults. The plain zip is **deleted** once
+the protected file exists — an export that left both would make the protection
+decorative. `GET /export` stays exactly as it was and takes no passphrase, because
+a passphrase in a URL ends up in browser history, `Referer` headers and request
+logs; the POST body is the only way in.
+
+There is **no recovery path and no stored key**: the passphrase is used and
+dropped, never written to the archive, the manifest, the settings table or a log
+line. Losing it loses the archive — that is what the encryption means, and the
+container's refused-open message says so rather than implying a support route
+exists.
+
+Failures are deliberately coarse. The GCM tag covers the ciphertext *and* the
+header, so a wrong passphrase and an edited file are indistinguishable by
+construction and share one message ("the passphrase is wrong, or the file has been
+modified"). Two cases are precise because they can be: a file whose magic is not
+ours ("not an encrypted Hyperion backup… restore it without a passphrase") and a
+container whose length disagrees with its header ("incomplete: a truncated
+download is the usual cause") — the second is checked *before* the key derivation,
+because a corrupt upload should not cost a second of Argon2id to learn about.
+
+A protected archive can be inspected and restored like any other, given the
+passphrase: `POST /inspect` and `POST /import` decrypt first and report
+`inspection.encrypted: true`. A plain zip still works with no passphrase at all —
+every archive written before this feature is plain.
+
+### 10.2 The diff preview and the restore audit *(new in 1.29)*
+
+`ArchiveInspection.diff` answers "what would this change?" with row counts: every
+table that exists on either side, `current` (live) against `archive` (this file),
+with `delta = archive - current`; `onlyInArchive` and `onlyHere` name the tables
+present on one side only, which is what schema drift looks like from here; and
+`missingFromArchive` lists the migrations the archive has not been through.
+Counts rather than a row-by-row diff on purpose: a restore **replaces** the
+database rather than merging it, so the honest pre-confirmation question is
+"does this archive know more or less than I have, and where".
+
+`GET /api/backup/restores` (`?limit=`, default 50, max 500) returns the audit
+trail: every attempt, `outcome` one of `dry_run` / `restored` / `refused`, with
+the archive's `filename`, `bytes`, `sha256`, whether it was encrypted, and the
+pre-restore snapshot's name when one was taken. Two properties are worth stating
+because they are structural rather than conventional: **a refusal is recorded**
+(the interesting entry is the near-miss — a stale archive someone reached for
+and was stopped), and **a successful restore's row lives inside the database it
+restored** (it is written after the swap, against the reopened handle), so the
+record travels with the data instead of with the process that replaced it.
+`detail` carries a short human-readable line — the refusal reason, or what the
+swap displaced — and there is no column a passphrase could be written into.
 
 `POST /import` body also takes `dryRun` (default false) and
 `includeAttachments` (default true). **Always inspect or dry-run first**: a real

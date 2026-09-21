@@ -172,6 +172,20 @@
     },
     {
       "method": "POST",
+      "path": "/api/backup/export",
+      "source": "src/http/backup.ts:100",
+      "exposure": "frontend",
+      "capability": "backup.manage"
+    },
+    {
+      "method": "GET",
+      "path": "/api/backup/restores",
+      "source": "src/http/backup.ts:123",
+      "exposure": "frontend",
+      "capability": "backup.manage"
+    },
+    {
+      "method": "POST",
       "path": "/api/backup/inspect",
       "source": "src/http/backup.ts:62",
       "exposure": "frontend",

@@ -56,7 +56,7 @@ after(async () => {
 
 describe('an archive exported without keys', () => {
   test('does not contain the MCP token, in any file it ships', async () => {
-    const result = exportBackup();
+    const result = await exportBackup();
 
     const raw = fs.readFileSync(result.file);
     assert.equal(
@@ -87,13 +87,13 @@ describe('an archive exported without keys', () => {
   });
 
   test('says in the manifest that the file was left out', async () => {
-    const result = exportBackup();
+    const result = await exportBackup();
 
     assert.match(result.manifest.warning ?? '', /mcp_config\.json/);
   });
 
   test('still carries the server, in the database where the registry lives', async () => {
-    const result = exportBackup();
+    const result = await exportBackup();
     const zip = new AdmZip(result.file);
     const entry = zip.getEntry(DB_ENTRY);
     assert.ok(entry, 'the archive must contain the database');
@@ -124,7 +124,7 @@ describe('an archive exported without keys', () => {
 
 describe('an archive exported with keys', () => {
   test('includes the config file, token and all, because that is what was asked for', async () => {
-    const result = exportBackup({ includeKeys: true });
+    const result = await exportBackup({ includeKeys: true });
 
     const zip = new AdmZip(result.file);
     const entry = zip.getEntry(MCP_ENTRY);
