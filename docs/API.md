@@ -2333,7 +2333,81 @@ only approved, `false` for only unapproved, omitted for both.
 
 ---
 
-## 24. Where this differs from SPEC.md's suggested surface
+## 24. The attention queue — `GET /api/attention`  *(new in 1.39 A1)*
+
+What is *waiting on you*, as opposed to what has happened (§16) or is broken
+(§6's summary). A parked approval is not a fault — the permission engine is
+working exactly as designed — so it does not belong in a health verdict, and a
+finished task stays in the feed forever while its wait leaves the queue the moment
+it is answered. Same task in both lists is correct: the feed has its completion,
+the queue had its wait.
+
+```ts
+AttentionItem {
+  id: string;                 // stable across polls: `approval:<id>`, `plan:<runId>`, …
+  kind: 'approval_required' | 'plan_ready' | 'interrupted' | 'paused' | 'blocked'
+      | 'ready_for_review' | 'scheduled_run_failed' | 'backup_failure'
+      | 'spending_cap' | 'mcp_disconnected';
+  tool: 'chat' | 'code' | 'cowork' | 'design' | 'system';
+  title: string;              // a sentence, ready to render
+  detail: string;             // why it is waiting, in the user's terms
+  createdAt: number;          // when the wait started
+  taskId?: string; runId?: string; chatId?: string;
+  resolve?: {                 // the call that answers it — never a frontend route
+    method: 'POST'; path: string; body?: Record<string, unknown>;
+  };
+}
+
+AttentionSource {
+  source: string;             // 'pending_approvals' | 'task_runs' | 'chat_runs' |
+                              // 'scheduled_task_runs' | 'backup_failures' |
+                              // 'spending' | 'mcp'
+  status: 'ok' | 'empty' | 'unavailable';
+  count: number;
+  reason?: string;            // present when `unavailable` — and sometimes when `ok`
+}
+```
+
+| Method | Path | Response |
+| --- | --- | --- |
+| GET | `/api/attention` | `{ generatedAt, total, counts, items, sources }` |
+
+No query parameters: the queue is "everything waiting on you", and narrowing it is
+the reader's business — `kind` and `tool` are there for that. Always **200**; an
+empty queue and a hundred unanswered prompts are both answers.
+
+**Ordering is part of the contract.** `items` is grouped by the rank in the source
+(`approval_required`, `blocked`, `plan_ready`, `interrupted`, `paused`,
+`ready_for_review`, `scheduled_run_failed`, `backup_failure`, `spending_cap`,
+`mcp_disconnected`) and **oldest first inside a kind** — a queue that reordered by
+recency would bury the prompt that has waited longest. `counts` is per kind and
+`total` is `items.length`, so a badge cannot disagree with the list under it.
+
+**What each source means here**, including the two that are detected rather than
+recorded:
+
+| kind | source | when it appears |
+| --- | --- | --- |
+| `approval_required` | `pending_approvals` | a call the engine parked, across every task |
+| `paused`, `blocked`, `ready_for_review` | `task_runs` | live run states; a paused run is resumable, a blocked one needs something the run cannot supply |
+| `plan_ready` | `task_runs` + `task_steps(kind='plan')` | a `ready_for_review` run that produced a plan — **one item, not two**, because the plan is why it wants review |
+| `interrupted` | `task_runs`, `chat_runs` | `error: internal_error` (a task run reconciled after a restart) and a paused chat run with the same code, which is the one a user sees as "the reply stopped halfway" |
+| `scheduled_run_failed` | `scheduled_tasks.last_status` | the scheduler's own verdict, so a later success clears it with no window to expire |
+| `backup_failure` | `error_log` | **detected**: a backup has no run record, so a failed request in the last 24h is the only evidence, and `sources[].reason` says so |
+| `spending_cap` | `usage` + the cap setting | warns at 80% of the daily cap and states the refusal at 100%; when any request today is unpriced the detail says the total is a floor |
+| `mcp_disconnected` | the MCP supervisor | a server the supervisor reports as `error`. `stopped` is not listed — that is a user's choice, not a problem to fix |
+
+**A failure the user already saw is not a queue item.** `error` runs are excluded
+unless the code is the interruption, because a queue is not a history — that is
+what the feed and the error console are for.
+
+**`sources` is part of the response, not a debugging aid.** A category that cannot
+be read (no cap configured, no MCP manager in this process) is reported
+`unavailable` with the reason, because a silently omitted category is
+indistinguishable from a category that is fine. `sources` also carries the count
+that was found, which is what makes an "empty" trustworthy.
+
+## 25. Where this differs from SPEC.md's suggested surface
 
 The spec framed its endpoint list as "Suggested … adjust naming as you see fit,
 but keep the shape" (`docs/SPEC.md` line 110). The shape is intact. Concrete

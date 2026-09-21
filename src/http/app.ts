@@ -27,6 +27,7 @@ import { providersRouter } from './providers.ts';
 import { pushRouter } from './push.ts';
 
 import { resourcesRouter } from './resources.ts';
+import { attentionRouter } from './attention.ts';
 import { settingsRouter } from './settings.ts';
 import { skillsRouter } from './skills.ts';
 import { storageRouter } from './storage.ts';
@@ -47,6 +48,7 @@ export function createApp(): Express {
 
   app.use('/api/health', healthRouter);
   app.use('/api/activity', activityRouter);
+  app.use('/api/attention', attentionRouter);
 
   app.use('/api/providers', providersRouter);
   app.use('/api/chat', chatRouter);

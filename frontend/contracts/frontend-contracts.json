@@ -239,6 +239,13 @@
       "expectedPath": "/api/search",
       "status": "partial",
       "reason": "The shell can federate list endpoints, but there is no global content-search contract."
+    },
+    {
+      "id": "attention.queue",
+      "method": "GET",
+      "expectedPath": "/api/attention",
+      "status": "missing",
+      "reason": "Backend queue landed; the Attention Center UI (Prompt 1.39 A1) has not been built."
     }
   ]
 }

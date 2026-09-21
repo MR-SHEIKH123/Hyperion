@@ -10,6 +10,13 @@
       "capability": "activity.read"
     },
     {
+      "method": "GET",
+      "path": "/api/attention",
+      "source": "src/http/attention.ts:22",
+      "exposure": "frontend",
+      "capability": "attention.read"
+    },
+    {
       "method": "POST",
       "path": "/api/code/run-task",
       "source": "src/http/agents.ts:493",

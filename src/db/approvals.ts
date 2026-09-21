@@ -187,6 +187,40 @@ export function listPendingApprovals(taskId: string): PendingApproval[] {
 }
 
 /**
+ * Everything still waiting on the *user*, across every task, oldest first.
+ *
+ * The per-task listing above serves a task view, which is what the approval
+ * routes have: you are looking at one task, so its prompts are the ones you can
+ * answer. The attention queue is the other view — you are looking at the app, and
+ * a prompt you cannot see is a task that will wait for you indefinitely. Same
+ * rows, opposite direction, which is why this is a second function rather than a
+ * parameter: a caller that forgets to pass a task would silently get every task's
+ * prompts, and that is not a failure mode worth leaving reachable.
+ *
+ * `limit` exists because the queue is a screen, not an archive. A hundred
+ * unanswered prompts is already a state the user has to work through; the count
+ * in `countPendingApprovals` is what tells the truth about the rest.
+ */
+export function listAllPendingApprovals(limit = 100): PendingApproval[] {
+  return getDb()
+    .prepare<ApprovalRow>(
+      `SELECT * FROM pending_approvals WHERE state = 'pending' ORDER BY created_at LIMIT ?`,
+    )
+    .all(limit)
+    .map(mapRow);
+}
+
+/** How many prompts are waiting, without reading their rows. */
+export function countPendingApprovals(): number {
+  const row = getDb()
+    .prepare<{ total: number }>(
+      `SELECT COUNT(*) AS total FROM pending_approvals WHERE state = 'pending'`,
+    )
+    .get();
+  return row?.total ?? 0;
+}
+
+/**
  * Apply a decision, once.
  *
  * The `state = 'pending'` guard is the mutex. Two clients answering the same

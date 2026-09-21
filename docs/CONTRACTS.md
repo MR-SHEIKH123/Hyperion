@@ -4463,3 +4463,59 @@ either names the surface that produces it or says plainly that nothing does.**
 A fixture list that only contains implemented states lets "we never built it"
 read as "nothing to render". The second kind of entry is the reason the file
 exists.
+
+## The attention queue is an inbox, not a report *(added in 1.39 A1)*
+
+`GET /api/attention` exists because three surfaces were all answering a version of
+"what is going on" and none of them answered "what is waiting on me". `GET
+/api/health/summary` is a *capability* verdict — a request sent right now cannot
+succeed — and a parked approval is not that: the permission engine is working
+exactly as designed and the run is parked on purpose. `GET /api/activity` is
+history, chronological and complete, and a finished task stays in it forever
+because that is what history is for. The queue is the third thing, and its defining
+rule is that **an item exists only while something is unfinished**.
+
+Four decisions that follow from that, each of which a future change could undo
+without noticing:
+
+1. **Live state only.** A run in `error` is not an item — a failure the user
+   already saw fail is not waiting on them, and putting it in the queue would
+   rebuild the feed with worse ordering. The exception is `error_code:
+   'internal_error'`, which is what a restart leaves behind: that run is a thing to
+   restart, so it appears as `interrupted`.
+2. **One item per thing, not one per symptom.** A `ready_for_review` run that
+   produced a plan becomes `plan_ready` and not both items, because the plan is
+   *why* it wants review and the user has one decision to make.
+3. **Ordering is data.** Items are grouped by kind in the order the source fixes
+   (a decision outranks a notification) and oldest-first inside a kind, because a
+   queue that reordered by recency would bury the prompt that waited longest.
+   `counts` and `total` are derived from `items`, so a badge cannot disagree with
+   the list under it.
+4. **An unreadable source is reported, not omitted.** `sources` lists every
+   category with `ok`/`empty`/`unavailable` and a reason when it is unavailable. A
+   silently missing category is indistinguishable from a category that is fine,
+   and this queue is read to decide what to do next rather than to admire a
+   dashboard.
+
+Two sources are honest about how they are detected. **Scheduled runs** need no
+window: `scheduled_tasks.last_status` is the scheduler's own verdict and a later
+success clears it. **Backups** do — a backup is a request, not a job, so there is
+no run record at all and a failure is visible only in `error_log`; the item is
+therefore a failed `/api/backup` request in the last 24h, and `sources[].reason`
+says exactly that. If a backup run record is ever added, that source should become
+the scheduled-run kind rather than keeping the window.
+
+`resolve` is the *call* that answers an item (`POST
+/api/{tool}/tasks/{taskId}/approve`, `POST /api/chat/resume` with the `runId`) and
+never a frontend route: the shell owns its own URL space, and a backend that
+invented paths for a UI it cannot see would have to be changed every time a route
+moved. Items that can only be acted on in prose (a scheduled failure is re-run from
+the Cowork tool; a cap is answered in Settings) carry no `resolve` rather than a
+guessed one.
+
+`test/attention.test.ts` (8 cases) drives the real app over a socket and writes
+every row with the writer production uses — `recordApproval`, `createRun` /
+`pauseRun` / `reconcileOrphanedRuns`, `startTaskRun` / `finishTaskRun` /
+`recordStep`, `createScheduledTask` / `finishRun`, `logError` — including the two
+assertions that are about absence: a plain failed run must not appear, and
+resolving an approval must remove exactly one item.
