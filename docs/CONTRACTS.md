@@ -1855,6 +1855,64 @@ have nothing to do with whether the process is alive, so the probe reads only
 asserts its exact response shape for that reason — a supervisor polling it would
 not survive a silent change during a refactor.
 
+### The feed's third source was write-only for four migrations *(1.17's clause, landed late)*
+
+`subagent_runs` (migration 015) records one delegated Code child per row — the
+parent task and run, the child's task id, the sequence, the prompt, and how it
+ended — and it is written by the code agent's delegation path (`startSubagentRun`
+before the child runs, `finishSubagentRun` in every terminal branch including the
+aborted one). Nothing read it outside its own module. The table answered a
+question nobody asked, and the feed's own header said delegation was absent
+because "there is no table and no writer" — true when written, false from the
+moment that writer landed. `getSubagentRun` and `listSubagentRuns` still have no
+caller; the feed reads the table directly, the way it reads the two it already
+had.
+
+Three things about how it joins:
+
+- **A `subagent` entry is a third kind, not a second `task`.** A client that
+  branches on `kind` — the whole point of the field — would otherwise be told a
+  child is an interactive run it can open, which it is not.
+- **No `link` and no `spend`, deliberately.** A child has no chat (linking the
+  parent's would make two entries look like one place to read one transcript),
+  and its provider requests are logged against the **parent's** run id, because
+  `childContext` hands the child the parent's `llm` and that wrapper closes over
+  the parent's identity. So the child's spend is inside the parent's entry on the
+  same page. Two documents claimed otherwise (`docs/API.md`'s `spend` paragraph
+  and the `RecordUsageInput` docstring) and both were corrected rather than left
+  as a plausible-sounding reason for a field that is genuinely absent.
+- **The title is the first line of the prompt, clipped to 80 characters.** The
+  alternatives are a uuid and a sequence number. The full prompt stays in the
+  table for anything that needs it.
+
+### Two states the feed used to call "still running" *(added in 1.31)*
+
+`taskStatus` mapped `complete`, `error` and `paused` and sent everything else to
+`running`. Migration `012` had already introduced `stopped` (the user pressed
+Stop, the run was cancelled, or a budget ceiling ended it) and migration `020`
+had introduced `interrupted` (the process disappeared; reconciliation says so in
+a sentence). Neither was in the mapping, so both rendered as **"… task is still
+running"** — and not in some old corner of the feed: a run that just ended is the
+newest thing in it. A user who stopped a runaway task and then looked at the feed
+was told it was still going.
+
+They map to `stopped` and `interrupted`, which are now part of the feed's status
+vocabulary alongside `failed`. Collapsing either into `failed` is the mistake
+migration `012` argued against in the other direction: a ceiling stop and a
+restart are not failures of the work, and a feed that says they are trains the
+user to ignore it. Collapsing them into `success` would invent an outcome.
+
+### A park renders as a sentence, not as its token *(added in 1.31)*
+
+`task_runs.pause_reason` holds a token (`plan_ready`, `approval_required`,
+`ceiling_reached`) and two readers print it. The attention queue was fixed to
+translate it when `parkMessages.ts` landed; the feed was not, so the same park
+read as "Cowork task paused" with the detail `approval_required`. The feed now
+reads the same module — `parkSummary` for a park, `stopSummary` for the
+`ceiling_reached` stop, of which a user pressing Stop needs no explanation.
+`test/activity.test.ts` asserts the token appears nowhere in a response body,
+which is the version of this rule that keeps holding when a third reader arrives.
+
 ### The activity feed is not the debug console
 
 `GET /api/errors` (1.15) already serves raw records with stack traces,

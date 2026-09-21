@@ -2218,10 +2218,10 @@ or an internal error code.
 
 ```ts
 ActivityEntry {
-  id: string;                       // namespaced: `task:<runId>` or `scheduled:<id>`
-  kind: 'task' | 'scheduled-task';
+  id: string;                       // namespaced: `task:<runId>`, `scheduled:<id>` or `subagent:<id>`
+  kind: 'task' | 'scheduled-task' | 'subagent';
   timestamp: number;                // when the run started
-  status: 'running' | 'paused' | 'success' | 'failed' | 'skipped';
+  status: 'running' | 'paused' | 'success' | 'failed' | 'stopped' | 'interrupted' | 'skipped';
   title: string;                    // a whole sentence, ready to render
   detail: string | null;            // the reason, when there is one worth reading
   link:
@@ -2237,11 +2237,18 @@ ActivityEntry {
 }
 ```
 
-`spend` is scoped to the **run** — an entry describes one execution — so it does
-not include work that run delegated to subagents; the task total on
-`/api/{tool}/tasks/:taskId/state` (§12.4) is the figure that does. `null` means
-nothing is known and must not be rendered as `$0.00`; within a present value,
-`costUsd: null` with `priced: false` means the figure is not the whole bill.
+`spend` is scoped to the **run**, and a delegated child's requests are logged
+against the run that made them — the parent's — so the parent's entry here already
+includes them and the task total on `/api/{tool}/tasks/:taskId/state` (§12.4) is
+the same money seen the other way. (This paragraph previously said the run figure
+*excluded* delegated work. That was wrong: `childContext` hands a child the
+parent's `llm`, so the wrapper that logs a request closes over the parent's task
+**and run** ids. `subagent` entries therefore carry `spend: null` — not because
+nothing was spent but because a child's share is not separable from its parent's,
+and the parent's entry beside it is already the whole figure. No child requests
+would be logged under a child run id.) `null` means nothing is known and must not
+be rendered as `$0.00`; within a present value, `costUsd: null` with
+`priced: false` means the figure is not the whole bill.
 
 | Method | Path | Response |
 | --- | --- | --- |
@@ -2271,19 +2278,51 @@ states for every list route.
       "timestamp": 1786169000000,
       "status": "paused",
       "title": "Cowork task paused",
-      "detail": "waiting for your approval",
+      "detail": "A step needs your go-ahead before it runs.",
       "link": { "kind": "chat", "chatId": "chat_18ba" }
+    },
+    {
+      "id": "subagent:7c1e",
+      "kind": "subagent",
+      "timestamp": 1786168900000,
+      "status": "success",
+      "title": "Delegated task “Review the parser changes.” finished",
+      "detail": "The change is safe; two nits in the tokenizer.",
+      "link": null
     }
   ],
   "nextBefore": 1786169000000
 }
 ```
 
-**Two sources, merged:** `task_runs` (interactive Code, Cowork and Design runs,
-§12.4) and `scheduled_task_runs` (runs that fired on a timer). Their stored
-status vocabularies differ and are mapped onto the one set above, so the UI
-branches once rather than per source. `paused` only ever comes from an
-interactive run and `skipped` only from a scheduled one.
+**Three sources, merged:** `task_runs` (interactive Code, Cowork and Design runs,
+§12.4), `scheduled_task_runs` (runs that fired on a timer) and `subagent_runs`
+(one Code parent delegating to a child). Their stored status vocabularies differ
+and are mapped onto the one set above, so the UI branches once rather than per
+source. `paused` only ever comes from an interactive run and `skipped` only from a
+scheduled one.
+
+The mapping is worth stating because two of the words are easy to lose:
+`task_runs.stopped` (012 — a user stop, a cancellation, a budget ceiling)
+and `task_runs.interrupted` (020 — the process disappeared, or a park whose answer
+can never arrive) are **not** `failed`. Migration 012 argued against printing a
+failure the work did not suffer, and `success` would invent an outcome the run
+never reached. A park (`blocked`, `ready_for_review`) reads as `paused`, and
+`paused` itself is not written by any run in this tree — it is kept because the
+column can hold it and older rows do.
+
+`subagent` entries are the one kind with no link and no spend: a child has no chat
+of its own (linking the parent's would make two entries look like one place), and
+its spend is already inside its parent's entry. Its `detail` is the child's own
+summary or the error it reported, and its title is built from the first line of
+the prompt the parent wrote — a child has no name, and its prompt is the only
+thing about it a person would recognise.
+
+Every `detail` here is prose: the park tokens (`plan_ready`, `approval_required`,
+`context_exhausted`, …) are translated by `src/services/agent/parkMessages.ts`
+before they reach a reader. This route used to print `task_runs.pause_reason`
+verbatim, which meant a real park rendered as the bare token `approval_required`
+— the same defect the attention queue had, in another reader of the same column.
 
 `skipped` is a real entry, not an absence: a task that came due while the app was
 busy and gave up waiting has to be distinguishable from the scheduler never

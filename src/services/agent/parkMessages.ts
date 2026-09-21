@@ -58,7 +58,9 @@ const PARK_SUMMARY: Record<ParkReason, string> = {
  * one that fits its own context (the queue's items read differently from a push
  * notification), and a caller that does not want one is spared having to detect
  * this module's placeholder. Unknown tokens — a row written by a newer build, a
- * `cancelled`/`ceiling_reached` stop that is not a park — are no answer either.
+ * `cancelled` stop that is not a park — are no answer either. (`ceiling_reached`
+ * is also not a park and is answered by `stopSummary` below, which exists because
+ * a limit stopping a run is worth saying and the user pressing Stop is not.)
  */
 export function parkSummary(reason: string | null | undefined): string | null {
   if (typeof reason !== 'string') return null;
@@ -68,4 +70,38 @@ export function parkSummary(reason: string | null | undefined): string | null {
 /** True when this token names a park reason this build knows how to describe. */
 export function isParkReason(reason: string | null | undefined): reason is ParkReason {
   return parkSummary(reason) !== null;
+}
+
+/**
+ * The sentences for the reasons a run *stopped*, which are not parks (1.31).
+ *
+ * A stop and a park share the `pause_reason` column and nothing else: a park is
+ * waiting for an answer and will continue, a stop is over. Two of the stop tokens
+ * have nothing to add — `cancelled` is the user's own action, and `approval_denied`
+ * and `loop_detected` are park reasons already translated above, because a denial
+ * is the *answer* to a park — while `ceiling_reached` is the case worth saying out
+ * loud: the run was ended by a limit the user set, at a boundary where the work was
+ * preserved, and a reader who only sees "stopped" cannot tell that from having
+ * pressed Stop themselves.
+ *
+ * The sentence deliberately does not name *which* ceiling tripped. The row does not
+ * carry that (`ceiling_reached` is one token for the token budget, the iteration
+ * limit and the subagent limit), the kind rides in the step the loop records and
+ * the SSE event beside it, and inventing one here would be a guess dressed as a
+ * record.
+ */
+const STOP_SUMMARY: Record<string, string> = {
+  ceiling_reached: 'It reached a limit you set — the token budget, the step count or the subagent limit — and stopped with its work preserved.',
+};
+
+/**
+ * The sentence for a *stop* token, or null when the stop needs no explanation.
+ *
+ * Paired with `parkSummary` at the point of display: a run's reason column is one
+ * column holding both vocabularies, and a reader that wants a sentence for
+ * whatever it finds there tries the park map first and this one second.
+ */
+export function stopSummary(reason: string | null | undefined): string | null {
+  if (typeof reason !== 'string') return null;
+  return (STOP_SUMMARY as Record<string, string | undefined>)[reason] ?? null;
 }

@@ -106,9 +106,17 @@ export function createAgentContext(input: AgentContextInput): AgentContext {
    * scheduler. Chat runs do not build one, so they keep recording through
    * `orchestrator/chat.ts` and nothing is counted twice.
    *
-   * `runId` is deliberately optional: a delegated child has none (it shares the
-   * parent's task id), so its spend lands in the task's total and belongs to no
-   * single run. Migration 018 explains why those are two keys.
+   * Where a delegated child's spend lands is worth stating precisely, because two
+   * documents described it wrongly. The child does not build a context of its own
+   * (`childContext` hands it the parent's `llm`, and these wrappers close over the
+   * `taskId` and `runId` of the run that built *this* context), so a child's
+   * requests are logged against the **parent's task id and the parent's run id**.
+   * The task total therefore includes delegated work — that much was documented and
+   * is true — and so does the parent *run*'s figure, which the feed's per-entry
+   * `spend` reports and which the API docs said excluded it. A child's own spend is
+   * consequently not separable from its parent's today, which is why a `subagent`
+   * entry in the activity feed carries no spend rather than a share of one.
+   * Migration 018 explains why task and run are two keys.
    *
    * Never throws. `recordUsage` swallows its own failures, and this must not be
    * the thing that turns a finished request into a failed run.

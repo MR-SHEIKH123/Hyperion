@@ -36,11 +36,19 @@ export interface RecordUsageInput {
    * The task this request belongs to, and the run that made it (v4 §6.2).
    *
    * Two keys rather than one, because they answer different questions: `taskId`
-   * attributes the spend to the work — a delegated child inherits its parent's
-   * task id, so a task total includes what its subagents spent — while `runId`
-   * names the execution, which is what the activity feed and the task-state route
-   * report on. A child's rows therefore carry `taskId` and no `runId`, and a run
-   * total is the run's own share rather than the task's.
+   * attributes the spend to the work, while `runId` names the execution, which is
+   * what the activity feed and the task-state route report on.
+   *
+   * A delegated child's requests carry **both of its parent's keys**, and that is
+   * worth stating because it was documented the other way. `childContext` hands the
+   * child the parent's `llm`, so the wrapper that calls `recordUsage` closes over
+   * the identity of the run that built the context — the parent's `taskId` *and* the
+   * parent's `runId`. A task total therefore includes what its subagents spent
+   * (true as previously documented) and so does the parent *run*'s figure, which the
+   * activity feed reports per entry. A child's own spend is not separable from its
+   * parent's today; that is why a `subagent` feed entry carries `spend: null` rather
+   * than a share, and why a nested per-child figure would need a new key rather than
+   * a new reading of these two.
    *
    * `runId` is also absent for scheduled runs whose execution row is allocated by
    * the scheduler: the scheduler does pass one (`startRun`'s id is the same id),
