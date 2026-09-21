@@ -5149,6 +5149,54 @@ given. Ollama reports no cache accounting at all: local rows stay NULL, and that
 is stated rather than papered over with a zero.
 
 
+### A duration was being measured the whole time, and nothing read it *(added 2026-09-22)*
+
+`usage_log.duration_ms` is not a column that was waiting for a writer. Every caller
+that makes a provider request stamps `Date.now() - startedAt` into it — the chat
+turn on both its paths, the agent context on all three — and the column has been
+populated on every row since the log existed. Nothing read it: no aggregate, no
+route, no document, no screen. It was found the way the activity feed's third
+source was found, by sweeping the schema for a column whose reader count is zero
+rather than by waiting for a symptom.
+
+Three properties, each the same one an optional measure always needs:
+
+1. **Silence is not zero.** A bucket whose rows recorded no duration answers
+   `meanDurationMs: null` with `rowsWithDuration: 0`. A row that reported `0` ms
+   is a measurement and stays one — folding it into the silence would report the
+   fastest provider as unmeasured, which is the more embarrassing direction of the
+   same mistake the cache fields already refuse.
+2. **The failures are inside the figure, on purpose.** The mean covers the `error`
+   and `partial` rows as well as the `ok` ones. Excluding them produces the
+   flattering number — the endpoint that hangs for a minute and then dies would be
+   reported as fast, because only the requests that came back would count — and
+   "how slow is this provider" is precisely the question where the request nobody
+   got an answer from matters most. The row's `status` is stored beside its
+   duration, so a reader that wants latency-of-successful-requests can separate
+   them; nothing this build has does.
+3. **The mean belongs to its bucket, and the denominators ride with it.**
+   `byProvider` divides by the rows in that provider's bucket, and
+   `rowsWithDuration` travels with the mean for the reason
+   `rowsWithCacheReporting` does. `slowestDurationMs` is reported beside them
+   because a mean hides the one request that hung — one number cannot answer both
+   "usually" and "worst".
+
+The exposure summary is the one read that folds its total in JavaScript rather
+than in SQL, and durations are where that shows: the surviving figures are a mean
+and a count, so the total is rebuilt from `mean × count` per class instead of
+averaging the class means, which would have weighted a class with one request the
+same as a class with a hundred. Each mean was rounded to whole milliseconds on the
+way out, so the rebuilt mean can differ from the exact one by less than a
+millisecond — smaller than the measurement, and not worth a third figure on every
+bucket to avoid it. `summarizeUsage`'s own totals are aggregated in SQL and carry
+no such rounding.
+
+**What this deliberately does not do.** `TaskUsage` (§12.4) does not gain a
+duration: that read answers what a task *spent*, and the time a task took is a
+different fact that its run's own timestamps already carry. The provider time
+inside a task is a fact about the providers, which is where it is now reported.
+
+
 ## An interrupted run says what it left, and what can be done with it *(added in 1.31)*
 
 The `interrupted` state landed on its own, and a state on its own is only half an

@@ -75,6 +75,16 @@ behavior in the browser.
   it — nothing does yet, the same gap the context ceiling has. Until then the deadline is a
   default the user cannot see, which is exactly the kind of invisible rule this file exists
   to keep visible.
+- No usage or spend *summary* screen. The per-task and per-message figures are rendered
+  (the Code surface's `TaskSpend`, the chat footer), and the aggregate read the register
+  calls the "usage graph" exists on the backend — `GET /api/usage` with
+  `byDay`/`byTool`/`byProvider`/`byModel` buckets carrying cost, unpriced counts, cache
+  and reasoning tokens and, since 2026-09-22, the `duration_ms` figures the log had been
+  recording with nothing reading them (`rowsWithDuration`, `meanDurationMs`,
+  `slowestDurationMs`), plus the `/exposure-summary` sibling — but nothing draws it: no
+  Settings surface exists, and the daily-cap read is the summary's only consumer today.
+  Whatever renders it must keep `rowsWithCacheReporting`/`rowsWithDuration` beside the
+  rates and means, and must not show a `null` measure as zero.
 - No global search endpoint; later shell search must report federated partial coverage.
 
 ## Later

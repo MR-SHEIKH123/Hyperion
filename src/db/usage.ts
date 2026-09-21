@@ -94,6 +94,21 @@ export interface RecordUsageInput {
   cacheWriteTokens?: number | null;
   reasoningTokens?: number | null;
   status?: 'ok' | 'error' | 'partial';
+  /**
+   * Wall-clock time inside the provider request, in milliseconds.
+   *
+   * Written by every caller that makes one — the chat turn and the three agent
+   * context paths — and until 1.30 nothing read it back: the column has been
+   * filled on every row since the log existed and appeared in no read, no
+   * document and no screen. `UsageBucket` now carries it.
+   *
+   * Optional and NULL when absent, and **0 is a measurement**: a request that
+   * returned in under a millisecond recorded a duration, and a bucket that
+   * counted it as silence would report a floor of "not measured" for exactly the
+   * fastest provider. The row's `status` is stored beside it, so a duration on a
+   * failed row is a failed attempt's duration rather than a missing success —
+   * which is the fact `byProvider` needs to answer "is this endpoint slow".
+   */
   durationMs?: number | null;
 }
 
@@ -199,6 +214,19 @@ function addNullable(a: number | null, b: number | null): number | null {
   if (a === null) return b;
   if (b === null) return a;
   return a + b;
+}
+
+/**
+ * The larger of two optional figures, keeping "nothing measured" as nothing.
+ *
+ * `Math.max(null, 5)` is 5 only because a null is coerced to 0, which would make a
+ * merge report a smallest-ever duration of 0 ms for a bucket nobody measured. The
+ * merge is where that has to be handled explicitly, so it is.
+ */
+function maxNullable(a: number | null, b: number | null): number | null {
+  if (a === null) return b;
+  if (b === null) return a;
+  return Math.max(a, b);
 }
 
 /** A reported count as a column value: `null` for "said nothing", rounded otherwise. */
@@ -357,6 +385,28 @@ export interface UsageBucket {
   cacheHitRate: number | null;
   /** Rows that reported cache reads at all — the denominator's caution. */
   rowsWithCacheReporting: number;
+  /**
+   * How long the provider request took, which `usage_log.duration_ms` has recorded
+   * since the log existed and nothing has ever read.
+   *
+   * Same rule as every other optional measure here: **silence is not zero.** A
+   * bucket whose rows recorded no duration answers `null` and says
+   * `rowsWithDuration: 0`, because "we did not measure" and "it took no time" are
+   * different claims and only one of them is ever true.
+   *
+   * Unlike the token counts, these rows include the **failed and partial**
+   * requests, and that is deliberate rather than an oversight. Excluding them
+   * would produce the flattering number: the endpoint that hangs for two minutes
+   * before dying is slower than the one that fails in 40 ms, and "how slow is this
+   * provider" is a question that has to include the requests nobody got an answer
+   * from. `byProvider`/`byModel` are where that matters, and a reader that wants
+   * success-only latency has to say so and mean it — no reader this build has does.
+   */
+  rowsWithDuration: number;
+  /** Mean of the rows that recorded one, rounded; `null` when none did. */
+  meanDurationMs: number | null;
+  /** The slowest of them — a mean hides the request that hung. */
+  slowestDurationMs: number | null;
 }
 
 export interface UsageSummary {
@@ -381,6 +431,9 @@ interface AggRow {
   cache_write: number | null;
   reasoning: number | null;
   cache_reported: number;
+  duration_total: number | null;
+  duration_max: number | null;
+  duration_rows: number;
 }
 
 function where(query: UsageQuery): { sql: string; values: (string | number)[] } {
@@ -422,13 +475,20 @@ const AGG_COLUMNS = `
   SUM(cache_read_tokens)                        AS cache_read,
   SUM(cache_write_tokens)                       AS cache_write,
   SUM(reasoning_tokens)                         AS reasoning,
-  SUM(CASE WHEN cache_read_tokens IS NULL THEN 0 ELSE 1 END) AS cache_reported
+  SUM(CASE WHEN cache_read_tokens IS NULL THEN 0 ELSE 1 END) AS cache_reported,
+  -- SUM and MAX are NULL exactly when no row recorded a duration, which is the
+  -- answer the bucket wants; the count beside them is what says whether the two
+  -- figures describe the whole bucket or a corner of it.
+  SUM(duration_ms)                              AS duration_total,
+  MAX(duration_ms)                              AS duration_max,
+  SUM(CASE WHEN duration_ms IS NULL THEN 0 ELSE 1 END) AS duration_rows
 `;
 
 function mapBucket(row: AggRow, fallbackKey = 'unknown'): UsageBucket {
   const tokensIn = Number(row.tokens_in ?? 0);
   const cacheReadTokens = row.cache_read === null || row.cache_read === undefined ? null : Number(row.cache_read);
   const rowsWithCacheReporting = Number(row.cache_reported ?? 0);
+  const rowsWithDuration = Number(row.duration_rows ?? 0);
   return {
     key: row.key ?? fallbackKey,
     requests: Number(row.requests ?? 0),
@@ -442,6 +502,15 @@ function mapBucket(row: AggRow, fallbackKey = 'unknown'): UsageBucket {
     cacheHitRate:
       cacheReadTokens === null || tokensIn <= 0 ? null : Math.min(1, cacheReadTokens / tokensIn),
     rowsWithCacheReporting,
+    rowsWithDuration,
+    // Rounded because the column is whole milliseconds and a mean carrying
+    // decimals would imply a precision the measurement never had.
+    meanDurationMs:
+      row.duration_total === null || row.duration_total === undefined || rowsWithDuration === 0
+        ? null
+        : Math.round(Number(row.duration_total) / rowsWithDuration),
+    slowestDurationMs:
+      row.duration_max === null || row.duration_max === undefined ? null : Number(row.duration_max),
   };
 }
 
@@ -471,6 +540,9 @@ export function summarizeUsage(query: UsageQuery = {}): UsageSummary {
     cache_write: null,
     reasoning: null,
     cache_reported: 0,
+    duration_total: null,
+    duration_max: null,
+    duration_rows: 0,
   });
 
   return {
@@ -824,8 +896,20 @@ export function summarizeExposure(query: UsageQuery = {}): ExposureSummary {
   // so the cache/reasoning fields have to be merged too. They keep the same rule
   // as everywhere else: a merge of "nothing reported" and "nothing reported" is
   // still nothing reported, not zero.
+  //
+  // Durations merge by count and not by averaging the averages: the two figures
+  // that survive aggregation are a mean and a count, so the total is rebuilt from
+  // `mean × count` per bucket. Each mean was already rounded to whole
+  // milliseconds, so the rebuilt mean can differ from the exact one by less than a
+  // millisecond — which is smaller than the measurement and not worth a third
+  // figure on every bucket to avoid. `summarizeUsage`'s own totals are aggregated
+  // in SQL and carry no such rounding.
+  let durationTotalMs = 0;
+  let rowsWithDuration = 0;
   const totals = byClass.reduce<UsageBucket>(
     (accumulator, bucket) => {
+      rowsWithDuration += bucket.rowsWithDuration;
+      durationTotalMs += (bucket.meanDurationMs ?? 0) * bucket.rowsWithDuration;
       const merged = {
         key: 'total',
         requests: accumulator.requests + bucket.requests,
@@ -838,6 +922,10 @@ export function summarizeExposure(query: UsageQuery = {}): ExposureSummary {
         reasoningTokens: addNullable(accumulator.reasoningTokens, bucket.reasoningTokens),
         rowsWithCacheReporting: accumulator.rowsWithCacheReporting + bucket.rowsWithCacheReporting,
         cacheHitRate: null as number | null,
+        rowsWithDuration,
+        meanDurationMs:
+          rowsWithDuration === 0 ? null : Math.round(durationTotalMs / rowsWithDuration),
+        slowestDurationMs: maxNullable(accumulator.slowestDurationMs, bucket.slowestDurationMs),
       };
       merged.cacheHitRate =
         merged.cacheReadTokens === null || merged.tokensIn <= 0
@@ -857,6 +945,9 @@ export function summarizeExposure(query: UsageQuery = {}): ExposureSummary {
       reasoningTokens: null,
       cacheHitRate: null,
       rowsWithCacheReporting: 0,
+      rowsWithDuration: 0,
+      meanDurationMs: null,
+      slowestDurationMs: null,
     },
   );
 

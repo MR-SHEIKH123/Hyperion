@@ -733,119 +733,119 @@
     {
       "method": "GET",
       "path": "/api/providers",
-      "source": "src/http/providers.ts:44",
+      "source": "src/http/providers.ts:45",
       "exposure": "frontend",
       "capability": "providers.manage"
     },
     {
       "method": "POST",
       "path": "/api/providers",
-      "source": "src/http/providers.ts:51",
+      "source": "src/http/providers.ts:52",
       "exposure": "frontend",
       "capability": "providers.manage"
     },
     {
       "method": "POST",
       "path": "/api/providers/detect-local",
-      "source": "src/http/providers.ts:97",
+      "source": "src/http/providers.ts:98",
       "exposure": "frontend",
       "capability": "providers.manage"
     },
     {
       "method": "GET",
       "path": "/api/providers/puter/advisory",
-      "source": "src/http/providers.ts:119",
+      "source": "src/http/providers.ts:120",
       "exposure": "frontend",
       "capability": "providers.manage"
     },
     {
       "method": "GET",
       "path": "/api/providers/colibri/advisory",
-      "source": "src/http/providers.ts:131",
+      "source": "src/http/providers.ts:132",
       "exposure": "frontend",
       "capability": "providers.manage"
     },
     {
       "method": "POST",
       "path": "/api/providers/colibri/probe",
-      "source": "src/http/providers.ts:143",
+      "source": "src/http/providers.ts:144",
       "exposure": "frontend",
       "capability": "providers.manage"
     },
     {
       "method": "GET",
       "path": "/api/providers/active/models",
-      "source": "src/http/providers.ts:155",
+      "source": "src/http/providers.ts:156",
       "exposure": "frontend",
       "capability": "providers.manage"
     },
     {
       "method": "GET",
       "path": "/api/providers/active",
-      "source": "src/http/providers.ts:182",
+      "source": "src/http/providers.ts:183",
       "exposure": "frontend",
       "capability": "providers.manage"
     },
     {
       "method": "GET",
       "path": "/api/providers/:id",
-      "source": "src/http/providers.ts:223",
+      "source": "src/http/providers.ts:224",
       "exposure": "frontend",
       "capability": "providers.manage"
     },
     {
       "method": "PATCH",
       "path": "/api/providers/:id",
-      "source": "src/http/providers.ts:230",
+      "source": "src/http/providers.ts:231",
       "exposure": "frontend",
       "capability": "providers.manage"
     },
     {
       "method": "PUT",
       "path": "/api/providers/:id/zdr",
-      "source": "src/http/providers.ts:268",
+      "source": "src/http/providers.ts:269",
       "exposure": "frontend",
       "capability": "providers.manage"
     },
     {
       "method": "DELETE",
       "path": "/api/providers/:id",
-      "source": "src/http/providers.ts:320",
+      "source": "src/http/providers.ts:321",
       "exposure": "frontend",
       "capability": "providers.manage"
     },
     {
       "method": "POST",
       "path": "/api/providers/:id/enable",
-      "source": "src/http/providers.ts:337",
+      "source": "src/http/providers.ts:348",
       "exposure": "frontend",
       "capability": "providers.manage"
     },
     {
       "method": "POST",
       "path": "/api/providers/:id/disable",
-      "source": "src/http/providers.ts:349",
+      "source": "src/http/providers.ts:360",
       "exposure": "frontend",
       "capability": "providers.manage"
     },
     {
       "method": "GET",
       "path": "/api/providers/:id/models",
-      "source": "src/http/providers.ts:356",
+      "source": "src/http/providers.ts:367",
       "exposure": "frontend",
       "capability": "providers.manage"
     },
     {
       "method": "POST",
       "path": "/api/providers/:id/test",
-      "source": "src/http/providers.ts:366",
+      "source": "src/http/providers.ts:377",
       "exposure": "frontend",
       "capability": "providers.manage"
     },
     {
       "method": "GET",
       "path": "/api/providers/active/current",
-      "source": "src/http/providers.ts:373",
+      "source": "src/http/providers.ts:384",
       "exposure": "frontend",
       "capability": "providers.manage"
     },

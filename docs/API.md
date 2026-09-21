@@ -1199,7 +1199,10 @@ chats not opened for 120 days (four months). Pinned assets are exempt; pinned
 ## 9. Usage & pricing — `/api/usage`
 
 ```ts
-UsageBucket  { key, requests, tokensIn, tokensOut, costUsd, unpricedRequests }
+UsageBucket  { key, requests, tokensIn, tokensOut, costUsd, unpricedRequests,
+               cacheReadTokens, cacheWriteTokens, reasoningTokens,
+               cacheHitRate, rowsWithCacheReporting,
+               rowsWithDuration, meanDurationMs, slowestDurationMs }
 UsageSummary { range: { from, to }, totals: UsageBucket,
                byTool: UsageBucket[], byProvider: UsageBucket[],
                byModel: UsageBucket[], byDay: UsageBucket[],
@@ -1233,6 +1236,27 @@ invariant and the upsert names it.
 NULL rather than 0, so it never silently reads as free. Cost sums skip those
 rows, and `unpricedRequests` per bucket plus the top-level `hasUnpriced` tell the
 dashboard to show "cost incomplete" instead of a wrong total.
+
+**Silence is not zero, on every optional measure in the bucket.** A bucket whose
+rows reported no cache figures answers `cacheReadTokens: null` and
+`cacheHitRate: null`; one that reported none of a duration answers
+`meanDurationMs: null`. A reported `0` is kept as the measurement it is — a
+sub-millisecond local reply is a duration. `rowsWithCacheReporting` and
+`rowsWithDuration` are the denominators: a mean of 4 s computed from two rows out
+of a thousand is a fact about two rows, and a client that quotes it without the
+count is quoting a coincidence.
+
+**The duration columns are measured on failed attempts too.** `usage_log` has
+recorded `duration_ms` — wall-clock time inside the provider request — since the
+log existed; nothing read it until now. `meanDurationMs` is the mean over the rows
+in that bucket that recorded one, rounded to whole milliseconds, and
+`slowestDurationMs` is the tail of the same rows. Both deliberately include the
+`error` and `partial` rows: the endpoint that hangs for a minute before failing is
+slower than the one that answers in 40 ms, and a mean over successes alone is the
+flattering number. A reader that needs success-only latency has to filter and say
+so. This mirrors `rowsWithCacheReporting`'s rule rather than inventing one — and
+the same three fields ride on the `ExposureSummary` buckets, whose folded total
+merges counts instead of averaging the per-class means.
 
 There is no per-row usage endpoint — aggregates only.
 
