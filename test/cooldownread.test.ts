@@ -166,6 +166,23 @@ test('the provider list carries the cooldown, and every other provider is null',
   assert.equal(body.providers.find((p) => p.id === fine.id)?.cooldown, null);
 });
 
+test('deleting a provider forgets what was concluded about it', async () => {
+  // Found by deleting a provider live while checking this disclosure: the row went
+  // and the cooldown stayed, keyed by an id nothing could read again — it would sit
+  // in the process until it exited. Deleting is one of the gestures `resetHealth`
+  // exists for, and this is the assertion that keeps the route wired to it (the
+  // call lives in the route because `health.ts` already imports the repository, and
+  // the reverse import would be a cycle).
+  await listen();
+  const provider = createProvider({ name: 'Doomed', type: 'remote', baseUrl: 'https://example.test' });
+  recordCooldown(provider.id, AUTH_FAILURE);
+  assert.ok(cooldownFor(provider.id));
+
+  const res = await fetch(`${base}/api/providers/${provider.id}`, { method: 'DELETE' });
+  assert.equal(res.status, 204);
+  assert.equal(cooldownFor(provider.id), null, 'the cooldown outlived the provider');
+});
+
 test('the active-provider read carries it too, because that is the chip a user sees', async () => {
   await listen();
   const provider = createProvider({ name: 'Cooling too', type: 'remote', baseUrl: 'https://example.test' });

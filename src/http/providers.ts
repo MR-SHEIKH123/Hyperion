@@ -28,6 +28,7 @@ import {
   testProviderConnection,
 } from '../providers/registry.ts';
 import { colibriAdvisory, probeColibri, requireSlowAcknowledgement } from '../providers/colibri.ts';
+import { resetHealth } from '../providers/health.ts';
 import { puterAdvisory } from '../providers/puter.ts';
 import { redactionCheckEnabled, zdrRequirement } from '../db/settings.ts';
 import { egressClassFor, isLoopbackHost, tryEgressProxy } from '../services/safety/outbound.ts';
@@ -320,7 +321,17 @@ providersRouter.put(
 providersRouter.delete(
   '/:id',
   wrap((req, res) => {
-    deleteProvider(pathParam(req, 'id'));
+    const id = pathParam(req, 'id');
+    deleteProvider(id);
+    // The row is gone, so nothing can read this provider's runtime state again:
+    // its health tracker and its cooldown are keyed by an id no row holds and
+    // would sit in this process until it exits. `resetHealth` is the single entry
+    // point for "what we concluded about this provider no longer applies" — it
+    // already covers editing the key, testing the connection and re-enabling —
+    // and deleting is the gesture that makes the state unreadable rather than
+    // merely stale. Found by deleting a provider live while testing 1.36's
+    // disclosure and noticing the cooldown outlived the row.
+    resetHealth(id);
     res.status(204).end();
   }),
 );

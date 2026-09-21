@@ -4943,6 +4943,16 @@ Three decisions, each of which could have gone the other way:
    the same argument the redaction makes: doing it per route is how a field goes
    missing on the route nobody thought about.
 
+**Deleting a provider forgets what was concluded about it.** The one gesture that
+makes a cooldown *unreadable* rather than merely stale is removing the row: nothing
+will read that id again, so the tracker entry and the cooldown would sit in the
+process until it exited. `resetHealth` is already the single place both are
+forgotten (editing a key, testing a connection, re-enabling), so the delete route
+calls it — in the route rather than in `deleteProvider`, because `health.ts` imports
+the repository and the reverse import would be a cycle. Found while checking this
+disclosure live: a demo provider was created, failed, and deleted, and its cooldown
+was still there to be read.
+
 **What the disclosure must not say is that the provider is broken.** A cooldown is
 reordering, not removal (`orderByCooldown` sorts cooling providers last rather than
 dropping them, and the only-one-that-can-serve case still uses it), so the chip says
