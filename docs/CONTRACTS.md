@@ -4097,3 +4097,63 @@ When a drift is intentional, re-record — `HYPERION_RECORD_GOLDEN=1
 node --test test/goldenruns.test.ts` — and review the fixture diff like
 any other change. Hand-editing a fixture to make a failing run pass defeats
 the purpose: the diff review is the check.
+
+## Per-task cost attribution *(added in 1.29, Master Plan v4 §6.2)*
+
+Every provider request a task makes is recorded once, in
+`orchestrator/agentContext.ts` — the one object every task run passes through,
+whether a route, a continuation or the scheduler started it. Chat runs do not
+build one, so they keep recording through `orchestrator/chat.ts` and nothing is
+counted twice. The alternative considered and rejected was having each agent
+record its own spend: three call sites that can drift, and a fourth agent would
+have to remember to add one.
+
+### Two keys, because "this task" and "this run" are different questions
+
+`usage_log.task_id` and `usage_log.run_id` (migrations 017 and 018) both name an
+execution and neither is redundant:
+
+* **`task_id`** attributes spend to the *work*. A delegated child inherits its
+  parent's task id (`loop.ts` omits `runId` at depth 1), so a task total includes
+  what its subagents spent — which is the number that answers "what did this
+  request cost me", and the number the daily spend cap is compared against.
+* **`run_id`** names the *execution*. The activity feed renders one entry per
+  `task_runs` row and the state route answers about one run, so this is what makes
+  a per-entry cost possible.
+
+So a task total is never the sum of its runs' totals: it is that sum plus the
+child rows that carry no run id. `TaskUsage.runs` is a `COUNT(DISTINCT run_id)`
+rather than a count of rows for the same reason.
+
+`run_id` carries **no foreign key** to `task_runs`, deliberately: `startTaskRun`
+uses `INSERT OR REPLACE` when an attempt restarts, so a cascading relation would
+delete the spend of exactly the attempt being replaced. A spend row records
+something a provider was actually asked, which must outlive the bookkeeping row
+it is attributed to; a dangling id is the survivable error, and the honest one.
+017 refuses a cascade on `task_messages` for the same reason.
+
+### Absent usage is not zero usage, and unpriced is not free
+
+A provider that reported no token counts leaves **no row**, rather than a row of
+zeroes: "unknown tokens" and "no tokens" are different facts, and a zero in a
+total is believed. A request that fails *after* reporting usage is recorded
+`partial`, because the provider may well have billed it.
+
+On the read side the rule `usage.ts` has always kept applies per task and per run:
+`costUsd` is `null` unless a price matched, `priced` says whether the figure is
+the whole bill, and `unpricedRequests` counts what could not be measured. A task
+with nothing recorded reports `requests: 0` with `costUsd: null` — a client that
+renders that as "$0.00" is wrong, and the field is shaped so the mistake is
+visible rather than convenient.
+
+### A global price is one row per model, enforced by the schema
+
+`model_prices` is keyed `(model_id, provider_id)`, and SQLite treats NULLs as
+distinct in a unique index — so the old `ON CONFLICT(model_id, provider_id)`
+upsert never fired for the catch-all row (`provider_id IS NULL`, "all providers"),
+and saving one twice inserted a duplicate while the lookup kept returning the
+older. That is finding S15 in the register, and the repair is both a partial
+unique index and a conflict target that names it. The general lesson is worth
+keeping in view: a uniqueness claim that involves NULLs is not enforced by the
+obvious constraint, and a silent duplicate read back as "the" value is a wrong
+number rather than a failure.
