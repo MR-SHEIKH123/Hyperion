@@ -3488,6 +3488,45 @@ by replacing dots. A key lives in a JSON object key and a front-matter scalar, s
 it gets a spelling that survives both; renaming the wire name to match would break
 dispatch for no benefit.
 
+### A path rule matches the file, not the spelling the model chose
+
+A rule governs a *file*, and a file can be named more than one way. The file tools
+resolve their argument before touching disk — `ctx.resolvePath`, then the same
+containment check the write itself performs — so `secrets/key.txt`,
+`./secrets/key.txt`, `src/../secrets/key.txt` and the absolute path are one file.
+A rule matched against the raw argument would govern the string instead:
+`{"write":{"secrets/**":"deny","*":"allow"}}` would refuse the first spelling and
+allow the rest, and the bytes would land in exactly the directory the user denied.
+
+So a path subject is canonicalized before it is matched (`canonicalPathSubject`),
+in two passes:
+
+* **Lexical** — backslashes become separators, `.`/`..` collapse, duplicate
+  separators fold, a trailing slash goes. No filesystem, and it closes every
+  *relative* respelling.
+* **The caller's resolver** — `EvaluateInput.pathResolver`, which the Code adapter
+  supplies as `ctx.resolvePath` on both sides of a `path.relative`. Patterns are
+  authored relative to the workspace and `resolvePath` answers absolutely, so the
+  caller is the only one that can do the subtraction. This is what closes an
+  absolute or symlinked spelling, because that is realpath work and only the caller
+  knows which root the run is confined to.
+
+Only path tools get this treatment — `read`, `write`, `restore`, derived from the
+same table that says which argument is a glob subject. A `bash` subject is a command
+line, and running one through a path normaliser would rewrite the command
+(`cat a/../b` → `b`), which is a rule matching something its author did not write.
+
+A resolver that *refuses* the path (it escapes the scope) is not an error here: the
+tool refuses it with its own coded error moments later, so the lexical form stands
+and a permission check never fails for a different reason than the tool would.
+
+This is the same class as a permission **key** that silently fails to match the tool
+it was written for (S12's territory): the rule is well-formed, the user believes it
+applies, and the operation it was meant to stop proceeds. `test/permissions.test.ts`
+pins the spellings; `test/codepermissionpaths.test.ts` pins the adapter wiring, since
+a relative pattern cannot match an absolute argument without it — and an engine test
+alone would stay green if that wiring were dropped.
+
 ### A write that looks like a credential is downgraded to `ask`
 
 Before returning `allow` for `write` or `restore`, the target path and the content

@@ -149,6 +149,85 @@ content to fill holes.
   Remaining increments: the Code, Cowork, and Design tool workflows, then
   Playground, Plugins, Skills, and Settings.
 
+## Security audit — the S-series
+
+An audit series of backend findings, each fixed with a test that fails without
+it. The list has until now lived only in the conversation that produced it —
+`S12` (MCP permission-key collision, PR #6) is the only one whose existence is
+recoverable from this repo, and the register's own rule (S-3) says a
+conversation-only item is undecided until committed. So this section is the
+series' durable home: findings are numbered here, with evidence and status, and
+a finding is closed only by a commit that says so.
+
+**Method.** Read the security-relevant code against the contract its own docs
+state, then try to make the *documented* guarantee fail — not to find style, but
+to find the class this series exists for: a control that is well-formed, that the
+user believes applies, and that a differently-shaped input walks around. Every
+claim below was reproduced against the code before it was fixed; claims that
+turned out to be covered by an existing test are recorded as verified, not as
+findings.
+
+| ID | Finding | Status |
+| --- | --- | --- |
+| S12 | MCP tool names that normalize to one permission key (`a.b_c` / `a_b.c`) shared rules silently. | **Fixed** — PR #6; registration fails closed under `assertNoPermissionKeyCollisions`. |
+| S13 | A path rule was matched against the raw argument, so a respelled path dodged a `deny` while resolving to the denied file. | **Fixed** 2026-09-21 — this commit. CONTRACTS "A path rule matches the file, not the spelling the model chose". |
+| S14 | `primaryArgument`'s comment described a raw-JSON fallback the engine deliberately does not implement, next to a test that pins the opposite. | **Fixed** 2026-09-21 — comment corrected in the same commit as S13; no behaviour change. |
+
+### S13 in full — a path rule matched the string, not the file
+
+`evaluate()` took its glob subject from the model's argument verbatim, while the
+file tools resolve that argument through `ctx.resolvePath` before touching disk
+(`locate()` in `code/files.ts` computes exactly the workspace-relative path the
+rule should have been matched against). So with
+`{"write":{"secrets/**":"deny","*":"allow"}}`:
+
+```
+secrets/key.txt        -> deny   (the rule worked for this spelling)
+./secrets/key.txt      -> allow  -> writes <workspace>/secrets/key.txt
+src/../secrets/key.txt -> allow  -> writes <workspace>/secrets/key.txt
+<absolute path>        -> allow  -> writes <workspace>/secrets/key.txt
+```
+
+Three of four spellings of the denied file were allowed by the file's own rule.
+The write really landed in the denied directory: `writeCodeFile` →
+`locate()` → `resolvePath`, so the bytes go where the canonical path says,
+whatever the argument looked like.
+
+**Fix.** Path subjects are canonicalized before matching: a lexical pass (POSIX
+normalization, separator unification) for every relative respelling, plus an
+optional `pathResolver` the caller supplies — the Code adapter passes
+`ctx.resolvePath` on both sides of a `path.relative` — which closes the absolute
+and symlinked spellings, since that is realpath work and only the caller knows
+the run's root. Only path tools (`read`, `write`, `restore`) get this treatment; a
+`bash` subject is a command line and is never path-normalized. A resolver that
+refuses the path falls back to the lexical form, so a permission check cannot fail
+for a different reason than the tool would.
+
+**Tests.** `test/permissions.test.ts` — every spelling of a denied file is
+denied, an allowed file stays allowed, `..` is not popped beyond the workspace, a
+throwing resolver does not become an allow. `test/codepermissionpaths.test.ts` —
+the real adapter, a real project `permissions.json`, real `writeCodeFile` to the
+real filesystem: the denied file is absent afterwards and the refusal names
+`project:secrets/**`. Both were run against the unfixed code first: the engine
+tests fail on the verdict, and the adapter test fails for the absolute spelling if
+the `pathResolver` wiring is removed, which is the assertion that keeps the seam
+from being dropped silently.
+
+**Adjacent, verified — not findings.** Checked while here and found sound:
+`resolveInScope`/`resolveInSubtree` (realpath for existing ancestors, sibling-prefix
+trap avoided, NUL rejected), layer ordering (`permissionLayers` puts `inherited`
+last itself rather than trusting callers), subagent path reservation
+(`reserveWorkspacePath` keys on `ctx.resolvePath`, the same normalizer), archive
+extraction in all three unzip sites (skills intake, resource archive, backup
+restore — each refuses traversal twice), approval→session-rule conversion (the
+pattern stored is the user's own matched glob, not the call's subject), and the
+keystore (AES-256-GCM, key outside the DB, `0o600`).
+
+**Not yet audited** (next sessions, in the order they look worth the time): HTTP
+route input validation outside the agent routers, `mcp_config.json` writes,
+web-push payload privacy, the memory plugin's local store, and per-provider egress
+handling in `colibri.ts`.
+
 ## Resolved verifications
 
 - **Cowork: complete against Slice 4, not a stub** (verified against the code

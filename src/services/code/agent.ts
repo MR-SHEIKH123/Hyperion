@@ -9,6 +9,7 @@
  * `subagent_runs` lifecycle is their durable record.
  */
 import { randomUUID } from 'node:crypto';
+import path from 'node:path';
 
 import { finishSubagentRun, startSubagentRun } from '../../db/subagents.ts';
 import { sessionPermissionRules } from '../../db/approvals.ts';
@@ -224,6 +225,19 @@ async function runCodeInternal(
         ...(Object.keys(session).length === 0 ? {} : { session }),
       }),
       knownTools: new Set(allowed),
+      // Path rules are matched against the file the tools will touch, so the
+      // engine gets the same resolver they use. `resolvePath` answers absolutely
+      // and patterns are authored relative to the workspace, so the workspace root
+      // is resolved once here and subtracted per call. A path the run is not
+      // allowed to touch throws inside `canonicalPathSubject`'s try — the engine
+      // keeps the lexical form and lets the tool refuse it with its own coded
+      // error, rather than a permission check failing for a different reason.
+      pathResolver: (candidate) => {
+        const workspace = ctx.resolvePath('.');
+        const resolved = ctx.resolvePath(candidate);
+        const relative = path.relative(workspace, resolved).split(path.sep).join('/');
+        return relative === '' ? '.' : relative;
+      },
     });
 
     const policy = {
