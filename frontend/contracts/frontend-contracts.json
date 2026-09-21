@@ -117,7 +117,8 @@
       "id": "providers.zdr",
       "method": "PUT",
       "expectedPath": "/api/providers/:id/zdr",
-      "status": "implemented"
+      "status": "partial",
+      "reason": "Half of it is real and half is not: the frontend reads the ZDR status a provider is serving under (the privacy line, the provider wire types) and nothing anywhere sets the policy \u2014 no client posts to this route, and no settings surface exists to host one. That is a `partial`, not a `missing`: the read half is what a user sees."
     },
     {
       "id": "providers.cooldown",
@@ -188,13 +189,15 @@
       "id": "plugins.unified",
       "method": "GET",
       "expectedPath": "/api/plugins",
-      "status": "implemented"
+      "status": "missing",
+      "reason": "The route exists (1.34) and composes the catalogue; nothing calls it. The Plugins tool is a placeholder with a rail entry \u2014 there is no `api/plugins` client at all \u2014 so the gap is the surface, not the backend."
     },
     {
       "id": "plugins.availability",
       "method": "PATCH",
       "expectedPath": "/api/plugins/:id/availability",
-      "status": "implemented"
+      "status": "missing",
+      "reason": "Same surface as `plugins.unified`: `PATCH /api/plugins/:id/availability` stores the per-tool decision (migration `025`) and no client sends one. A placeholder screen cannot render a toggle, let alone post it."
     },
     {
       "id": "design.diff",
@@ -206,7 +209,8 @@
       "id": "design.preview",
       "method": "GET",
       "expectedPath": "/api/design/preview/:versionId",
-      "status": "implemented"
+      "status": "missing",
+      "reason": "The route exists (a preview fetched by version id) and the Design tool has no frontend surface at all, so there is nothing to render one in. That surface is Prompt-2 scope, and `gaps.md` says so."
     },
     {
       "id": "artifacts.lineage",

@@ -1,4 +1,4 @@
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, readdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 // `--fix` rewrites the snapshot's `source` pointers from the same discovery pass
@@ -91,6 +91,13 @@ const duplicates = expected.filter((route, index) => expected.indexOf(route) !==
  *   path is its implemented path is not describing a mismatch at all.
  * - `specifiedPath` belongs to a mismatch: carrying it on an `implemented` or
  *   `missing` row would leave two answers to "which path is this?".
+ * - **`implemented` also means a client calls it** — the same sentence the first
+ *   rule is the first half of. Until 2026-09-22 only the route half was checked,
+ *   and four rows were wrong about the client half: `providers.zdr`,
+ *   `plugins.unified`, `plugins.availability` and `design.preview` all named a real
+ *   route that no frontend module calls. The Plugins rows had no client and no
+ *   screen, the ZDR row had no write gesture anywhere in the app, and the Design
+ *   preview row has no Design surface to render one in.
  *
  * `{tool}` is expanded the way the API-coverage check expands it, because the
  * three agent tools share one contract each.
@@ -100,13 +107,75 @@ const routeExists = (method, path) =>
     .map((tool) => `${method} ${path.replaceAll('{tool}', tool)}`)
     .some((route) => expectedSet.has(route));
 
+/**
+ * The client half of `implemented`, checked against the frontend's own source.
+ *
+ * Two things make this matcher looser than a path comparison, and both are how the
+ * clients are actually written rather than conveniences:
+ *
+ *   - **A parameter matches anything inside one segment.** The clients are template
+ *     literals: `request(`/api/chat/${encodeURIComponent(chatId)}/messages`)`, where
+ *     `:id` stands for an expression rather than an identifier.
+ *   - **The tool segment may be an interpolation.** `api/tasks.ts` writes
+ *     `/api/${tool}/tasks/${encodeURIComponent(taskId)}/state`, while the ledger's
+ *     rows spell the tool out (one row per tool, because that is what the backend
+ *     mounts). A row whose path begins `/api/<tool>/` therefore also matches the
+ *     interpolated form.
+ *
+ * Test files are excluded: a test that asserts a path is not a client, and
+ * counting one would let a row pass on the strength of its own assertion. The
+ * method is not compared — a client for the same path with a different verb
+ * satisfies the check — and that is stated here rather than discovered later: this
+ * check can prove no client exists, not that the right one does.
+ */
+const pathSegmentPattern = "[^/`']*";
+
+function clientPatterns(path) {
+  const escaped = path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const withParams = escaped.replace(/:[A-Za-z_]+/g, pathSegmentPattern);
+  const patterns = [withParams];
+  for (const tool of ['code', 'cowork', 'design']) {
+    const literal = `/api/${tool}/`;
+    if (path.startsWith(literal)) {
+      patterns.push(withParams.replace(literal, `/api/(?:\\$\\{[^}]*\\}|${tool})/`));
+    }
+  }
+  return patterns.map((pattern) => new RegExp(pattern));
+}
+
+const frontendFiles = [];
+const walkFrontend = async (dir) => {
+  for (const entry of await readdir(resolve(root, dir), { withFileTypes: true })) {
+    const child = `${dir}/${entry.name}`;
+    if (entry.isDirectory()) await walkFrontend(child);
+    else if (/\.(ts|tsx)$/.test(entry.name) && !/\.test\./.test(entry.name)) frontendFiles.push(child);
+  }
+};
+await walkFrontend('frontend/src');
+const frontendSources = await Promise.all(
+  frontendFiles.map((file) => readFile(resolve(root, file), 'utf8')),
+);
+
+const hasClient = (contract) =>
+  clientPatterns(contract.expectedPath).some((pattern) =>
+    frontendSources.some((source) => pattern.test(source)),
+  );
+
 const statusProblems = [];
 for (const contract of frontend.contracts) {
   const where = `${contract.id} (${contract.status})`;
-  if (contract.status === 'implemented' && !routeExists(contract.method, contract.expectedPath)) {
-    statusProblems.push(
-      `${where} claims an implemented route that does not exist: ${contract.method} ${contract.expectedPath}`,
-    );
+  if (contract.status === 'implemented') {
+    if (!routeExists(contract.method, contract.expectedPath)) {
+      statusProblems.push(
+        `${where} claims an implemented route that does not exist: ${contract.method} ${contract.expectedPath}`,
+      );
+    } else if (!hasClient(contract)) {
+      // Only reported when the route is real: a row naming a path that was never
+      // built has one problem, and it is the path.
+      statusProblems.push(
+        `${where} claims a client calls it, and no frontend module does: ${contract.method} ${contract.expectedPath}`,
+      );
+    }
   }
   if (contract.status === 'route-mismatch') {
     if (!routeExists(contract.method, contract.expectedPath)) {
