@@ -941,8 +941,11 @@ streaming expert tensors from disk instead of keeping them in VRAM.
 Colibrì serves a genuine OpenAI-compatible surface — `GET /v1/models` and
 `POST /v1/chat/completions` — so `adapterFor()` routes it to the same
 `openAiAdapter` as `remote`. This is the opposite of `opencodex`, which needed
-its own adapter because it speaks the Responses API inbound and rejects
-`/chat/completions`. Do not add a Colibrì adapter "for symmetry"; it would be
+its own adapter because it speaks the **Responses API** as its data plane. (An
+earlier revision of this paragraph said opencodex *rejects* `/chat/completions`;
+the project's own docs describe that endpoint as a translating compatibility
+surface it does serve, so the reason is the native protocol, not an absent one —
+verified 2026-09-21.) Do not add a Colibrì adapter "for symmetry"; it would be
 duplicated code with its own drift.
 
 No API key is expected. `authHeaders()` already omits the header when no key is
@@ -3374,7 +3377,13 @@ them alike would park healthy runs or, worse, ignore a real refusal.
 ### The context window is a ladder, and an assumed number says so
 
 `resolveContextWindow` prefers an explicit override, then the model's reported
-`contextLength`, then `DEFAULT_CONTEXT_TOKENS` (8192) with `assumed: true`.
+`contextLength`, then a default with `assumed: true` — 8192 for an OpenAI-shaped
+gateway, **4096 for `local`**, because Ollama's own documented default is 4096 and
+it truncates an over-long prompt silently instead of refusing it. The rung is
+still `assumed` either way: it is a guess, and the honest one for that endpoint.
+`maxContextTokens` on the provider is how a user replaces the guess with a number —
+the local runner is exactly the case that needs it, since a Modelfile `num_ctx` or
+`OLLAMA_CONTEXT_LENGTH` changes the real window and nothing on the wire reports it.
 
 A reported `0`, a negative number, or `NaN` all count as **no answer** rather than
 as a window of that size. Gateways do report `context_length: 0` for models they

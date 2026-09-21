@@ -1057,6 +1057,88 @@ it found is indistinguishable from a pass that only looked where it expected to.
   — those are surfaces that do not exist yet, which the milestone register already
   says, and `listPausedRuns` is the recovery-read half of `1.31`'s missing surface.
 
+## The bottom of the context ladder was the same number for every provider (2026-09-21)
+
+Second find of the same audit pass, and the same shape as the first: a number was
+reasoned about carefully and never checked against the vendor.
+
+`resolveContextWindow`'s third rung is `DEFAULT_CONTEXT_TOKENS = 8 192`, and the
+comment defending it says the value is deliberately small because *"guessing high
+means the provider rejects the request and the run fails outright"*. That premise
+is true of an OpenAI-shaped gateway and **false of the local runner**: Ollama's own
+FAQ says "By default, Ollama uses a context window size of 4096 tokens", and past
+that window it **truncates the input in silence** — its debug log says
+`truncating input messages which exceed context length` while the HTTP response
+stays a cheerful 200. So for a `local` provider the old ladder guessed *higher*
+than the real window in the common case, in the one direction whose failure is a
+wrong answer rather than an error: the agent would believe 8 192 tokens fit, keep
+its system prompt and history, and the model would answer a shortened prompt.
+
+**Fixed by making the rung provider-aware** rather than by lowering a shared
+constant: `OLLAMA_DEFAULT_CONTEXT_TOKENS = 4 096` for `type: 'local'`, 8 192
+everywhere else, resolved by `contextWindowFallback()` from the same provider the
+override rung is resolved from (so the two rungs can never describe different
+endpoints, failover caveat included). The rung still reports
+`source: 'default'` and `assumed: true` — the number is a guess either way, and
+the wire shape is unchanged, which is why no contract moved. `maxContextTokens`
+(§3.1) is the documented escape hatch, and the local runner is the type that needs
+it most: nothing on the wire reports the *loaded* window, because it comes from
+`OLLAMA_CONTEXT_LENGTH`, a Modelfile `num_ctx`, or Ollama's VRAM-tiered default —
+none of which `/api/tags` mentions.
+
+Not changed, deliberately: what Ollama is *asked* for. `ollamaAdapter` still sends
+no `options.num_ctx`, so the window a run is sized against and the window the
+server loads can disagree in the other direction when a user has raised
+`num_ctx` — the fix for that is the declared ceiling, which is now wired, rather
+than this app guessing a server's configuration from the outside.
+
+Tests: `test/compaction.test.ts` +3 (the fallback rung, a nonsense fallback
+treated as no answer, a reported length still winning), `test/modelwindow.test.ts`
++1 (the Code loop hands the local default to the ladder), and
+`test/contextoverride.test.ts` +2 over HTTP — a local provider with no declaration
+reports 4 096, and one that declares a ceiling gets it, because the user knows
+their own Modelfile. Docs: `docs/API.md` §4.5, `docs/CONTRACTS.md`'s ladder
+section, and the `maxContextTokens` comment in `src/types/core.ts`.
+
+## Corrections to inherited claims (2026-09-21) — opencodex speaks both protocols
+
+Found by the same pass that audited Puter: **claims about a vendor's surface are
+checkable, and this one was wrong.** Three places said opencodex "does not accept
+`/chat/completions` inbound" — the `openCodexAdapter` comment, `docs/SPEC.md` §3,
+and the Colibrì paragraph in `docs/CONTRACTS.md`, which used it to explain why
+Colibrì needs no adapter. The project's own documentation says the opposite:
+`POST /v1/chat/completions` is a documented compatibility surface that
+"translates Chat Completions into its internal Responses path", with a
+troubleshooting note that a 404 on chat means running an older build. The claim
+was true of an older opencodex and was inherited as current fact.
+
+**The design stands and the reason changes.** This app speaks `POST /responses`
+to opencodex because that is the proxy's *native* data plane — the one Codex uses,
+carrying reasoning effort and the upstream routing opencodex exists to do — not
+because the other door is locked. The corrected text says that, in all three
+places, and names what was believed before so the next reader does not "fix" it
+back.
+
+Two things fell out of reading the vendor's docs closely, both now stated where
+they matter rather than discovered at a 401:
+
+- **On a non-loopback bind, opencodex wants its own admission token in
+  `x-opencodex-api-key`**, and treats `Authorization` as the *upstream* identity.
+  A key stored on an `opencodex` provider travels as `Authorization: Bearer`,
+  which is correct for the loopback proxy this type documents and is not that
+  token — so the type is for a proxy on this machine, and a remote one is a
+  `remote` provider behind the 1.37 egress controls.
+- **`adapterFor`'s rationale was rewritten.** The exhaustive switch was justified
+  by "a fall-through would hand opencodex a request it does not accept", which is
+  now false. The real reason is better: an unrecognised type falling through is a
+  guess about a protocol nobody verified, which is exactly what happened twice —
+  opencodex speaks Responses, and Puter needed a provider-aware failure
+  classifier.
+
+`docs/SPEC.md` also gained the missing detail that the compat endpoint exists,
+because a future reader comparing our adapter against the vendor's README will
+otherwise reach for the same wrong conclusion.
+
 ## Corrections to inherited claims (2026-09-18)
 
 Direct re-verifications against the code, recorded so stale plan wording stops

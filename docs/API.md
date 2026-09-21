@@ -683,12 +683,22 @@ on is a new session.
 
 The window comes from the same ladder the agent loops use (`1.28`'s accounting):
 an explicit override, then the context length the provider reported for this
-model in its **cached** model list, then the conservative
-`DEFAULT_CONTEXT_TOKENS = 8 192`. The override is the provider's declared
+model in its **cached** model list, then a conservative default — which is
+**provider-aware**. The override is the provider's declared
 `maxContextTokens` (§3.1) — the chat's own provider when it names one, the active
 provider otherwise, which is the same choice the send path makes — and it wins over
 a reported context length, because a person who typed a number meant it while a
-gateway's `context_length` is often the model's marketing maximum. **The window is
+gateway's `context_length` is often the model's marketing maximum.
+
+The bottom rung is `DEFAULT_CONTEXT_TOKENS = 8 192` for every type **except
+`local`**, where it is `OLLAMA_DEFAULT_CONTEXT_TOKENS = 4 096`: Ollama's own
+documented default (`OLLAMA_CONTEXT_LENGTH` raises it server-wide, a Modelfile
+`num_ctx` raises it per model). The two numbers differ because the failures
+differ — a gateway that dislikes a long prompt refuses the request, while Ollama
+**truncates the input in silence** and answers from what is left, so over-guessing
+there buys a wrong answer rather than an error. Either way the rung reports
+`source: 'default'` and `assumed: true`, and `maxContextTokens` is how a user who
+knows their window overrides the guess. **The window is
 resolved once, at the start of the run or the read**, from the provider that would
 serve: a mid-run failover to a provider declaring a different ceiling therefore
 leaves the run sized against the first one. That is deliberate — the alternative is

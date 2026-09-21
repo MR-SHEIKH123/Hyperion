@@ -236,9 +236,12 @@ export interface ProviderRecord {
    *
    * The first rung of the context ladder — `1.28`'s "explicit override" — and it
    * exists because a provider that reports no context length leaves the ladder's
-   * middle rung empty: the loop then guesses `DEFAULT_CONTEXT_TOKENS`, which is
-   * deliberately small and therefore compacts earlier than the model requires.
-   * Declaring it is how a user says "I know this endpoint takes 200 000".
+   * middle rung empty: the loop then guesses a default, which is deliberately
+   * small and therefore compacts earlier than the model requires. Declaring it is
+   * how a user says "I know this endpoint takes 200 000" — and the provider type
+   * that needs it most is `local`, where nothing on the wire reports the loaded
+   * window (Ollama's `OLLAMA_CONTEXT_LENGTH`, a Modelfile `num_ctx`, or its
+   * VRAM-tiered default) and the runner truncates silently past it.
    *
    * Deliberately *declared*, not probed: nothing in the provider API reports it,
    * and a wrong guess in the other direction — deciding a conversation fits when

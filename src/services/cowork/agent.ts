@@ -31,7 +31,7 @@ import { sessionPermissionRules } from '../../db/approvals.ts';
 import { recordRunKnowledge } from '../../db/runKnowledge.ts';
 import { loadConversation } from '../../db/taskMessages.ts';
 import { resolveContextWindow } from '../agent/compaction.ts';
-import { contextWindowOverride, findCachedModel } from '../../providers/registry.ts';
+import { contextWindowFallback, contextWindowOverride, findCachedModel } from '../../providers/registry.ts';
 import { toAppError, AppError } from '../../util/errors.ts';
 import { TaskBudget } from '../limits/budget.ts';
 
@@ -68,7 +68,7 @@ export interface CoworkDependencies {
   getMcpProcessManager?: () => McpProcessManager | null;
   resolveProfile?: typeof resolveProfile;
   sessionPermissionRules?: (taskId: string) => Record<string, PermissionRule>;
-  resolveContextWindow?: (input: { model?: ModelInfo; override?: number }) => ReturnType<typeof resolveContextWindow>;
+  resolveContextWindow?: (input: { model?: ModelInfo; override?: number; fallback?: number }) => ReturnType<typeof resolveContextWindow>;
   /** Test seam for the cache-only model lookup; production uses the registry. */
   findModel?: (modelId: string) => ModelInfo | null;
   createBudget?: () => TaskBudget;
@@ -414,6 +414,7 @@ export async function runCoworkTask(
     // unknown model keeps the honest `assumed` default.
     const modelInfo = (deps.findModel ?? findCachedModel)(input.modelId);
     const ceiling = contextWindowOverride();
+    const fallback = contextWindowFallback();
 
     const loop = await runAgentLoop({
       runId: ctx.runId,
@@ -439,6 +440,7 @@ export async function runCoworkTask(
           // it is read here, at run start, for the same reason the cache is:
           // neither may wait on the network.
           ...(ceiling === undefined ? {} : { override: ceiling }),
+        fallback,
         }),
       },
       turn: async (feedback) => {

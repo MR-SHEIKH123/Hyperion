@@ -51,7 +51,7 @@ import { AppError } from '../../util/errors.ts';
 import { createLogger } from '../../util/logger.ts';
 import { copyMessages, createChat, findChat, listMessages, requireChat } from '../../db/chats.ts';
 import { isTemporaryChat } from '../../db/temporaryChats.ts';
-import { contextWindowOverride, findCachedModel } from '../../providers/registry.ts';
+import { contextWindowFallback, contextWindowOverride, findCachedModel } from '../../providers/registry.ts';
 import {
   COMPACTION_TARGET_RATIO,
   COMPACTION_TRIGGER_RATIO,
@@ -106,6 +106,7 @@ function windowFor(modelId: string | null, providerId: string | null): ContextWi
   return resolveContextWindow({
     ...(model === null ? {} : { model }),
     ...(override === undefined ? {} : { override }),
+    fallback: contextWindowFallback(providerId),
   });
 }
 

@@ -28,7 +28,7 @@ const { cleanupHome, freshDb, startMockProvider } = await import('./helpers.ts')
 const { createApp } = await import('../src/http/app.ts');
 const { createProvider, findProvider, saveModelCache, updateProvider } = await import('../src/providers/repository.ts');
 const { createChat, appendMessage } = await import('../src/db/chats.ts');
-const { DEFAULT_CONTEXT_TOKENS } = await import('../src/services/agent/compaction.ts');
+const { DEFAULT_CONTEXT_TOKENS, OLLAMA_DEFAULT_CONTEXT_TOKENS } = await import('../src/services/agent/compaction.ts');
 
 let base = '';
 let server: { close: (cb: () => void) => void };
@@ -212,6 +212,37 @@ describe('the ceiling reaches the read a person looks at', () => {
     const read = await json(`/api/chat/${chatId}/context`);
     assert.equal((read.body.window as { source: string }).source, 'override');
     assert.equal((read.body.window as { tokens: number }).tokens, 16_000);
+  });
+
+  it('a local runner with no declaration falls back to Ollama\'s own default, not the gateway one', async () => {
+    // Ollama loads 4 096 tokens by default and truncates silently past it, where
+    // an OpenAI-shaped gateway refuses the request outright. Guessing the
+    // gateway default here would let a conversation look like it fits while the
+    // model answered a shortened prompt — the failure with no recovery.
+    const provider = createProvider({ name: 'Local', type: 'local', baseUrl: 'http://127.0.0.1:11434', enabled: true });
+    const chatId = await chatWith(provider.id, 'model-unknown-to-the-cache');
+
+    const read = await json(`/api/chat/${chatId}/context`);
+    const window = read.body.window as { tokens: number; source: string; assumed: boolean };
+    assert.equal(window.tokens, OLLAMA_DEFAULT_CONTEXT_TOKENS);
+    assert.equal(window.source, 'default');
+    assert.equal(window.assumed, true, 'it is still a guess, and the UI must be able to say so');
+  });
+
+  it('a local runner that declares a ceiling gets it, because the user knows their own Modelfile', async () => {
+    const provider = createProvider({
+      name: 'Local, declared',
+      type: 'local',
+      baseUrl: 'http://127.0.0.1:11434',
+      enabled: true,
+      maxContextTokens: 32_768,
+    });
+    const chatId = await chatWith(provider.id, 'model-unknown-to-the-cache');
+
+    const read = await json(`/api/chat/${chatId}/context`);
+    const window = read.body.window as { tokens: number; source: string };
+    assert.equal(window.tokens, 32_768);
+    assert.equal(window.source, 'override');
   });
 
   it('a declared ceiling that is not reachable does not leak into another provider', async () => {

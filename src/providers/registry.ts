@@ -11,6 +11,7 @@
  * answerable without spending an upstream call to find out.
  */
 import { env } from '../config/env.ts';
+import { DEFAULT_CONTEXT_TOKENS, OLLAMA_DEFAULT_CONTEXT_TOKENS } from '../services/agent/compaction.ts';
 import { AppError } from '../util/errors.ts';
 import { createLogger } from '../util/logger.ts';
 import { adapterFor, detectLocalProvider } from './adapters.ts';
@@ -266,6 +267,24 @@ export function summarize(): RegistrySummary {
 export function contextWindowOverride(providerId?: string | null): number | undefined {
   const provider = providerId === undefined || providerId === null ? getActiveProvider() : findProvider(providerId);
   return provider?.maxContextTokens ?? undefined;
+}
+
+/**
+ * The bottom rung for a provider that told us nothing (Part 1.28).
+ *
+ * Only the local runner differs, and it differs in the direction that matters:
+ * Ollama loads a model with a 4 096-token window by default and **truncates**
+ * input past it instead of refusing, so the gateway default of 8 192 would let a
+ * conversation look like it fits while the model silently answered a shortened
+ * prompt. Every other type keeps `DEFAULT_CONTEXT_TOKENS`.
+ *
+ * Resolved from the same provider the override is resolved from, so the two
+ * rungs can never describe different endpoints — including the failover caveat
+ * `contextWindowOverride` carries.
+ */
+export function contextWindowFallback(providerId?: string | null): number {
+  const provider = providerId === undefined || providerId === null ? getActiveProvider() : findProvider(providerId);
+  return provider?.type === 'local' ? OLLAMA_DEFAULT_CONTEXT_TOKENS : DEFAULT_CONTEXT_TOKENS;
 }
 
 export function findCachedModel(modelId: string): ModelInfo | null {

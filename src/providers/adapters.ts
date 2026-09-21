@@ -896,11 +896,29 @@ interface OllamaStreamFrame {
  * The local opencodex proxy (`ocx start`, default http://127.0.0.1:10100/v1).
  *
  * Its `/models` response is OpenAI-shaped, so model listing is delegated to
- * `openAiAdapter.listModels` verbatim. Completions are NOT: opencodex accepts
- * `POST /responses` (the OpenAI *Responses* API) and Anthropic `/messages`, but
- * it does NOT accept `/chat/completions` inbound — the chat-completions
- * compatibility advertised by opencodex is on its OUTBOUND side, towards the
- * upstream vendors it routes to. So `stream` is a separate implementation.
+ * `openAiAdapter.listModels` verbatim. Completions use the *Responses* API
+ * (`POST /responses`), because that is the proxy's native data plane — the one
+ * Codex itself speaks, and the one that carries reasoning effort, richer frames
+ * and the upstream routes opencodex is built around.
+ *
+ * **This comment used to claim opencodex "does NOT accept `/chat/completions`
+ * inbound", and that claim was wrong.** Verified against the project's own docs
+ * on 2026-09-21: opencodex advertises `POST /v1/chat/completions` as a
+ * compatibility surface, explicitly "translates Chat Completions into its
+ * internal Responses path", and its troubleshooting section says a 404 on chat
+ * means running an older build that lacked the surface. What is true is narrower
+ * and was the real point: chat-completions is a *translation* layer rather than
+ * the proxy's own protocol, so this adapter speaks Responses natively instead of
+ * asking opencodex to translate for us. (A storefront that offers both does not
+ * make the front door the only door.)
+ *
+ * One consequence of the same docs, worth knowing here rather than discovering
+ * at a 401: on a **non-loopback** bind opencodex requires its own admission
+ * token in `x-opencodex-api-key`, and treats `Authorization` as the *upstream*
+ * identity. A key stored on this provider travels as `Authorization: Bearer`,
+ * which is right for loopback (where the proxy asks for nothing) and is not the
+ * admission token a remote bind wants — so this type is for a proxy on this
+ * machine, and a remote one belongs behind the proxy/egress controls of 1.37.
  *
  * Differences from chat-completions that this adapter absorbs:
  *   - `messages` becomes `input` items whose content is a typed part array
@@ -1060,8 +1078,11 @@ interface ResponsesStreamFrame {
 
 /**
  * Exhaustive on purpose: the previous ternary let any unrecognized type fall
- * through to the OpenAI adapter, which would have handed opencodex a
- * `/chat/completions` request it does not accept.
+ * through to the OpenAI adapter, which is a guess about a protocol nobody
+ * verified. When opencodex arrived it spoke the Responses API, and Puter later
+ * turned out to need a provider-aware failure classifier — both cases where a
+ * silent default would have been a request built for the wrong protocol, with
+ * the resulting 400/402 blamed on the provider.
  *
  * Keep it exhaustive with no `default`. That is what makes adding a provider
  * type a compile error here rather than a silent mis-route at runtime.

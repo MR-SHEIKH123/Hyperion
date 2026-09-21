@@ -126,6 +126,32 @@ describe('resolving the context window', () => {
     assert.equal(w.assumed, true, 'the UI has to be able to say this was assumed');
   });
 
+  it('takes a caller-supplied fallback as the bottom rung', () => {
+    // The local runner's own default is smaller than a gateway's (Ollama loads
+    // 4 096 tokens by default and *truncates* past it, where a gateway refuses),
+    // so the bottom rung is the caller's to set. The rung stays `assumed`: it is
+    // still a guess, just the right guess for that endpoint.
+    const local = resolveContextWindow({ model: { id: 'm' }, fallback: 4_096 });
+    assert.equal(local.tokens, 4_096);
+    assert.equal(local.source, 'default');
+    assert.equal(local.assumed, true);
+  });
+
+  it('ignores a nonsense fallback rather than propagating it', () => {
+    // Same rule as every other rung: a zero or a NaN means "no answer", and
+    // taking it literally would compact every conversation to nothing.
+    for (const fallback of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const window = resolveContextWindow({ model: { id: 'm' }, fallback });
+      assert.equal(window.tokens, DEFAULT_CONTEXT_TOKENS, String(fallback));
+    }
+  });
+
+  it('a reported length still beats the fallback', () => {
+    const window = resolveContextWindow({ model: { id: 'm', contextLength: 32_768 }, fallback: 4_096 });
+    assert.equal(window.tokens, 32_768);
+    assert.equal(window.source, 'model');
+  });
+
   it('treats a reported zero as no answer rather than a window of nothing', () => {
     const w = resolveContextWindow({ model: { id: 'm', contextLength: 0 } });
     assert.equal(w.tokens, DEFAULT_CONTEXT_TOKENS);
