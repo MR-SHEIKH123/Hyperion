@@ -175,6 +175,7 @@ findings.
 | S15 | A **global** model price could not be updated: `ON CONFLICT(model_id, provider_id)` never fires when `provider_id IS NULL` (SQLite treats NULLs as distinct), so saving one twice inserted a duplicate and the lookup kept returning the older row. The user's edit did nothing, and the stale figure stayed in force for cost reporting and the daily spend cap. | **Fixed** 2026-09-21 — partial unique index + NULL-aware upsert target (migration 018); found by the §6.2 tests, which is the audit finding its own class. |
 | S16 | A chat id with no chat row behind it raised the FK on `usage_log`, and `recordUsage` swallows its own errors — so the spend row was **discarded**. The agent path passes exactly such an id (`linkedChatId` nulls it for the task row for this reason), which meant §6.2's recording could have failed invisibly. | **Fixed** 2026-09-21 — the linkage is resolved at write time (an id with no row is stored as NULL, the spend kept), same treatment a temporary chat already got. |
 | S17 | `limit` reached SQL unchecked on seven of the nine list routes: `limit=2.5` was a **500** quoting SQLite ("datatype mismatch"), and `limit=-1` returned the **whole table**, because SQLite reads a negative `LIMIT` as no limit at all. The two routes that got it right (`/api/activity`, `/api/chat/:id/messages`) proved the rule was known and simply not applied. | **Fixed** 2026-09-21 — `queryLimit`/`queryOffset` in `src/http/params.ts`, one bound per route; found by the HTTP-input audit, pinned by `test/listlimits.test.ts` (nine routes, five of its eight cases failed before the fix). |
+| S18 | A **default** backup (`includeKeys=false`) shipped `mcp_config.json` unconditionally, and `registry.ts::toEntry` writes a remote server's token into it as a plaintext `Authorization: Bearer` header — so the archive whose own comment promises it "exposes conversations but not credentials" contained a working credential in the clear. | **Fixed** 2026-09-21 — the file travels only with `includeKeys`, on the same reasoning as the key itself; the manifest's `warning` names the omission. Pinned by `test/backupsecrets.test.ts` (asserted against the archive's bytes). |
 
 ### S13 in full — a path rule matched the string, not the file
 
@@ -315,6 +316,54 @@ a driver error. Every other query parameter outside the two helpers is an enum, 
 string, a boolean or a timestamp (`usage?from`/`to`), and none of them reach SQL as
 a type. The `/api/activity` `before` cursor was already validated as a whole number.
 
+### S18 in full — the backup that promised not to carry credentials
+
+**How it was found.** The audit queue's next item was "`mcp_config.json` writes",
+which is about the writer (`configFile.ts`: atomic, 0o600, unknown fields
+preserved, corrupt file quarantined — all sound). Reading it led to what the file
+*contains*, and from there to the one place the app sends it somewhere:
+`exportBackup`, which added it to the archive unconditionally.
+
+**Evidence, before the fix** (a remote server with a token, then a default
+export; `mcpprobe.mjs` at the repo root, deleted after use):
+
+```
+manifest contents: {"database":true,"mcpConfig":true,"skills":0,"attachments":0,"encryptionKey":false}
+entries: hyperion.db, manifest.json, mcp_config.json
+--- mcp_config.json in the archive ---
+{"mcpServers":{"remote-thing":{"url":"https://mcp.example.com/sse",
+  "headers":{"Authorization":"Bearer SUPER-SECRET-MCP-TOKEN"},"disabled":false}}}
+token present in archive: true
+```
+
+The same archive deliberately leaves out `secret.key`, on the stated grounds that
+shipping the key with the database makes the archive a credential store. The
+token does not need the key: it is already plaintext.
+
+**Why not redact.** A redaction pass over `headers`/`env`/`args` is a guess
+dressed as a guarantee — the format does not distinguish a workspace path from a
+bearer token, and the failure mode of an incomplete guess is the leak itself, now
+with a comment saying it cannot happen. The switch that already exists is the
+honest one: **the file travels only with `includeKeys`**, which is also the only
+case where its tokens are worth anything (without the key, `token_enc` in the
+restored database cannot be decrypted, so a plaintext copy would be *the only*
+working credential in the archive).
+
+**What a restore loses:** nothing it could use. The registry's authority is the
+database — `listServers()`, the process manager and `GET /api/mcp/servers` read
+the table, and `POST /api/mcp/sync` regenerates the file. The servers travel as
+rows; the archive simply stops carrying the one plaintext copy of their tokens.
+The omission is reported: `contents.mcpConfig: false` plus a human-readable
+`warning`, because "the archive is missing a file it used to contain" should not
+have to be inferred.
+
+**Tests.** `test/backupsecrets.test.ts` — the token does not appear anywhere in
+the zip's bytes, the file is absent from the archive while still present on disk
+(the omission is a decision about what leaves, not a reading of the machine), the
+manifest warns, the server still travels in the database with its token as
+ciphertext, and `includeKeys: true` restores full fidelity with the key warning
+instead. Two of its five cases fail without the fix.
+
 **Tests.** `test/listlimits.test.ts` — nine routes as a table, each with its
 documented maximum: fractional, above-max, zero and negative are 400 naming the
 field (and naming the bound when too large), the boundary values 1 and `max` are
@@ -348,9 +397,15 @@ resolves through `assetPath` rather than the request, `download.ts` strips quote
 from the filename it puts in `Content-Disposition`, and the `multer` routes take a
 buffer, never a client-chosen destination.
 
+**Audited in this pass — `mcp_config.json` and what leaves in it** (S18 above).
+The writer itself is sound: writes are atomic (temp file + rename), created
+`0o600` because the file holds tokens, unknown fields from other hosts survive a
+rewrite, and a corrupt file is quarantined with the database left as the
+authority. What was not sound was the export, and that is fixed.
+
 **Not yet audited** (next sessions, in the order they look worth the time):
-`mcp_config.json` writes, web-push payload privacy, the memory plugin's local
-store, and per-provider egress handling in `colibri.ts`.
+web-push payload privacy, the memory plugin's local store, and per-provider
+egress handling in `colibri.ts`.
 
 ## Prompt-1 scope — status (2026-09-21, verified against the code, not transcribed)
 
@@ -371,15 +426,15 @@ Where the scope says done, this is what was checked:
 | D-table decisions (D1/D4/D7/D8/D9/D11/D12/D13–D15, D-1.2) | **Landed**, each with the code and test the D-table entry names. |
 | v4 backend items `§6.1` context windows, `§6.3` approvals + continuation, `§6.4` unattended hardening, `§6.5` write-path downgrade, `§6.6` subagent isolation, `§6.7` profiles, `§6.8` observability + golden runs | **Landed.** |
 | v4 `§6.2` cost accounting per task | **Landed 2026-09-21.** `usage_log` gained `run_id` (migration `018`; `task_id` was `017`), the agent context records one priced row per provider request — so every task run is attributed whatever started it, and a delegated child's spend lands in its parent's task total — the task-state route returns a `usage` summary, and the activity feed carries each run's `spend`. The two findings this surfaced are S15 and S16 above. |
-| S-series audit (S12 fixed in PR #6; S13–S17 fixed 2026-09-21) | **Continuous.** `S2`–`S11` are not recoverable from this repo — like `1.25`, their list lived in conversation. If they exist in a local note, they need pasting in to be verified or closed. |
+| S-series audit (S12 fixed in PR #6; S13–S18 fixed 2026-09-21) | **Continuous.** `S2`–`S11` are not recoverable from this repo — like `1.25`, their list lived in conversation. If they exist in a local note, they need pasting in to be verified or closed. |
 | Frontend (Prompt 2) | Out of this scope by design. Shell + Chat tool landed; Code, Cowork, Design, Playground, Plugins, Skills, Settings remain. Frontend-side items that *wait on backend contracts* are tracked in `frontend/contracts/gaps.md`, and one of them (no cross-tool pending-approval endpoint, no per-project active-task listing) is the earliest backend work the frontend will ask for. |
 
 **So: the backend core is complete, including `§6.2` as of 2026-09-21.** The
 remaining work in the series is the audit queue above and whatever `S2`–`S11` and
-`1.25` turn out to be. The HTTP-input item of that queue is done (`S17`), which
-leaves `mcp_config.json` writes, web-push payload privacy, the memory plugin's
-local store, and `colibri.ts` egress. Suite baseline for every future claim in this file:
-**882 tests / 160 suites green, `tsc --noEmit` clean** (backend), **84 tests and
+`1.25` turn out to be. The HTTP-input item of that queue is done (`S17`, plus `S18`), which
+leaves web-push payload privacy, the memory plugin's local store, and
+`colibri.ts` egress. Suite baseline for every future claim in this file:
+**887 tests / 162 suites green, `tsc --noEmit` clean** (backend), **84 tests and
 five gates green** (frontend).
 
 ## Resolved verifications

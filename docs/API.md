@@ -890,10 +890,16 @@ RestoreResult { restored, dryRun, inspection, preRestoreBackup: string|null,
 | POST | `/api/backup/import` | `RestoreResult` (bare) |
 
 `GET /export` query: `includeKeys` (**default false**), `includeAttachments`
-(default true). The archive bundles the SQLite database, `mcp_config.json` and
-the skills registry. Including the encryption key makes the archive as sensitive
-as the keys themselves, which is why it is opt-in and why the manifest carries a
-`warning`.
+(default true). The archive bundles the SQLite database and the skills registry.
+**`mcp_config.json` is included only with `includeKeys`** — a remote server's
+token is written into that file as a plaintext `Authorization` header, so an
+archive that promises not to carry credentials cannot carry it. The servers
+themselves still travel, in the database that is the registry's authority
+(`POST /api/mcp/sync` regenerates the file from it), and a restore given no such
+file leaves the one already on the machine alone. Including the encryption key
+makes the archive as sensitive as the keys themselves, which is why it is opt-in
+and why the manifest carries a `warning` — which also names the omitted file when
+`includeKeys` is false.
 
 `POST /inspect` and `POST /import` take the archive either as an upload —
 `multipart/form-data`, field name **`file`**, one file (note this differs from

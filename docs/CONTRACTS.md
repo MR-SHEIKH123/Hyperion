@@ -1716,6 +1716,44 @@ The unwritable destination is simulated by replacing the directory with a
 largely ignores them on directories, so a chmod-based test would pass on CI and
 silently do nothing locally.
 
+## A backup exported without keys carries no plaintext credential *(S18)*
+
+The export has always excluded `secret.key`, and the comment beside that decision
+states the guarantee: *a leaked backup exposes conversations but not credentials*.
+`mcp_config.json` was included unconditionally and broke it — `registry.ts::toEntry`
+materialises a remote server's token into the file as a literal
+`Authorization: Bearer ...` header, so the default archive contained a working
+credential in the clear, in the artifact most likely to be copied to a sync
+folder or a USB stick.
+
+**Why the fix is structural rather than a redaction pass.** Nothing in the file's
+format marks which value is a secret: the same slot holds a workspace path
+(`args`) or a token (`headers.Authorization`), and `env` values are whatever the
+user put there. A redaction pass would be a guess that reads as a guarantee —
+the worst kind of control. The rule is instead: **the file travels only with
+`includeKeys`**, the same switch that ships the key which makes its tokens
+decryptable in the first place.
+
+**Nothing is lost that a restore could use.** The registry's authority is the
+database, not the file: `listServers()`, the process manager and
+`GET /api/mcp/servers` all read the table, and `POST /api/mcp/sync` regenerates
+the file from it. The servers therefore travel in the archive as rows. Their
+`token_enc` travels as ciphertext and is useless without a key the default export
+also leaves out — which is exactly why the plaintext header next to it must not
+travel either. A restore that is given no `mcp_config.json` entry writes none,
+leaving the file already on the machine untouched rather than downgrading it.
+
+The manifest says so in words. `contents.mcpConfig` is `false`, and the
+human-readable `warning` names the omitted file, since a user comparing two
+archives should be able to see what a default export decided to leave behind
+without reading this document. With `includeKeys: true` the file is included
+verbatim and the warning is the key warning instead: full fidelity is available,
+it is just opt-in.
+
+Pinned by `test/backupsecrets.test.ts`, which asserts against the archive's own
+bytes — a token that appears anywhere in the zip fails the test, whatever the
+route it took to get there.
+
 ## Health summary and activity feed (added in 1.17)
 
 
