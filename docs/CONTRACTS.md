@@ -522,11 +522,17 @@ Each of these will waste your time exactly once:
 
 1. The PyPI distribution is **`graphifyy`** with a double y. Other `graphify*`
    packages on PyPI are unaffiliated.
-2. **There is no `graphify-mcp` console script.** The server runs as a module —
+2. **The server is reachable three ways, and the seeded entry uses the module
+   form on purpose.** `graphifyy` ships two console scripts — `graphify` (the CLI,
+   and `graphify ./repo --mcp` starts the stdio server too) and `graphify-mcp`
+   (which is `graphify.serve`'s entry point) — plus the module itself:
    `python -m graphify.serve graphify-out/graph.json`, or equivalently with an
-   explicit `--graph graphify-out/graph.json`. The bare `graphify` command is the
-   CLI (though `graphify ./repo --mcp` also starts the stdio server, which is
-   handy for a quick check by hand).
+   explicit `--graph graphify-out/graph.json`. **An earlier revision of this list
+   claimed there was no `graphify-mcp` console script**, which was wrong; the
+   seeded MCP entry still spells it as `<venv>/bin/python -m graphify.serve <graph>`
+   because an MCP entry has no working directory and that venv is deliberately
+   never on `PATH`, so the absolute interpreter is what has to be named either
+   way.
 3. **A graph must exist before serving.** It is a positional argument to `serve`,
    not something the server discovers or builds on demand.
 

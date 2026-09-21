@@ -129,9 +129,12 @@ export function defaultServers(): DefaultServer[] {
         'its own isolated venv, and because the graph has to be built before ' +
         'there is anything to serve; see the Recommended MCP servers section of ' +
         'docs/CONTRACTS.md. Two things to know: the PyPI distribution is ' +
-        '"graphifyy" (two y\'s), and there is no console script for the server — ' +
-        'it runs as a module, which is why the command here is the venv\'s own ' +
-        'python. Seeded disabled until that setup has been done.',
+        '"graphifyy" (two y\'s), and the MCP server needs the "mcp" extra — a plain ' +
+        'install has the CLI but not the transport it serves over. The command below ' +
+        'names the venv\'s own python and runs the module, because an MCP entry has ' +
+        'no working directory and that venv is never on PATH; the package also ships ' +
+        'a `graphify-mcp` console script resolving the same `serve` entry point. ' +
+        'Seeded disabled until that setup has been done.',
       input: {
         name: 'graphify',
         type: 'local',

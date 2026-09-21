@@ -1,6 +1,6 @@
 import { describe,expect,it } from 'vitest';
 import { activeProviderResponseSchema, providerSchema, providerTypeSchema } from './providers';
-const provider={id:'p1',name:'Local',type:'local',baseUrl:'http://localhost:11434',hasKey:false,apiKeyHint:null,enabled:true,priority:1,healthStatus:'healthy',lastError:null,lastErrorAt:null,lastSuccessAt:1,modelCount:1,modelsFetchedAt:1,modelsError:null,createdAt:1,updatedAt:1};
+const provider={id:'p1',name:'Local',type:'local',baseUrl:'http://localhost:11434',hasKey:false,apiKeyHint:null,enabled:true,priority:1,healthStatus:'healthy',lastError:null,lastErrorAt:null,lastSuccessAt:1,modelCount:1,modelsFetchedAt:1,modelsError:null,maxContextTokens:null,createdAt:1,updatedAt:1};
 const active={provider,egress:'local',egressProxy:null,redactionCheckEnabled:true,zdr:{status:'local_no_egress',requirement:'prefer'}};
 describe('provider wire contract',()=>{
  it('accepts additive backend fields but never requires a credential',()=>{expect(providerSchema.parse({...provider,futureField:true})).toMatchObject({id:'p1'});expect(providerSchema.keyof().options).not.toContain('apiKey');});
@@ -34,4 +34,17 @@ it('accepts puter, whose credential is a token rather than a vendor key',()=>{ex
   // A scheme the transport cannot dial must not reach the UI as a fact.
   expect(activeProviderResponseSchema.safeParse({...active,egressProxy:{redacted:'socks5://p:1080',authority:'p:1080',scheme:'socks5',hasCredentials:false,offMachine:true}}).success).toBe(false);
  });
+
+it('accepts a declared context ceiling, and refuses one that could not be honoured',()=>{
+  const base={id:'p1',name:'P',type:'remote',baseUrl:'https://example.test/v1',hasKey:true,apiKeyHint:'abcd',enabled:true,priority:100,
+    healthStatus:'unknown',lastError:null,lastErrorAt:null,lastSuccessAt:null,modelCount:null,modelsFetchedAt:null,modelsError:null,
+    createdAt:1,updatedAt:1};
+  // Carried as a contract rather than ignored: the backend serves it on every read,
+  // and null means "declared nothing", which is not the same as zero.
+  expect(providerSchema.parse({...base,maxContextTokens:200000}).maxContextTokens).toBe(200000);
+  expect(providerSchema.parse({...base,maxContextTokens:null}).maxContextTokens).toBeNull();
+  // A zero ceiling would be read as "compact everything", so it must not parse as
+  // a ceiling at all.
+  expect(providerSchema.safeParse({...base,maxContextTokens:0}).success).toBe(false);
+});
 });

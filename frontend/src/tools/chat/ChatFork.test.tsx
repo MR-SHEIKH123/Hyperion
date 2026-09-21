@@ -35,6 +35,7 @@ const provider = {
   type: 'remote',
   baseUrl: 'https://api.example.test/v1',
   hasKey: true,
+  maxContextTokens: null,
   apiKeyHint: 'sk-…',
   enabled: true,
   priority: 1,

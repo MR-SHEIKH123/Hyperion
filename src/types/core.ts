@@ -230,6 +230,22 @@ export interface ProviderRecord {
    * yields the redacted form, and the audit column stores `host:port` alone.
    */
   egressProxy: string | null;
+  /**
+   * The ceiling this provider's models are judged against, or null for none
+   * (Part 1.28).
+   *
+   * The first rung of the context ladder — `1.28`'s "explicit override" — and it
+   * exists because a provider that reports no context length leaves the ladder's
+   * middle rung empty: the loop then guesses `DEFAULT_CONTEXT_TOKENS`, which is
+   * deliberately small and therefore compacts earlier than the model requires.
+   * Declaring it is how a user says "I know this endpoint takes 200 000".
+   *
+   * Deliberately *declared*, not probed: nothing in the provider API reports it,
+   * and a wrong guess in the other direction — deciding a conversation fits when
+   * it does not — is the failure mode with no recovery, because the provider
+   * answers by rejecting the whole request.
+   */
+  maxContextTokens: number | null;
   /** Zero-data-retention facts (Part 1.26). Always present; defaults to `unknown`. */
   zdr: ProviderZdr;
   createdAt: number;
@@ -266,6 +282,8 @@ export interface ProviderPublic {
    * a consumer to reconstruct the URL, which is how a password comes back.
    */
   egressProxy: string | null;
+  /** The declared ceiling, so a settings screen can show and edit it (Part 1.28). */
+  maxContextTokens: number | null;
   /**
    * ZDR facts, returned in full including `requestFlag.value`.
    *

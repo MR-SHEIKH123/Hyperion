@@ -47,6 +47,7 @@ interface ProviderRow {
   models_fetched_at: number | null;
   models_error: string | null;
   egress_proxy: string | null;
+  max_context_tokens: number | null;
   zdr_support: string | null;
   zdr_flag_location: string | null;
   zdr_flag_key: string | null;
@@ -108,6 +109,7 @@ function mapRow(row: ProviderRow): ProviderRecord {
     modelsFetchedAt: row.models_fetched_at,
     modelsError: row.models_error,
     egressProxy: row.egress_proxy,
+    maxContextTokens: row.max_context_tokens,
     zdr: mapZdr(row),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -164,6 +166,7 @@ export function toPublic(provider: ProviderRecord): ProviderPublic {
     // and the way to keep that true is to convert here, where the raw value is
     // still in hand and cannot be forgotten by a new route.
     egressProxy: proxyForRead(provider.egressProxy),
+    maxContextTokens: provider.maxContextTokens,
     // Carried across in full, `requestFlag.value` included. That value is a
     // policy declaration and never a credential — `setProviderZdr` rejects one
     // that looks like a credential — and a field maintained by hand is
@@ -176,7 +179,7 @@ export function toPublic(provider: ProviderRecord): ProviderPublic {
 
 const COLUMNS = `id, name, type, base_url, api_key_enc, api_key_hint, enabled, priority,
   health_status, last_error, last_error_at, last_success_at, models_json,
-  models_fetched_at, models_error, egress_proxy, zdr_support, zdr_flag_location,
+  models_fetched_at, models_error, egress_proxy, max_context_tokens, zdr_support, zdr_flag_location,
   zdr_flag_key, zdr_flag_value, zdr_confirmed_at, zdr_confirmed_note, created_at, updated_at`;
 
 // --- reads -----------------------------------------------------------------
@@ -249,6 +252,30 @@ export function listFailoverCandidates(excludeId?: string): ProviderRecord[] {
 
 // --- writes ----------------------------------------------------------------
 
+/**
+ * Read a declared context ceiling out of a request body.
+ *
+ * `null` (or absent, at the call site) means "no declaration": the ladder falls
+ * through to whatever the provider reported. A number must be a positive
+ * integer, for the same reason `asPositiveInteger` exists in the HTTP layer —
+ * `0` and fractions are client bugs, and a ceiling of zero would be read as
+ * "compact everything", which is the opposite of what the field is for.
+ *
+ * The check lives here rather than only on the route because `createProvider`
+ * and `updateProvider` are also called by the local-provider detection path and
+ * by tests; a rule enforced at one entry point is a rule that can be bypassed by
+ * adding another.
+ */
+function parseMaxContextTokens(value: number | null | undefined): number | null {
+  if (value === null || value === undefined) return null;
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new AppError('bad_request', 'maxContextTokens must be a positive integer.', {
+      details: { field: 'maxContextTokens' },
+    });
+  }
+  return value;
+}
+
 export interface CreateProviderInput {
   name: string;
   type: ProviderType;
@@ -259,6 +286,8 @@ export interface CreateProviderInput {
   enabled?: boolean;
   /** Proxy URL the requests are tunnelled through (Part 1.37). Validated here. */
   egressProxy?: string | null;
+  /** Declared context ceiling (Part 1.28). Positive integer, or null for none. */
+  maxContextTokens?: number | null;
 }
 
 export function createProvider(input: CreateProviderInput): ProviderRecord {
@@ -272,6 +301,7 @@ export function createProvider(input: CreateProviderInput): ProviderRecord {
   // Parsed before anything is written, so an unusable proxy is a rejected create
   // rather than a stored value the transport cannot dial (Part 1.37).
   const egressProxy = parseEgressProxy(input.egressProxy)?.url ?? null;
+  const maxContextTokens = parseMaxContextTokens(input.maxContextTokens);
 
   if (findProviderByName(name)) {
     throw new AppError('conflict', `A provider named "${name}" already exists`);
@@ -287,8 +317,8 @@ export function createProvider(input: CreateProviderInput): ProviderRecord {
     db.prepare(
       `INSERT INTO providers
          (id, name, type, base_url, api_key_enc, api_key_hint, enabled, priority,
-          egress_proxy, health_status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'unknown', ?, ?)`,
+          egress_proxy, max_context_tokens, health_status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unknown', ?, ?)`,
     ).run(
       id,
       name,
@@ -299,6 +329,7 @@ export function createProvider(input: CreateProviderInput): ProviderRecord {
       input.enabled ?? false,
       input.priority ?? 100,
       egressProxy,
+      maxContextTokens,
       now,
       now,
     );
@@ -321,6 +352,11 @@ export interface UpdateProviderInput {
   apiKey?: string | null;
   /** Same tri-state as `apiKey`: undefined leaves it, null/'' removes it. */
   egressProxy?: string | null;
+  /**
+   * Tri-state like `egressProxy`: undefined leaves the declaration alone, `null`
+   * removes it (the ladder falls back to the model), a number replaces it.
+   */
+  maxContextTokens?: number | null;
 }
 
 export function updateProvider(id: string, input: UpdateProviderInput): ProviderRecord {
@@ -369,10 +405,17 @@ export function updateProvider(id: string, input: UpdateProviderInput): Provider
     values.push(proxy?.url ?? null);
   }
 
+  if (input.maxContextTokens !== undefined) {
+    sets.push('max_context_tokens = ?');
+    values.push(parseMaxContextTokens(input.maxContextTokens));
+  }
+
   if (sets.length === 0) return existing;
 
   // A changed base URL or key invalidates both the model cache and the recorded
-  // health verdict — the old evidence describes a different endpoint.
+  // health verdict — the old evidence describes a different endpoint. A changed
+  // ceiling does not: it describes what this build does with the answers, not
+  // which endpoint gave them, so the cached model list is still that endpoint's.
   const endpointChanged =
     input.baseUrl !== undefined || input.apiKey !== undefined || input.egressProxy !== undefined;
   if (endpointChanged) {

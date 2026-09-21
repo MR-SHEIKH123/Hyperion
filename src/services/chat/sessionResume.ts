@@ -51,7 +51,7 @@ import { AppError } from '../../util/errors.ts';
 import { createLogger } from '../../util/logger.ts';
 import { copyMessages, createChat, findChat, listMessages, requireChat } from '../../db/chats.ts';
 import { isTemporaryChat } from '../../db/temporaryChats.ts';
-import { findCachedModel } from '../../providers/registry.ts';
+import { contextWindowOverride, findCachedModel } from '../../providers/registry.ts';
 import {
   COMPACTION_TARGET_RATIO,
   COMPACTION_TRIGGER_RATIO,
@@ -92,10 +92,21 @@ function estimate(messages: readonly MessageRecord[]): number {
   );
 }
 
-/** The window this chat's model is judged against, with its provenance. */
-function windowFor(modelId: string | null): ContextWindow {
+/**
+ * The window this chat's model is judged against, with its provenance.
+ *
+ * The ladder's first rung is the provider's declared ceiling (1.28) — the chat's
+ * own provider when it has one, the active provider otherwise, the same choice
+ * `orchestrator/chat.ts` makes when a send has to pick one — and it wins over
+ * what the model list reported, because a person who typed a number meant it.
+ */
+function windowFor(modelId: string | null, providerId: string | null): ContextWindow {
   const model = modelId === null ? null : findCachedModel(modelId);
-  return resolveContextWindow(model === null ? {} : { model });
+  const override = contextWindowOverride(providerId);
+  return resolveContextWindow({
+    ...(model === null ? {} : { model }),
+    ...(override === undefined ? {} : { override }),
+  });
 }
 
 /**
@@ -111,7 +122,7 @@ export function assessChatContext(chatId: string): ChatContextAssessment {
     throw new AppError('not_found', `No chat with id ${chatId}.`, { details: { chatId } });
   }
   const messages = transcript(chatId);
-  const window = windowFor(chat.modelId);
+  const window = windowFor(chat.modelId, chat.providerId);
   const estimatedTokens = estimate(messages);
   const ratio = estimatedTokens / window.tokens;
   return {

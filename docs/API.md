@@ -258,13 +258,25 @@ Three routes also spread a registry summary into the response:
 
 **POST /api/providers** body: `name` (req), `type` (req, one of
 `remote` / `local` / `opencodex` / `colibri` / `puter`), `baseUrl` (req), `apiKey?`,
-`priority?`, `enabled?`, `egressProxy?`. `enabled` is body-only and defaults to
-false, so nothing — including local detection — can auto-enable a provider the
-user didn't turn on.
+`priority?`, `enabled?`, `egressProxy?`, `maxContextTokens?`. `enabled` is
+body-only and defaults to false, so nothing — including local detection — can
+auto-enable a provider the user didn't turn on.
 
 **PATCH /api/providers/:id** body: `name?`, `baseUrl?`, `priority?`,
 `apiKey?` (nullable — send `null` to remove a stored key), `egressProxy?`
-(nullable the same way). `type` is immutable.
+(nullable the same way), `maxContextTokens?` (nullable the same way). `type` is
+immutable.
+
+**`maxContextTokens`** *(new in 1.28, wired 2026-09-21)* is the first rung of the
+context ladder (§4.5): a **positive integer** — the ceiling every model of this
+provider is judged against — or `null` for "declared nothing", which falls through
+to whatever the model list reported and then to the conservative default. Zero and
+fractions are `400`s naming the field, at the route *and* in the repository, because
+local-detection and the scheduler create providers without passing through the
+route. It is served back on every provider read (including `/api/providers/active`),
+so a settings screen can show and edit it. Enabling the field does not invalidate
+the model cache the way editing `baseUrl` does: it changes what this build does
+with the endpoint's answers, not which endpoint gave them.
 
 **`egressProxy`** *(new in 1.37)* is an `http` or `https` URL that every request
 to this provider is tunnelled through. Only those two schemes are accepted: a
@@ -672,7 +684,16 @@ on is a new session.
 The window comes from the same ladder the agent loops use (`1.28`'s accounting):
 an explicit override, then the context length the provider reported for this
 model in its **cached** model list, then the conservative
-`DEFAULT_CONTEXT_TOKENS = 8 192`. `source` names which rung was used and
+`DEFAULT_CONTEXT_TOKENS = 8 192`. The override is the provider's declared
+`maxContextTokens` (§3.1) — the chat's own provider when it names one, the active
+provider otherwise, which is the same choice the send path makes — and it wins over
+a reported context length, because a person who typed a number meant it while a
+gateway's `context_length` is often the model's marketing maximum. **The window is
+resolved once, at the start of the run or the read**, from the provider that would
+serve: a mid-run failover to a provider declaring a different ceiling therefore
+leaves the run sized against the first one. That is deliberate — the alternative is
+a compaction boundary that depends on which endpoint happened to answer — and it is
+stated here rather than left to be discovered. `source` names which rung was used and
 `assumed: true` marks the default — most OpenAI-compatible gateways report no
 context length at all, so this is the common case rather than the edge case, and
 the route says so instead of presenting a guess as a measurement.

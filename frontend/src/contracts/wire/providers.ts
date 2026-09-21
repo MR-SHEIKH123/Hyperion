@@ -7,6 +7,15 @@ export const providerSchema = z.object({
   healthStatus:z.enum(['unknown','healthy','degraded','unhealthy']),
   lastError:z.string().nullable(), lastErrorAt:z.number().nullable(), lastSuccessAt:z.number().nullable(),
   modelCount:z.number().int().nonnegative().nullable(), modelsFetchedAt:z.number().nullable(), modelsError:z.string().nullable(),
+  /**
+   * The provider's declared context ceiling (1.28), or null for none.
+   *
+   * Declared here rather than left to `passthrough()` so it is a *contract*: the
+   * backend serves it on every provider read, and a settings screen that could
+   * not see it could not edit it. Nothing renders it yet — the settings surface
+   * is still missing, which `frontend/contracts/gaps.md` records.
+   */
+  maxContextTokens:z.number().int().positive().nullable(),
   createdAt:z.number(), updatedAt:z.number(),
 }).passthrough();
 export const modelSchema = z.object({ id:z.string(), label:z.string().optional(), ownedBy:z.string().optional(), contextLength:z.number().int().positive().optional() }).passthrough();

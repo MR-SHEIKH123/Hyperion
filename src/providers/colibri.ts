@@ -156,6 +156,7 @@ export async function probeColibri(
     modelsFetchedAt: null,
     modelsError: null,
     egressProxy: null,
+    maxContextTokens: null,
     zdr: DEFAULT_PROVIDER_ZDR,
     createdAt: 0,
     updatedAt: 0,

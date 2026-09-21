@@ -35,7 +35,7 @@ import { zdrStatusFor } from '../services/safety/zdr.ts';
 import { isProviderType, PROVIDER_TYPES, ZDR_FLAG_LOCATIONS, ZDR_SUPPORTS } from '../types/core.ts';
 import { AppError } from '../util/errors.ts';
 import { wrap } from './errors.ts';
-import { asBool, asEnum, asNumber, asString, body, pathParam, queryBool } from './params.ts';
+import { asBool, asEnum, asNumber, asPositiveInteger, asString, body, pathParam, queryBool } from './params.ts';
 
 import type { ZdrRequestFlag } from '../types/core.ts';
 
@@ -78,6 +78,12 @@ providersRouter.post(
       egressProxy: input.egressProxy === undefined || input.egressProxy === null
         ? null
         : asString(input.egressProxy, 'egressProxy'),
+      // The declared context ceiling (1.28). `asPositiveInteger` refuses zero and
+      // fractions with `details.field`; the repository refuses them too, for the
+      // callers that never pass through this route.
+      maxContextTokens: input.maxContextTokens === undefined || input.maxContextTokens === null
+        ? null
+        : (asPositiveInteger(input.maxContextTokens, 'maxContextTokens') ?? null),
     });
     res.status(201).json({ provider: toPublic(provider) });
   }),
@@ -233,6 +239,11 @@ providersRouter.patch(
       egressProxy: input.egressProxy === undefined
         ? undefined
         : (input.egressProxy === null ? null : asString(input.egressProxy, 'egressProxy')),
+      maxContextTokens: input.maxContextTokens === undefined
+        ? undefined
+        : (input.maxContextTokens === null
+          ? null
+          : (asPositiveInteger(input.maxContextTokens, 'maxContextTokens') ?? null)),
     });
     res.json({ provider: toPublic(provider) });
   }),

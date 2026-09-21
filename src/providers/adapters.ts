@@ -1123,6 +1123,7 @@ export async function detectLocalProvider(baseUrl = env.ollamaUrl): Promise<Dete
     modelsFetchedAt: null,
     modelsError: null,
     egressProxy: null,
+    maxContextTokens: null,
     zdr: DEFAULT_PROVIDER_ZDR,
     createdAt: 0,
     updatedAt: 0,

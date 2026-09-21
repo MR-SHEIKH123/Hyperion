@@ -917,11 +917,11 @@ can supply. The audit
 queue is **empty**: HTTP input validation was S17, `mcp_config.json` S18,
 the push payload S19, the memory store S20, and the last item — per-provider
 egress in `colibri.ts` — became S21 (with S22 falling out of the same lookup).
-Suite baseline for every future claim in this file: **1086 tests / 188 suites
+Suite baseline for every future claim in this file: **1098 tests / 191 suites
 green, `tsc --noEmit` clean** (backend — `P1-S4` 11 tests / 3 suites, the attention
 queue 8 / 2, the `interrupted` state 1 / 1, the memory writes 10 / 2, provenance
-10 / 2, cooldowns 18, the egress proxy 12, migration `023` 3, Puter 13, backup
-crypto 11, backup encryption 12, session fork 9, the plugins hub 10 / 3, the MCP seeds 11 / 2, cache accounting 11, session resume 14 / 1, orphaned worktrees 17 / 5), **183 tests and five gates green** (frontend — 24 belong to the Attention
+10 / 2, cooldowns 18, the egress proxy 12, migration `023` 3, Puter 13, the context ceiling 10, backup
+crypto 11, backup encryption 12, session fork 9, the plugins hub 10 / 3, the MCP seeds 11 / 2, cache accounting 11, session resume 14 / 1, orphaned worktrees 17 / 5), **208 tests / 37 files and five gates green** (frontend — 24 belong to the Attention
 Center, 31 to presentation memory, 4 to the task-state / `interrupted` mapping, 7 to
 provenance, 8 to the Code surface 7 to the harness, 4 to the fork surface, 6 to the session-resume
 surface, 3 to the chat wire contracts and 1 to the attention kind that 1.31 added; gates
@@ -945,6 +945,98 @@ found nothing renders it) — memory +2, provenance +2, Puter advisory +1, backu
   question, not an implementation gap: when wigolo is absent there is no
   fallback research path at all — the absence is reported honestly. Whether
   a fallback should exist is the owner's call.
+
+## Verification pass over everything landed (2026-09-21)
+
+Asked to check the landed build the way 1.38 was checked — against the thing
+itself rather than against its own tests. Four mechanical scans (dead value
+exports, dead migration columns, unreferenced wire schemas and API clients,
+and the vendor commands the app tells a user to run) plus direct verification of
+every external command against the published package. What follows is the whole
+outcome, findings and clean verdicts alike, because a pass that only reports what
+it found is indistinguishable from a pass that only looked where it expected to.
+
+- **`providers.max_context_tokens` was documented and unwired — found, fixed
+  here.** The column has existed since migration `017`, was carried through
+  `023`'s table rebuild (with a test asserting it survives), `resolveContextWindow`
+  implements an `override` rung for it, and `docs/API.md` §4.5 described the ladder
+  as "an explicit override, then the context length the provider reported, then the
+  default" — but **no code in `src/` read or wrote the column**, and every caller
+  passed `{ model }` alone. So the first rung was reachable only from a unit test,
+  and a user could not declare a ceiling at all. Now: `ProviderRecord`/`ProviderPublic`
+  carry `maxContextTokens`, the repository selects, maps, validates (positive
+  integer, at the repository *and* the route, because local detection and the
+  scheduler create providers without passing through the route), creates, updates
+  and clears it, `POST`/`PATCH /api/providers` accept it, `contextWindowOverride`
+  resolves it for the four call sites that need it, and the chat context read plus
+  all three agent loops pass it. Wiring the field changes nothing about the cache's
+  validity — a ceiling describes what this build does with an endpoint's answers,
+  not which endpoint gave them — and the window is still resolved once, at run
+  start, so a failover to a provider with a different ceiling leaves the run sized
+  against the first one. That is now written in §3.1/§4.5 rather than left to be
+  discovered. `test/contextoverride.test.ts` **10 cases** (round-trip, clear, the
+  two refusal sites, the wire, and five cases over `GET /api/chat/:id/context`
+  including an unreachable declaration and a declaration that beats a reported
+  window), `test/modelwindow.test.ts` **+2** (all three agents pass the ceiling;
+  a silent provider passes nothing). Mutation red-checks 10/10 killed, restored:
+  the column not selected, the row not mapped, create ignoring it, update ignoring
+  it, the repository validator off, the resolver always answering nothing, the chat
+  read forgetting it, and each of the three agents dropping it. **One of those
+  mutants is what found the last test gap** — the route refuses a bad ceiling but
+  nothing pinned the repository's own refusal, so the suite gained a case that
+  exercises `createProvider`/`updateProvider` directly.
+- **`context_handoffs` is unimplemented schema, and it is now recorded as such
+  rather than left to look live.** Migration `017` created the table (goal, pending
+  steps, changed files, artifact versions, diff stat, plus a `summary_source` CHECK
+  distinguishing a structured summary from one that also got a model-written half).
+  Nothing in `src/` names the table or its columns — the only references outside
+  the migration are in `test/migration017.test.ts`. The reason is a decision, not an
+  omission: `1.27`'s AD-1 deviation (owner-signed) replaced the model-written
+  summary with a **receipt**, and the receipt is persisted as the new session's
+  first `system` message. The table is the schema of the design that was replaced.
+  Not dropped — migrations are immutable and the design record has value — but
+  named here so the next reader does not mistake it for a feature.
+- **The vendor commands the app hands a user were verified against the published
+  packages, not against memory.** `npx -y wigolo` is wigolo's own documented MCP
+  registration ("omit `--agents` and register `npx -y wigolo` yourself"), and its
+  `init` is the documented one-time setup; `npx -y @modelcontextprotocol/server-filesystem <root>`
+  matches that server's documented command-line root argument (and our client sends
+  no MCP `roots`, so the seeded argv scope stands rather than being replaced at
+  runtime); `uvx --from 'browser-use[cli]' browser-use --mcp` matches browser-use
+  0.13.10's own CLI, which now implements MCP mode as exactly that flag and whose
+  `cli` extra does exist. **One claim was false and is corrected:** the docs said
+  "there is no `graphify-mcp` console script" — the wheel declares
+  `graphify-mcp = graphify.serve:_main` alongside `graphify`, and the `mcp` extra
+  really is required (`serve.py` imports `mcp.server` at module level). The seeded
+  entry still names the venv's interpreter and the module, for the reason that has
+  not changed: an MCP entry has no working directory and the venv is never on
+  `PATH`. `docs/CONTRACTS.md` and the seed note carry the correction.
+- **Clean verdicts, recorded so they are not re-derived.** The plugin-availability
+  decision is honoured where it can be (memory's recall/remember paths, Cowork's MCP
+  readiness, and the skills list a run is told about via `plugins/consumers.ts`) —
+  `isPluginAvailableAnywhere` and `findPluginAvailability` are unused *siblings*,
+  not a missing read path. The health tracker is live (`router.ts` records both
+  failures and successes and reads the verdict); `isUnhealthy`/`consecutiveFailures`
+  are unused readers. A failed *chat* run pauses rather than erroring, which is why
+  `orchestrator/runState.ts`'s `failRun` has no callers — task runs do write
+  `error`, through `finishTaskRun` in the continuation path. And `src/http/agents.ts`'s
+  comment that a run writes "running, then complete or error" understates the
+  vocabulary (`stopped`, `blocked`, `ready_for_review` and `interrupted` all exist);
+  the comment is the only thing wrong there.
+- **22 value exports have no reference anywhere in the tree** (listed here rather
+  than deleted wholesale, since several are affordances a planned item wants:
+  `failRun` for a discard path, `runTaskSchedulerNow`/`runBackupSchedulerNow` and
+  `resetDispatchers`/`resetKeyCache`/`resetPushCache` as test seams): `isInitialized`,
+  `findPluginAvailability`, `PARKED_STATES`, `resolveAgentCwd`, `queueDepth`,
+  `failRun`, `isUnhealthy`, `consecutiveFailures`, `resetDispatchers`,
+  `resetKeyCache`, `runBackupSchedulerNow`, `listProjectRules`, `runTaskSchedulerNow`,
+  `upsertEntry`, `removeEntry`, `renameEntry`, `resetPushCache`, `isProvisionRunning`,
+  `skillToken`, `isPluginId`, `isPluginAvailableAnywhere`, `globMatches`. The
+  frontend has a matching set of unreferenced API clients (`getChat`, `getChatRuns`,
+  `listPausedRuns`, `getProjects`, `createProject`, `openProject`, `getProviders`,
+  `enableProvider`, `getCapabilities`, `getPreferences`, `getLimits`, `getLiveness`)
+  — those are surfaces that do not exist yet, which the milestone register already
+  says, and `listPausedRuns` is the recovery-read half of `1.31`'s missing surface.
 
 ## Corrections to inherited claims (2026-09-18)
 

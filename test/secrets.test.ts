@@ -58,6 +58,7 @@ function providerRecord(baseUrl: string) {
     modelsFetchedAt: null,
     modelsError: null,
     egressProxy: null,
+  maxContextTokens: null,
     zdr: { support: 'unknown' as const, requestFlag: null, confirmedAt: null, confirmedNote: null },
     createdAt: 0,
     updatedAt: 0,

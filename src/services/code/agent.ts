@@ -18,7 +18,7 @@ import { runAgentLoop } from '../agent/loop.ts';
 import { createPermissionResolver } from '../agent/permissions.ts';
 import { assertKnownTools, permissionLayers, profileSelector, resolveProfile } from '../agent/profiles.ts';
 import { resolveContextWindow } from '../agent/compaction.ts';
-import { findCachedModel } from '../../providers/registry.ts';
+import { contextWindowOverride, findCachedModel } from '../../providers/registry.ts';
 import { assertWithinSpendCap, TaskBudget } from '../limits/budget.ts';
 import {
   loadAgentProfile,
@@ -319,6 +319,7 @@ async function runCodeInternal(
     // Cache-only: a run start must not wait on a network call, and an
     // unknown model keeps the honest `assumed` default.
     const modelInfo = (runtime.dependencies.findModel ?? findCachedModel)(input.modelId);
+    const ceiling = contextWindowOverride();
 
     const loop = await runAgentLoop({
       ...(runtime.depth === 0 && ctx.runId !== undefined ? { runId: ctx.runId } : {}),
@@ -337,9 +338,13 @@ async function runCodeInternal(
       context: {
         messages: () => messages,
         replace: (next) => { messages = [...next]; },
-        window: (runtime.dependencies.resolveContextWindow ?? resolveContextWindow)(
-          modelInfo === null ? {} : { model: modelInfo },
-        ),
+        window: (runtime.dependencies.resolveContextWindow ?? resolveContextWindow)({
+          ...(modelInfo === null ? {} : { model: modelInfo }),
+          // The provider's declared ceiling wins over the model list (1.28), and
+          // it is read here, at run start, for the same reason the cache is:
+          // neither may wait on the network.
+          ...(ceiling === undefined ? {} : { override: ceiling }),
+        }),
       },
       turn: async (feedback) => {
         for (const item of feedback) {

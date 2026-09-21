@@ -16,6 +16,7 @@ import { createLogger } from '../util/logger.ts';
 import { adapterFor, detectLocalProvider } from './adapters.ts';
 import {
   createProvider,
+  findProvider,
   findProviderByName,
   getActiveProvider,
   listFailoverCandidates,
@@ -244,6 +245,29 @@ export function summarize(): RegistrySummary {
  * reports the window as `assumed` \u2014 the request itself validates the model
  * when it goes out.
  */
+/**
+ * The declared context ceiling that applies to a run (Part 1.28).
+ *
+ * The window ladder's first rung, resolved in one place because four call sites
+ * need it and they must agree: the chat context read, and the three agent loops.
+ * A provider id picks that provider; nothing picks the active one, which is the
+ * same choice `orchestrator/chat.ts` makes when a chat carries no provider of its
+ * own.
+ *
+ * **What this deliberately does not do** is follow a mid-run failover. The window
+ * is resolved once, at run start, from the provider that would serve — the model
+ * cache is read at the same moment and for the same reason (a run start must not
+ * wait on the network). A failover to a provider with a different declared ceiling
+ * therefore leaves the run sized against the first one, which is stated here
+ * rather than papered over: the alternative is re-deciding the window mid-stream,
+ * and that would mean a compaction boundary that depends on which endpoint
+ * happened to answer.
+ */
+export function contextWindowOverride(providerId?: string | null): number | undefined {
+  const provider = providerId === undefined || providerId === null ? getActiveProvider() : findProvider(providerId);
+  return provider?.maxContextTokens ?? undefined;
+}
+
 export function findCachedModel(modelId: string): ModelInfo | null {
   const active = getActiveProvider();
   const candidates = [
