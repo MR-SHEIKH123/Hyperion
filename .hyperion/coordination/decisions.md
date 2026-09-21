@@ -228,6 +228,34 @@ route input validation outside the agent routers, `mcp_config.json` writes,
 web-push payload privacy, the memory plugin's local store, and per-provider egress
 handling in `colibri.ts`.
 
+## Prompt-1 scope — status (2026-09-21, verified against the code, not transcribed)
+
+"Prompt 1" is not a document in this repo and never was — it is the working name
+for the **backend core** scope, and three of its four parts are recoverable from
+the tree: `docs/SPEC.md` (the original scope, its nine deliverables and the
+integration contract), the increment series tagged through `docs/API.md` and
+`docs/CONTRACTS.md` (1.1 → 1.28), and the Master Plan v4 backend items (`§6.1`–
+`§6.8`). The fourth part — the **S-series** audit — existed only in conversation
+until the section above, which is why that section now exists.
+
+Where the scope says done, this is what was checked:
+
+| Scope | Where it stands |
+| --- | --- |
+| SPEC deliverables 1–9 (server + endpoint surface, schema/migrations, provider registry + failover + Ollama detect, pause/resume, MCP config CRUD + test, skills intake, storage sweep, encryption + bind guard + scoped roots, usage + backup) | **Landed.** Every route in the spec's suggested surface resolves (see `docs/API.md` §24 for the deliberate deltas). 17 migrations, `001`–`017`; the next is `018`. |
+| Increment series 1.1–1.28 | **Landed and documented**, with one exception: **`1.25` appears nowhere in the repo** — no heading, no tag, no test name. Either it was folded into a neighbour or it never shipped; only the owner can say which. |
+| D-table decisions (D1/D4/D7/D8/D9/D11/D12/D13–D15, D-1.2) | **Landed**, each with the code and test the D-table entry names. |
+| v4 backend items `§6.1` context windows, `§6.3` approvals + continuation, `§6.4` unattended hardening, `§6.5` write-path downgrade, `§6.6` subagent isolation, `§6.7` profiles, `§6.8` observability + golden runs | **Landed.** |
+| v4 `§6.2` cost accounting per task | **Partial — the one genuinely open backend item.** `usage_log.task_id` exists (`017`), `TaskBudget.charge()`/`.step()` have real call sites in the loop and all three agents, and per-step tokens are persisted and summed by `summarizeSteps()`. What is missing is the *surfacing*, and one step beyond it: (a) `summarizeSteps()` has **no non-test caller**, so no route returns a run's token totals; (b) `recordUsage()` is called **only from the chat orchestrator**, so Code/Cowork/Design task spend never reaches `usage_log` at all — no row carries a `task_id`, and the usage/cost dashboard does not see agent work; (c) the activity feed has no cost field. |
+| S-series audit (S12 fixed in PR #6; S13/S14 fixed 2026-09-21) | **Continuous.** `S2`–`S11` are not recoverable from this repo — like `1.25`, their list lived in conversation. If they exist in a local note, they need pasting in to be verified or closed. |
+| Frontend (Prompt 2) | Out of this scope by design. Shell + Chat tool landed; Code, Cowork, Design, Playground, Plugins, Skills, Settings remain. Frontend-side items that *wait on backend contracts* are tracked in `frontend/contracts/gaps.md`, and one of them (no cross-tool pending-approval endpoint, no per-project active-task listing) is the earliest backend work the frontend will ask for. |
+
+**So: the backend core is complete except `§6.2`'s surfacing half.** The remaining
+work in the series is that, the audit queue above, and whatever `S2`–`S11` and
+`1.25` turn out to be. Suite baseline for every future claim in this file:
+**862 tests / 151 suites green, `tsc --noEmit` clean** (backend), **84 tests and
+five gates green** (frontend).
+
 ## Resolved verifications
 
 - **Cowork: complete against Slice 4, not a stub** (verified against the code
