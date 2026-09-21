@@ -25,6 +25,7 @@
  */
 
 import { getDb } from '../../db/adapter.ts';
+import { usageByRun, type TaskUsage } from '../../db/usage.ts';
 
 export type ActivityKind = 'task' | 'scheduled-task';
 
@@ -50,6 +51,29 @@ export interface ActivityEntry {
   /** The reason, when there is one worth reading. */
   detail: string | null;
   link: ActivityLink | null;
+  /**
+   * What this run cost, when anything was recorded (v4 §6.2).
+   *
+   * `null` means nothing is known — a run from before per-task accounting, or one
+   * that never reached a provider — and must not be rendered as `$0.00`. Within a
+   * present value, `costUsd` is null when no logged request had a price, and
+   * `priced` says whether the figure is the whole bill. The rule the usage module
+   * has always kept applies here unchanged: unpriced is not free.
+   *
+   * Scoped to the **run**, not the task, because an entry describes one execution.
+   * A task's total — which additionally includes what its delegated children spent
+   * — is what `/api/{tool}/tasks/:taskId/state` reports.
+   */
+  spend: ActivitySpend | null;
+}
+
+/** The cost fields an entry carries. See `ActivityEntry.spend`. */
+export interface ActivitySpend {
+  requests: number;
+  tokensIn: number;
+  tokensOut: number;
+  costUsd: number | null;
+  priced: boolean;
 }
 
 export interface ActivityPage {
@@ -115,7 +139,7 @@ function taskTitle(tool: string, status: ActivityStatus): string {
   return `${label} task is still running`;
 }
 
-function mapTaskRun(row: TaskRunFeedRow): ActivityEntry {
+function mapTaskRun(row: TaskRunFeedRow, spend: ActivitySpend | null): ActivityEntry {
   const status = taskStatus(row.state);
 
   return {
@@ -128,6 +152,7 @@ function mapTaskRun(row: TaskRunFeedRow): ActivityEntry {
     // in prose. Everything else about the run is a debug-console concern.
     detail: status === 'paused' ? row.pause_reason : status === 'failed' ? row.error_message : null,
     link: row.chat_id === null ? null : { kind: 'chat', chatId: row.chat_id },
+    spend,
   };
 }
 
@@ -143,7 +168,7 @@ function scheduledTitle(name: string, status: ActivityStatus): string {
   return `Scheduled task "${name}" is still running`;
 }
 
-function mapScheduledRun(row: ScheduledRunFeedRow): ActivityEntry {
+function mapScheduledRun(row: ScheduledRunFeedRow, spend: ActivitySpend | null): ActivityEntry {
   const status = scheduledStatus(row.status);
   const name = row.task_name ?? row.task_id;
 
@@ -162,6 +187,22 @@ function mapScheduledRun(row: ScheduledRunFeedRow): ActivityEntry {
     // skip happened there too — so it leads, and the error message backs it up.
     detail: row.summary ?? row.error_message,
     link,
+    // Keyed by the same id the execution ran under: the scheduler uses
+    // `startRun`'s id for both the `scheduled_task_runs` row and the allocated
+    // `task_runs` row, so a scheduled entry's spend is found like any other run's.
+    spend,
+  };
+}
+
+/** The usage summary as the feed reports it, or null when nothing was logged. */
+function toSpend(usage: TaskUsage | undefined): ActivitySpend | null {
+  if (usage === undefined) return null;
+  return {
+    requests: usage.requests,
+    tokensIn: usage.tokensIn,
+    tokensOut: usage.tokensOut,
+    costUsd: usage.costUsd,
+    priced: usage.priced,
   };
 }
 
@@ -208,7 +249,22 @@ export function activityFeed(query: ActivityQuery = {}): ActivityPage {
     )
     .all(before, limit);
 
-  const merged = [...visibleTaskRuns(taskRows).map(mapTaskRun), ...scheduledRows.map(mapScheduledRun)]
+  // One query for every run on the page rather than one per entry. Both sources
+  // are keyed by the same id — a scheduled run's execution row carries the id
+  // `startRun` returned for its `scheduled_task_runs` row — so a single map
+  // answers for both, over the union of the two id sets.
+  const spendByRun = usageByRun([
+    ...taskRows.map((row) => row.run_id),
+    ...scheduledRows.map((row) => row.id),
+  ]);
+
+  // `visibleTaskRuns` runs first so the spend map is queried over exactly the
+  // rows that will be rendered — a deduped scheduled run is one entry, not two,
+  // and it reads its spend through the scheduled id (the same key either way).
+  const merged = [
+    ...visibleTaskRuns(taskRows).map((row) => mapTaskRun(row, toSpend(spendByRun.get(row.run_id)))),
+    ...scheduledRows.map((row) => mapScheduledRun(row, toSpend(spendByRun.get(row.id)))),
+  ]
     .sort((a, b) => b.timestamp - a.timestamp)
     .slice(0, limit);
 

@@ -172,6 +172,8 @@ findings.
 | S12 | MCP tool names that normalize to one permission key (`a.b_c` / `a_b.c`) shared rules silently. | **Fixed** — PR #6; registration fails closed under `assertNoPermissionKeyCollisions`. |
 | S13 | A path rule was matched against the raw argument, so a respelled path dodged a `deny` while resolving to the denied file. | **Fixed** 2026-09-21 — this commit. CONTRACTS "A path rule matches the file, not the spelling the model chose". |
 | S14 | `primaryArgument`'s comment described a raw-JSON fallback the engine deliberately does not implement, next to a test that pins the opposite. | **Fixed** 2026-09-21 — comment corrected in the same commit as S13; no behaviour change. |
+| S15 | A **global** model price could not be updated: `ON CONFLICT(model_id, provider_id)` never fires when `provider_id IS NULL` (SQLite treats NULLs as distinct), so saving one twice inserted a duplicate and the lookup kept returning the older row. The user's edit did nothing, and the stale figure stayed in force for cost reporting and the daily spend cap. | **Fixed** 2026-09-21 — partial unique index + NULL-aware upsert target (migration 018); found by the §6.2 tests, which is the audit finding its own class. |
+| S16 | A chat id with no chat row behind it raised the FK on `usage_log`, and `recordUsage` swallows its own errors — so the spend row was **discarded**. The agent path passes exactly such an id (`linkedChatId` nulls it for the task row for this reason), which meant §6.2's recording could have failed invisibly. | **Fixed** 2026-09-21 — the linkage is resolved at write time (an id with no row is stored as NULL, the spend kept), same treatment a temporary chat already got. |
 
 ### S13 in full — a path rule matched the string, not the file
 
@@ -213,6 +215,42 @@ tests fail on the verdict, and the adapter test fails for the absolute spelling 
 the `pathResolver` wiring is removed, which is the assertion that keeps the seam
 from being dropped silently.
 
+### S15/S16 in full — both found by building §6.2, which is the point of the pair
+
+Neither was found by reading cost code looking for trouble. Both were found by the
+§6.2 tests failing, which is worth recording: an audit that only re-reads what it
+already suspects finds what it already suspects.
+
+**S15 — `setPrice` never updated a global price.** `model_prices` is
+`UNIQUE (model_id, provider_id)` and the upsert said
+`ON CONFLICT(model_id, provider_id) DO UPDATE`. SQLite treats NULLs as distinct in
+a unique index, and a conflict target containing NULL matches nothing — so the
+*global* price (`provider_id IS NULL`, the common case: "all providers") inserted a
+new row on every save. `findPrice` orders by `provider_id IS NULL` and takes one,
+so it returned whichever row came first, normally the oldest: the user's edit had
+no effect. The cost that stays in force is not cosmetic — `usage_log.cost_usd` is
+computed from `findPrice`, and the daily spend cap sums `cost_usd`, so a price the
+user lowered to match reality kept capping them at the old figure. `deletePrice`
+handles the NULL case explicitly, which is exactly how the omission went unnoticed:
+the semantics were known in one place and missed in the other. Fixed with a partial
+unique index (`018`) plus a conflict target that names it; existing duplicates
+collapse to the newest row.
+
+**S16 — a chat id with no chat row discarded the spend.** `usage_log.chat_id` has a
+real foreign key to `chats`, so an insert naming a chat that does not exist raises
+SQLITE_CONSTRAINT — and `recordUsage` swallows its own errors by design, so the row
+was dropped silently. The agent path passes exactly such an id: `chatId` is whatever
+the client sent, which is why `linkedChatId` in `http/agents.ts` already nulls it for
+the *task run* row. Had §6.2 landed without this, the recording would have looked
+correct in tests that create their chat first and dropped real spend in production
+for the very callers the feature exists for. Fixed where every caller is covered:
+the linkage is resolved at write time, an id naming no row is stored as NULL, and
+the spend stays on the books — the same treatment a temporary chat already got, for
+a different reason.
+
+Both are pinned in `test/taskcost.test.ts`, and both were verified against the
+unfixed code before being fixed.
+
 **Adjacent, verified — not findings.** Checked while here and found sound:
 `resolveInScope`/`resolveInSubtree` (realpath for existing ancestors, sibling-prefix
 trap avoided, NUL rejected), layer ordering (`permissionLayers` puts `inherited`
@@ -221,7 +259,10 @@ last itself rather than trusting callers), subagent path reservation
 extraction in all three unzip sites (skills intake, resource archive, backup
 restore — each refuses traversal twice), approval→session-rule conversion (the
 pattern stored is the user's own matched glob, not the call's subject), and the
-keystore (AES-256-GCM, key outside the DB, `0o600`).
+keystore (AES-256-GCM, key outside the DB, `0o600`). Also verified sound during
+§6.2: `assertWithinSpendCap`'s live-vs-autonomous split (no defaulted `origin`, so
+a caller must say which work it is), `TaskBudget`'s read-once ceilings, and
+`usageByRun`'s parameterised `IN` list (the ids are bound, never interpolated).
 
 **Not yet audited** (next sessions, in the order they look worth the time): HTTP
 route input validation outside the agent routers, `mcp_config.json` writes,
@@ -242,18 +283,18 @@ Where the scope says done, this is what was checked:
 
 | Scope | Where it stands |
 | --- | --- |
-| SPEC deliverables 1–9 (server + endpoint surface, schema/migrations, provider registry + failover + Ollama detect, pause/resume, MCP config CRUD + test, skills intake, storage sweep, encryption + bind guard + scoped roots, usage + backup) | **Landed.** Every route in the spec's suggested surface resolves (see `docs/API.md` §24 for the deliberate deltas). 17 migrations, `001`–`017`; the next is `018`. |
+| SPEC deliverables 1–9 (server + endpoint surface, schema/migrations, provider registry + failover + Ollama detect, pause/resume, MCP config CRUD + test, skills intake, storage sweep, encryption + bind guard + scoped roots, usage + backup) | **Landed.** Every route in the spec's suggested surface resolves (see `docs/API.md` §24 for the deliberate deltas). 18 migrations, `001`–`018`; the next is `019`. |
 | Increment series 1.1–1.28 | **Landed and documented**, with one exception: **`1.25` appears nowhere in the repo** — no heading, no tag, no test name. Either it was folded into a neighbour or it never shipped; only the owner can say which. |
 | D-table decisions (D1/D4/D7/D8/D9/D11/D12/D13–D15, D-1.2) | **Landed**, each with the code and test the D-table entry names. |
 | v4 backend items `§6.1` context windows, `§6.3` approvals + continuation, `§6.4` unattended hardening, `§6.5` write-path downgrade, `§6.6` subagent isolation, `§6.7` profiles, `§6.8` observability + golden runs | **Landed.** |
-| v4 `§6.2` cost accounting per task | **Partial — the one genuinely open backend item.** `usage_log.task_id` exists (`017`), `TaskBudget.charge()`/`.step()` have real call sites in the loop and all three agents, and per-step tokens are persisted and summed by `summarizeSteps()`. What is missing is the *surfacing*, and one step beyond it: (a) `summarizeSteps()` has **no non-test caller**, so no route returns a run's token totals; (b) `recordUsage()` is called **only from the chat orchestrator**, so Code/Cowork/Design task spend never reaches `usage_log` at all — no row carries a `task_id`, and the usage/cost dashboard does not see agent work; (c) the activity feed has no cost field. |
+| v4 `§6.2` cost accounting per task | **Landed 2026-09-21.** `usage_log` gained `run_id` (migration `018`; `task_id` was `017`), the agent context records one priced row per provider request — so every task run is attributed whatever started it, and a delegated child's spend lands in its parent's task total — the task-state route returns a `usage` summary, and the activity feed carries each run's `spend`. The two findings this surfaced are S15 and S16 above. |
 | S-series audit (S12 fixed in PR #6; S13/S14 fixed 2026-09-21) | **Continuous.** `S2`–`S11` are not recoverable from this repo — like `1.25`, their list lived in conversation. If they exist in a local note, they need pasting in to be verified or closed. |
 | Frontend (Prompt 2) | Out of this scope by design. Shell + Chat tool landed; Code, Cowork, Design, Playground, Plugins, Skills, Settings remain. Frontend-side items that *wait on backend contracts* are tracked in `frontend/contracts/gaps.md`, and one of them (no cross-tool pending-approval endpoint, no per-project active-task listing) is the earliest backend work the frontend will ask for. |
 
-**So: the backend core is complete except `§6.2`'s surfacing half.** The remaining
-work in the series is that, the audit queue above, and whatever `S2`–`S11` and
+**So: the backend core is complete, including `§6.2` as of 2026-09-21.** The
+remaining work in the series is the audit queue above and whatever `S2`–`S11` and
 `1.25` turn out to be. Suite baseline for every future claim in this file:
-**862 tests / 151 suites green, `tsc --noEmit` clean** (backend), **84 tests and
+**872 tests / 155 suites green, `tsc --noEmit` clean** (backend), **84 tests and
 five gates green** (frontend).
 
 ## Resolved verifications
@@ -568,7 +609,7 @@ All items below are **new proposals**, sourced from real verified gaps (the 1.27
 | 9 | **Design agent per §3 full spec** | OG | ⬜ Kimi, after 4–8 |
 | 10 | Subagents where needed | OG | ⬜ |
 | 11 | Model-aware context windows | 🆕 V4 | ⬜ Proposed |
-| 12 | Per-task cost accounting (migration 018) | 🆕 V4 | ⬜ Proposed |
+| 12 | Per-task cost accounting (migration 018) | 🆕 V4 | ✅ Landed 2026-09-21 — see the status table above |
 | 13 | Approvals + task continuation | 🆕 V4 | ⬜ Proposed (biggest) |
 | 14 | Unattended/scheduled hardening | 🆕 V4 | ⬜ Proposed |
 | 15 | Injection downgrade-on-write | 🆕 V4 | ⬜ Proposed |

@@ -70,6 +70,7 @@ import {
 import { exportCodeTask } from '../services/export/index.ts';
 import { findChat } from '../db/chats.ts';
 import { concurrencyMode } from '../db/settings.ts';
+import { taskUsage } from '../db/usage.ts';
 import {
   finishTaskRun,
   getTaskRun,
@@ -541,6 +542,16 @@ agentsRouter.get('/code/tasks', wrap(async (_req, res) => {
  * A task with no row is a 404 rather than an invented `idle`: "I have never
  * heard of this task" and "this task is not doing anything" are different
  * answers, and only one of them means the client should stop asking.
+ *
+ * `usage` is the task's recorded spend (v4 §6.2), summed over every request
+ * logged against the task id — which **includes work it delegated**, because a
+ * subagent child inherits the parent's task id and contributes its tokens and
+ * cost here. `usage.runs` counts the runs that logged under their own id, so
+ * "three runs, five requests" is readable. `requests: 0` means nothing was
+ * recorded (a run from before this accounting, a run that never reached a
+ * provider) and is not a claim that the task was free; `costUsd` is null unless
+ * at least one logged request had a price, and `priced` says whether the total
+ * is the whole bill.
  */
 function taskStateRoute(tool: TaskRunTool) {
   return wrap(async (req: Request, res: Response) => {
@@ -551,7 +562,7 @@ function taskStateRoute(tool: TaskRunTool) {
         details: { taskId },
       });
     }
-    res.json({ run });
+    res.json({ run, usage: taskUsage(taskId) });
   });
 }
 

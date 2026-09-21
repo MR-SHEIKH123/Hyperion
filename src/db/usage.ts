@@ -13,6 +13,7 @@
  */
 
 import { getDb } from './adapter.ts';
+import { findChat } from './chats.ts';
 import { isTemporaryChat } from './temporaryChats.ts';
 import { classifyProviderType } from '../services/safety/outbound.ts';
 import { zdrPreferenceUnmet } from '../services/safety/zdr.ts';
@@ -31,6 +32,25 @@ export interface RecordUsageInput {
   modelId: string;
   providerId?: string | null;
   providerName?: string | null;
+  /**
+   * The task this request belongs to, and the run that made it (v4 §6.2).
+   *
+   * Two keys rather than one, because they answer different questions: `taskId`
+   * attributes the spend to the work — a delegated child inherits its parent's
+   * task id, so a task total includes what its subagents spent — while `runId`
+   * names the execution, which is what the activity feed and the task-state route
+   * report on. A child's rows therefore carry `taskId` and no `runId`, and a run
+   * total is the run's own share rather than the task's.
+   *
+   * `runId` is also absent for scheduled runs whose execution row is allocated by
+   * the scheduler: the scheduler does pass one (`startRun`'s id is the same id),
+   * so a scheduled run is attributed like any other.
+   *
+   * Optional and stored as NULL when absent, for the same reason `providerType`
+   * is — a caller that cannot say must not lose its spend row.
+   */
+  taskId?: string | null;
+  runId?: string | null;
   /**
    * The provider's type at the time of the request (Part 1.23).
    *
@@ -64,6 +84,10 @@ export function findPrice(
 ): { inputPer1m: number; outputPer1m: number } | null {
   const db = getDb();
   // Provider-specific price wins; a NULL provider_id row is the global default.
+  // Both are unique per model — `(model_id, provider_id)` for the specific case
+  // and a partial index for the global one (018) — so the ORDER BY picks between
+  // rows that mean different things rather than arbitrarily choosing between two
+  // rows that mean the same thing.
   const row = db
     .prepare<{ input_per_1m_usd: number; output_per_1m_usd: number }>(
       `SELECT input_per_1m_usd, output_per_1m_usd
@@ -107,6 +131,17 @@ export function computeCost(
  * The second is privacy. A temporary chat's id must not reach disk at all, or a
  * row in `usage_log` would attest that a private session happened, and when —
  * which is metadata the user asked not to keep.
+ *
+ * A third case turned up with the per-task accounting in v4 §6.2, and it is the
+ * same bug wearing different clothes: **a chat id with no chat row behind it.**
+ * The FK is real, so the insert raised SQLITE_CONSTRAINT, the catch swallowed it,
+ * and the spend vanished — silently, and only for the callers whose chat id is
+ * not guaranteed to exist. The agent path is exactly such a caller (`chatId` is
+ * whatever the client sent; `linkedChatId` in `http/agents.ts` nulls it for the
+ * *task run* row for this very reason). So the linkage is resolved here rather
+ * than trusted: an id with no row is not a link to anything, and is stored as
+ * NULL with the spend kept. `message_id` follows `chat_id`, since a message
+ * without its chat is not a link either.
  */
 export function recordUsage(input: RecordUsageInput): void {
   try {
@@ -120,17 +155,27 @@ export function recordUsage(input: RecordUsageInput): void {
         modelId: input.modelId,
       });
     }
+    // A chat id that names no row would fail the FK and take the whole row with
+    // it. Checked once, here, so every caller is covered — including the ones
+    // that cannot know whether their chat id exists.
+    const unlinked = temporary || (input.chatId != null && findChat(input.chatId) === null);
+    if (!temporary && unlinked) {
+      log.debug('recording usage with no chat behind the id it named', {
+        tool: input.tool,
+        modelId: input.modelId,
+      });
+    }
     getDb()
       .prepare(
         `INSERT INTO usage_log
            (chat_id, message_id, tool, model_id, provider_id, provider_name, provider_type,
             zdr_status, zdr_requirement, tokens_in, tokens_out, cost_usd, status, duration_ms,
-            created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            task_id, run_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
-        temporary ? null : input.chatId ?? null,
-        temporary ? null : input.messageId ?? null,
+        unlinked ? null : input.chatId ?? null,
+        unlinked ? null : input.messageId ?? null,
         input.tool,
         input.modelId,
         input.providerId ?? null,
@@ -148,6 +193,8 @@ export function recordUsage(input: RecordUsageInput): void {
         cost,
         input.status ?? 'ok',
         input.durationMs ?? null,
+        input.taskId ?? null,
+        input.runId ?? null,
         Date.now(),
       );
   } catch {
@@ -303,18 +350,46 @@ export interface PriceInput {
   outputPer1mUsd: number;
 }
 
-/** Upserts a price. The user supplies these; nothing is bundled or guessed. */
+/**
+ * Upserts a price. The user supplies these; nothing is bundled or guessed.
+ *
+ * Two conflict targets, because a NULL provider id needs its own. The row key is
+ * `(model_id, provider_id)`, and SQLite treats NULLs as distinct in a unique
+ * index — so `ON CONFLICT(model_id, provider_id)` never fires for the *global*
+ * price (`provider_id IS NULL`, which is the common case: "all providers"), and
+ * saving one twice inserted a second row instead of updating the first. The old
+ * price then stayed in force, silently, for cost reporting and for the daily
+ * spend cap that `assertWithinSpendCap` computes from it.
+ *
+ * Fixed with a partial unique index on the NULL case (migration 018) plus a
+ * conflict target that names it. `deletePrice` already handled NULL explicitly,
+ * which is how this went unnoticed: the semantics were known in one place and
+ * missed in the other.
+ */
 export function setPrice(input: PriceInput): void {
-  getDb()
-    .prepare(
+  const db = getDb();
+  const now = Date.now();
+
+  if (input.providerId === null || input.providerId === undefined) {
+    db.prepare(
       `INSERT INTO model_prices (model_id, provider_id, input_per_1m_usd, output_per_1m_usd, updated_at)
-       VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(model_id, provider_id) DO UPDATE SET
+       VALUES (?, NULL, ?, ?, ?)
+       ON CONFLICT (model_id) WHERE provider_id IS NULL DO UPDATE SET
          input_per_1m_usd = excluded.input_per_1m_usd,
          output_per_1m_usd = excluded.output_per_1m_usd,
          updated_at = excluded.updated_at`,
-    )
-    .run(input.modelId, input.providerId ?? null, input.inputPer1mUsd, input.outputPer1mUsd, Date.now());
+    ).run(input.modelId, input.inputPer1mUsd, input.outputPer1mUsd, now);
+    return;
+  }
+
+  db.prepare(
+    `INSERT INTO model_prices (model_id, provider_id, input_per_1m_usd, output_per_1m_usd, updated_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(model_id, provider_id) DO UPDATE SET
+       input_per_1m_usd = excluded.input_per_1m_usd,
+       output_per_1m_usd = excluded.output_per_1m_usd,
+       updated_at = excluded.updated_at`,
+  ).run(input.modelId, input.providerId, input.inputPer1mUsd, input.outputPer1mUsd, now);
 }
 
 export function listPrices(): PriceInput[] {
@@ -625,4 +700,137 @@ export function recordedZdrStatuses(): string[] {
     )
     .all()
     .map((row) => row.zdr_status);
+}
+
+// --- per-task and per-run cost (v4 §6.2) -----------------------------------
+
+/**
+ * What one task's spend looks like, summed over every request logged against it.
+ *
+ * `costUsd` is the sum over **priced** rows only and is `null` when no row has a
+ * price — the module's standing rule that unpriced is not free, kept here because
+ * a task total is exactly where a zero would be believed. `priced` is the flag
+ * that says whether that total is the whole bill: it is true only when the task
+ * logged at least one request and every one of them had a price.
+ *
+ * `runs` counts *distinct* run ids, which means delegated children are inside
+ * `tokensIn`/`tokensOut`/`costUsd` but are not one of the counted runs: a child's
+ * rows carry the parent's `task_id` and no `run_id` (see migration 018). A task
+ * total therefore includes work it delegated, and a run total never does.
+ */
+export interface TaskUsage {
+  /** Requests logged against this task. Zero means nothing was recorded. */
+  requests: number;
+  /** Distinct runs that logged a request. Excludes unattributable child rows. */
+  runs: number;
+  tokensIn: number;
+  tokensOut: number;
+  /** Sum over priced rows; `null` when no row for this task has a price. */
+  costUsd: number | null;
+  /** True only when every logged request had a known price. */
+  priced: boolean;
+  unpricedRequests: number;
+}
+
+const EMPTY_TASK_USAGE: TaskUsage = {
+  requests: 0,
+  runs: 0,
+  tokensIn: 0,
+  tokensOut: 0,
+  costUsd: null,
+  priced: false,
+  unpricedRequests: 0,
+};
+
+interface TaskUsageRow {
+  requests: number;
+  runs: number;
+  tokens_in: number | null;
+  tokens_out: number | null;
+  cost: number | null;
+  unpriced: number | null;
+}
+
+/**
+ * Spend recorded against one task id.
+ *
+ * A task with no rows is not a 404 and not an error: most task ids predate this
+ * accounting, and a run that never reached a provider has nothing to report. The
+ * answer is `requests: 0` with `costUsd: null` — "nothing was recorded" — which a
+ * caller must not render as "$0.00 spent". Same distinction the price table makes
+ * between unpriced and free; see `docs/API.md` §12.4.
+ */
+export function taskUsage(taskId: string): TaskUsage {
+  const row = getDb()
+    .prepare<TaskUsageRow>(
+      `SELECT COUNT(*)                              AS requests,
+              COUNT(DISTINCT run_id)                AS runs,
+              SUM(tokens_in)                        AS tokens_in,
+              SUM(tokens_out)                       AS tokens_out,
+              SUM(cost_usd)                         AS cost,
+              SUM(CASE WHEN cost_usd IS NULL THEN 1 ELSE 0 END) AS unpriced
+         FROM usage_log
+        WHERE task_id = ?`,
+    )
+    .get(taskId);
+
+  if (row === undefined || row.requests === 0) return { ...EMPTY_TASK_USAGE };
+  const unpriced = row.unpriced ?? 0;
+  return {
+    requests: row.requests,
+    runs: row.runs,
+    tokensIn: row.tokens_in ?? 0,
+    tokensOut: row.tokens_out ?? 0,
+    costUsd: row.cost,
+    // A task with rows but no priced row has `costUsd: null` and `priced: false`;
+    // a task with every row priced has a number and `priced: true`.
+    priced: unpriced === 0,
+    unpricedRequests: unpriced,
+  };
+}
+
+/**
+ * The same summary for many runs at once, keyed by run id.
+ *
+ * Batched deliberately: the activity feed renders up to `limit` entries per page,
+ * and a per-entry query would put fifty of them behind one HTTP response. A run
+ * with no logged request is **absent from the map** rather than present with
+ * zeroes, so the caller can tell "nothing recorded" from "spent nothing" — which
+ * is the same distinction `taskUsage` draws with `requests: 0`.
+ */
+export function usageByRun(runIds: readonly string[]): Map<string, TaskUsage> {
+  const out = new Map<string, TaskUsage>();
+  const wanted = [...new Set(runIds.filter((id) => id !== ''))];
+  if (wanted.length === 0) return out;
+
+  const placeholders = wanted.map(() => '?').join(', ');
+  const rows = getDb()
+    .prepare<TaskUsageRow & { run_id: string }>(
+      `SELECT run_id,
+              COUNT(*)                              AS requests,
+              COUNT(DISTINCT run_id)                AS runs,
+              SUM(tokens_in)                        AS tokens_in,
+              SUM(tokens_out)                       AS tokens_out,
+              SUM(cost_usd)                         AS cost,
+              SUM(CASE WHEN cost_usd IS NULL THEN 1 ELSE 0 END) AS unpriced
+         FROM usage_log
+        WHERE run_id IN (${placeholders})
+        GROUP BY run_id`,
+    )
+    .all(...wanted);
+
+  for (const row of rows) {
+    if (row.requests === 0) continue;
+    const unpriced = row.unpriced ?? 0;
+    out.set(row.run_id, {
+      requests: row.requests,
+      runs: row.runs,
+      tokensIn: row.tokens_in ?? 0,
+      tokensOut: row.tokens_out ?? 0,
+      costUsd: row.cost,
+      priced: unpriced === 0,
+      unpricedRequests: unpriced,
+    });
+  }
+  return out;
 }

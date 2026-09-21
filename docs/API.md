@@ -811,6 +811,15 @@ Upsert body: `modelId` (req), `providerId` (nullable — `null` is a catch-all
 across providers), `inputPer1mUsd` and `outputPer1mUsd` (req numbers). DELETE
 reads `modelId` / `providerId` from either the body or the query string.
 
+**A catch-all price is one row per model, and saving it twice updates it.** That
+was not true before 1.29: the upsert's conflict target was
+`(model_id, provider_id)`, and SQLite treats NULLs as distinct in a unique index,
+so a second save of the *global* price inserted another row instead of replacing
+the first — and the lookup kept returning the older one. The user's edit appeared
+to do nothing, and the stale figure stayed in force for cost reporting and for the
+daily spend cap. A partial unique index (migration `018`) now enforces the
+invariant and the upsert names it.
+
 **Unpriced is not free.** A usage row with no matching price keeps `cost_usd`
 NULL rather than 0, so it never silently reads as free. Cost sums skip those
 rows, and `unpricedRequests` per bucket plus the top-level `hasUnpriced` tell the
@@ -1124,9 +1133,40 @@ TaskRun {
 
 | Method | Path | Response |
 | --- | --- | --- |
-| GET | `/api/code/tasks/:taskId/state` | `{ run: TaskRun }` |
-| GET | `/api/cowork/tasks/:taskId/state` | `{ run: TaskRun }` |
-| GET | `/api/design/tasks/:taskId/state` | `{ run: TaskRun }` |
+| GET | `/api/code/tasks/:taskId/state` | `{ run: TaskRun, usage: TaskUsage }` |
+| GET | `/api/cowork/tasks/:taskId/state` | `{ run: TaskRun, usage: TaskUsage }` |
+| GET | `/api/design/tasks/:taskId/state` | `{ run: TaskRun, usage: TaskUsage }` |
+
+#### `usage` — what the task has spent *(new in 1.29)*
+
+```ts
+TaskUsage {
+  requests: number;      // provider requests logged against this task id
+  runs: number;          // distinct runs that logged under their own id
+  tokensIn: number; tokensOut: number;
+  costUsd: number|null;  // sum over priced rows; null if no row has a price
+  priced: boolean;       // true only when every logged request had a price
+  unpricedRequests: number;
+}
+```
+
+Recorded per provider request by the agent context, so **every** task run is
+attributed whatever started it — a route, a continuation, or the scheduler — and
+a delegated child's spend lands in its parent's task total (a child carries the
+task id and no run id of its own, which is why `runs` is a separate count).
+
+The field is honest about what it cannot see, in the same way §9 and §20.5 are:
+
+* `requests: 0` means **nothing was recorded** — a task from before this
+  accounting, or one that never reached a provider. It is not a claim that the
+  task was free, and a client must not render it as `$0.00`.
+* `costUsd` is `null` unless at least one logged request had a price, and `priced`
+  says whether that figure is the whole bill. An unpriced request is recorded with
+  its real tokens and a `null` cost, never a zero — the rule §9 states for the
+  price table, applied per task.
+
+`usage` is always present; it is a scalar summary, so it costs nothing to include
+and its absence would be indistinguishable from a client's own bug.
 
 Returns the **most recent** run for the task id — a retry reuses the same id,
 and the latest attempt is what a reconnecting client needs. A task that has
@@ -1466,8 +1506,20 @@ ActivityEntry {
     | { kind: 'chat'; chatId: string }
     | { kind: 'artifact'; key: string; version: number }
     | null;
+  spend: {                          // null when nothing was recorded
+    requests: number;
+    tokensIn: number; tokensOut: number;
+    costUsd: number | null;         // null when no logged request had a price
+    priced: boolean;
+  } | null;
 }
 ```
+
+`spend` is scoped to the **run** — an entry describes one execution — so it does
+not include work that run delegated to subagents; the task total on
+`/api/{tool}/tasks/:taskId/state` (§12.4) is the figure that does. `null` means
+nothing is known and must not be rendered as `$0.00`; within a present value,
+`costUsd: null` with `priced: false` means the figure is not the whole bill.
 
 | Method | Path | Response |
 | --- | --- | --- |
@@ -1931,6 +1983,14 @@ iterations".
 `null` when no cap is configured, and `unpricedRequestsToday` counts requests
 whose model has no price row. Those are real spend the cap cannot measure, so the
 number is surfaced rather than folded into a total that would look complete.
+
+**What the cap counts, since 1.29: every provider request a task ran.** Agent
+runs used to reach a provider without writing a `usage_log` row — only chat did —
+so `spentUsd` omitted Code, Cowork and Design spend, and the cap judged autonomous
+work against a total that was short by exactly the tasks it exists to bound. The
+recording now happens in the agent context (§12.4), which every task run passes
+through. A provider that quoted no tokens is still left out rather than entered as
+zero, so `unpricedRequestsToday` and this total keep meaning what they say.
 
 **The cap gates autonomous work only.** A scheduled task or a subagent spawn
 refused by it returns **429 `spending_cap_reached`** with `label`, `capUsd`,
