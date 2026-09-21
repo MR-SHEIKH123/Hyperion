@@ -9,6 +9,7 @@ import {
   Sparkles,
   Users,
 } from 'lucide-react';
+import { AttentionNavLink } from '../attention/AttentionNavLink';
 import { ApertureMark } from '../design-system/components/ApertureMark/ApertureMark';
 import { HealthIndicator } from './HealthIndicator';
 import styles from './AppShell.module.css';
@@ -38,6 +39,9 @@ export function AppShell() {
           <span className={styles.brandName}>Hyperion</span>
         </div>
         <nav className={styles.nav}>
+          {/* Not a tool: the cross-tool queue, and the only rail entry whose count
+              is about work waiting rather than a destination. */}
+          <AttentionNavLink />
           <ul className={styles.navList}>
             {NAV_ITEMS.map(({ to, label, icon: Icon }) => (
               <li key={to}>

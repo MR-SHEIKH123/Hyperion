@@ -83,16 +83,16 @@
     {
       "id": "attention.approvals",
       "method": "GET",
-      "expectedPath": "/api/attention/approvals",
-      "status": "partial",
-      "reason": "Approvals can only be listed for a known tool and task id."
+      "expectedPath": "/api/attention",
+      "status": "implemented",
+      "reason": "Served by the queue rather than a separate /api/attention/approvals path: approvals arrive as items with kind approval_required, carrying the tool, task and the call that answers them."
     },
     {
       "id": "attention.interrupted",
       "method": "GET",
-      "expectedPath": "/api/attention/interrupted",
-      "status": "missing",
-      "reason": "The implemented TaskRun state union has no interrupted state and there is no discovery route."
+      "expectedPath": "/api/attention",
+      "status": "partial",
+      "reason": "The queue reports interrupted runs as items (a task run reconciled to error/internal_error, and a paused chat run carrying the same code), so they are discoverable. What is still absent is an interrupted state in the TaskRun union and any route that lists them independently of the queue."
     },
     {
       "id": "providers.registry",
@@ -244,8 +244,7 @@
       "id": "attention.queue",
       "method": "GET",
       "expectedPath": "/api/attention",
-      "status": "missing",
-      "reason": "Backend queue landed; the Attention Center UI (Prompt 1.39 A1) has not been built."
+      "status": "implemented"
     }
   ]
 }

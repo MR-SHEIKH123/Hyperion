@@ -9,9 +9,9 @@ behavior in the browser.
 - ~~No cross-tool pending-approval endpoint.~~ **Closed 2026-09-21 by `GET /api/attention`**,
   the queue behind Prompt 1.39 A1: approvals across every task, paused and blocked runs,
   plans waiting for review, interrupted runs, failed scheduled runs, backup failures, the
-  spend cap and MCP disconnects, each with the call that resolves it. The UI is the part
-  that remains (the `attention.queue` contract above is `missing`). Two things it does not
-  close: the `TaskRun` union still has no `interrupted` state — an interrupted task is a
+  spend cap and MCP disconnects, each with the call that resolves it. The UI landed with it
+  on 2026-09-21 (`src/attention/`, the `/attention` surface and its rail entry), so
+  `attention.queue` is `implemented` here. Two things it does not close: the `TaskRun` union still has no `interrupted` state — an interrupted task is a
   reconciled `error: internal_error`, which is what the queue reports rather than a state
   the machine gained — and there is still no per-project active-task listing.
 - No complete per-project active-task listing for switch warnings.

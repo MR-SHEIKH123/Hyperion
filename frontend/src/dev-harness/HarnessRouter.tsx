@@ -5,6 +5,8 @@ import { StatusBadge } from '../design-system/components/StatusBadge/StatusBadge
 import { TaskStateBanner } from '../components/TaskStateBanner/TaskStateBanner';
 import { ApertureMark } from '../design-system/components/ApertureMark/ApertureMark';
 import styles from './HarnessRouter.module.css';
+import { AttentionList } from '../attention/AttentionList';
+import { attentionQueueFixture } from './fixtures/attentionQueue';
 import { operationalFixtures } from './fixtures/operationalStates';
 import { taskStateFixtures } from './fixtures/taskStates';
 
@@ -49,6 +51,39 @@ function DangerousCommandDialog() {
         </div>
       </Dialog>
     </article>
+  );
+}
+
+/**
+ * The whole attention queue, rendered by the production list.
+ *
+ * `AttentionList` takes the queue as a prop and never fetches, which is the reason
+ * the harness can show all ten kinds here without a server: the container that
+ * does fetch (`AttentionCenter`) is covered by its own tests against a fetch stub.
+ * The decision buttons are live so the harness also covers the one interaction a
+ * fixture can honestly show — the queue answering a prompt — with the decision
+ * recorded locally and nothing sent anywhere.
+ */
+function AttentionFixture() {
+  const [notice, setNotice] = useState<string | null>(null);
+  return (
+    <section aria-labelledby="attention-fixture-heading" className={styles.section}>
+      <h2 className={styles.sectionHeading} id="attention-fixture-heading">
+        Attention queue fixture
+      </h2>
+      <p className={styles.note}>
+        Every kind the queue can report, in one queue, rendered by the production
+        list. Decisions are recorded locally and sent nowhere.
+      </p>
+      <AttentionList
+        queue={attentionQueueFixture}
+        now={attentionQueueFixture.generatedAt}
+        onDecide={(item, decision) => {
+          setNotice(`Fixture only: "${item.title}" would be answered "${decision}".`);
+        }}
+        banner={notice === null ? undefined : <p className={styles.note}>{notice}</p>}
+      />
+    </section>
   );
 }
 
@@ -98,6 +133,8 @@ export function Component() {
           ))}
         </div>
       </section>
+
+      <AttentionFixture />
 
       <section aria-labelledby="dialog-fixtures-heading" className={styles.section}>
         <h2 className={styles.sectionHeading} id="dialog-fixtures-heading">Dialog fixtures</h2>

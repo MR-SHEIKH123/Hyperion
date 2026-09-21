@@ -31,3 +31,16 @@
   font-size: var(--text-sm);
   line-height: 1.5;
 }
+
+.task {
+  max-width: 52ch;
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--status-attention);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+.task strong { color: var(--text-primary); font-family: var(--font-code); font-size: var(--text-xs); }

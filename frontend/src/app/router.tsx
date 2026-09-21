@@ -8,6 +8,7 @@ import { AppShell } from '../shell/AppShell';
  * first fully-wired tool; the rest resolve to the honest placeholder until
  * their increments land. The dev harness keeps its own top-level routes.
  */
+const AttentionCenter = lazy(() => import('../attention/AttentionCenter'));
 const ChatTool = lazy(() => import('../tools/chat/ChatTool'));
 const ToolPlaceholder = lazy(() => import('../shell/ToolPlaceholder'));
 
@@ -31,6 +32,7 @@ const developmentRoutes: RouteObject[] = import.meta.env.DEV
 
 const shellChildren: RouteObject[] = [
   { index: true, element: <Navigate to="/chat" replace /> },
+  { path: 'attention', ...lazyRoute(<AttentionCenter />) },
   { path: 'chat/*', ...lazyRoute(<ChatTool />) },
   ...PLACEHOLDER_TOOLS.map((tool) => ({
     path: `${tool}/*`,
