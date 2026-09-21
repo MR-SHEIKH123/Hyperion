@@ -3676,6 +3676,71 @@ pins the spellings; `test/codepermissionpaths.test.ts` pins the adapter wiring, 
 a relative pattern cannot match an absolute argument without it — and an engine test
 alone would stay green if that wiring were dropped.
 
+### A path is not used through a symlink
+
+`fsScope` answers by canonicalising: `resolveInScope` follows symlinks and returns the
+real location, tolerating a missing tail so that a file which does not exist yet can
+still be checked. That is the right answer to its own question, and it is a snapshot.
+An agent that can create symlinks inside the directory it is allowed to write to can
+change the answer afterwards — and because the answer was "inside the scope", the
+change is invisible to every check that already ran.
+
+Two checks now run at the point of use, from `src/security/toctou.ts`, on both seams an
+agent reaches: the file tools (`files.ts::locate`, so `write`, `read` and `restore` all
+get it) and the working directory handed to a command (`containAgentCwd`, which
+`executeCommand` uses).
+
+* **No traversal through a symlinked directory** — `assertNoSymlinkedTraversal` walks
+  the components of the path *as spelled*, `lstat`ing each, and refuses a symlink even
+  when it currently resolves back inside the boundary. It has to run **before** the
+  resolver, because canonicalisation is what erases the evidence: once a resolver has
+  answered, an inward link and a real directory are the same path, and the check would
+  be dead code that reads like a defence.
+* **Canonical boundary revalidation** — `assertStillInside` re-resolves the resolved
+  path *now* (`pathContains`, which follows symlinks on both sides and tolerates a
+  missing tail) against the **task's** boundary rather than the scope. Two parallel Code
+  tasks share the `projects` (or `worktrees`) scope and are not each other's workspace;
+  the scope-wide resolver cannot express that, and this check is what keeps the pair
+  independent rather than merely both-contained.
+
+Both refusals are **403 `scope_violation`** with `details.reason` — `intermediate_symlink`
+(naming the offending `component`) or `resolves_outside` — because the user's next move
+differs: "name the directory it points at instead" versus "that file is outside what
+this task owns". The traversal refusal says the first half out loud in its message.
+
+**Three policy decisions, all deliberate:**
+
+1. **A symlink *at the target* is allowed.** The rule is about the components on the way
+   to the file, and a symlinked *file* is an ordinary thing to write. If it points
+   outside the boundary, check 2 refuses it anyway.
+2. **An inward link is refused too.** That costs the project which intentionally
+   symlinks `docs -> shared/docs`: a model that spells a path through the link is
+   refused, and its retry is mechanical — the canonical spelling of the same file
+   succeeds, and the refusal names the directory to use. Refusing the class is the
+   point: whether a link is *about to be* re-pointed is not a decidable question at use
+   time, and a check that allowed inward links would have to answer it.
+3. **A refusal stops the task** instead of being handed back to the model as tool
+   output. That matches what the file tools already do for `not_found` and for a stale
+   `expectedSha256` (`writeCodeFile` throws, `runTool` rethrows, `runCodeTask` reports
+   `ok: false` with the coded error), and a boundary that was just refused is the one
+   error that must not read as a retry prompt.
+
+**What this does not fix**, stated so it is not mistaken for a closed hole: the window
+between the check and the syscall is irreducible from the pre-check side — they are two
+operations. What is closed is the *unbounded* window, because a path is no longer
+trusted from the moment the task context was built. An escape now needs a race won in
+microseconds rather than a symlink planted minutes earlier, and the traversal refusal
+removes the pre-planted hook that race would need.
+
+`test/toctou.test.ts` (11 cases) drives real runs on a real filesystem — a scripted Code
+run replaces a real directory with a symlink between turns and then writes through it,
+which is what succeeded before this change — plus the primitives' edge cases: a missing
+tail, `..`, a symlinked file, an outward *file* link, an inward *directory* link, and a
+sibling whose name shares a prefix with the boundary. The outward-link case is a
+regression guard rather than a fix: `locate`'s lexical prefix comparison already refused
+it, as `bad_request`, and the claim pinned there is that it is now also refused as the
+boundary violation it is.
+
 ### A write that looks like a credential is downgraded to `ask`
 
 Before returning `allow` for `write` or `restore`, the target path and the content

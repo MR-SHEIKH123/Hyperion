@@ -640,7 +640,7 @@ not lost; the seam column is this repo as it actually is.
 | --- | --- | --- | --- |
 | `P1-S1` | **Approval-bound execution ticket** — bind continuation approvals to a tamper-proof cryptographic digest over tool name, permission key, exact command, canonical worktree, task/run IDs, parent ID, config revision and nonce. | `src/db/approvals.ts` stores `toolName`/`arguments`/`permissionKey`/`runId`/`taskId` (and `matchedPattern`/`matchedLayer`) per `PendingApproval`; `src/http/continuation.ts` replays `arguments` verbatim (`:465`). A park is recorded, but nothing binds the resumed call to what was approved. | The code. Also a *config revision* concept, which does not exist in this tree — the digest's exact field encoding is the part that must come from the spec, not from invention. |
 | `P1-S3` | **Process ownership registry** — in-flight registry tracking opaque process IDs, OS PID, task/run IDs, worktree, exact command, output buffers, and timing-safe ownership tokens. | `src/services/terminal/executor.ts` spawns with `shellInvocation`, keeps buffers, and kills the tree on timeout; `src/orchestrator/agents.ts::executeCommand` is the single choke point that could establish ownership. No registry exists. | The code, plus who consumes the registry (routes? approval resume?) and the token semantics. |
-| `P1-S4` | **Filesystem TOCTOU defenses** — pre-spawn and pre-write canonical boundary revalidation, rejection of intermediate directory symlinks (`lstat`), realpath validation against canonical boundaries at point of use. | `src/security/fsScope.ts` already realpaths at *resolve* time (`resolveInScope` → `realpathAllowingMissing`, sibling-prefix trap avoided). Nothing revalidates between resolution and use, and a symlinked ancestor that resolves inside the root is not rejected. | The code, and the exact API/behaviour the spec wants at the spawn and write sites. |
+| `P1-S4` | **Filesystem TOCTOU defenses** — pre-spawn and pre-write canonical boundary revalidation, rejection of intermediate directory symlinks (`lstat`), realpath validation against canonical boundaries at point of use. | **Landed 2026-09-21** — `src/security/toctou.ts` is new (the file name the 1.39 spec itself names, so a later reconciliation of that document lands on the same path), wired at both seams: the file tools through `files.ts::locate` (write/read/restore) and the command cwd through `containAgentCwd` (spawn). `test/toctou.test.ts`, 11 cases, 3 of them red before the change. | Nothing, for the three mechanisms as the ledger lists them. See the section below for the three policy decisions this needed and the one limit it cannot remove. |
 | `P1-S17` | **Structurally authenticated takeover bypass** — interactive terminal user takeover authenticated by server-minted session tokens tied to live user actions, never a client `{ userTyped: true }` flag. | **None.** There is no interactive terminal takeover surface in this tree at all (`takeover`, `userTyped`, pty/stdin paths: nothing), so there is currently nothing to authenticate. | The feature (or a decision that it is out of scope here). |
 
 **Verified absent, not assumed.** `src/security/executionTicket.ts`,
@@ -652,11 +652,70 @@ string `1.39` appears in no file on any branch. The ledger says these were autho
 a different workspace and never committed — uncommitted work in another sandbox does
 not travel with the repository, so it is not recoverable from here.
 
-**None of the four is implemented in this tree**, and none is a regression of
-anything that landed here: the register's audit series (`S13`–`S22`) is a different
-list of findings, all of them fixed. `P1-S1`, `P1-S3`, `P1-S4` and `P1-S17` need
-either their original files or the Prompt-1.39 requirement text before they can be
-built against the spec rather than against this table.
+**None of the four was implemented in this tree at the time of that check**, and
+none is a regression of anything that landed here: the register's audit series
+(`S13`–`S22`) is a different list of findings, all of them fixed.
+
+**Amended 2026-09-21: `P1-S4` is landed on this branch, and the absence paragraph
+above now describes history rather than the tree.** `src/security/toctou.ts` was
+created *by* that work, so the file that was verified absent is the file that now
+exists — the check is left standing because it answers the right question about the
+1.39 workspace (was anything of that spec committed here?) and the answer was no;
+what changed afterwards is that one item was built from its own mechanism list. The
+other three are still absent and still blocked: `P1-S1` needs the digest's field
+encoding and the config-revision concept, `P1-S3` needs the registry's consumer and
+token semantics, `P1-S17` needs a decision that the feature is in scope at all. The
+test file is `test/toctou.test.ts` rather than the spec's `test/security139.test.ts`
+on purpose: that name would claim coverage of three items this branch does not
+touch, and this repo's suite is named per subject (`egressclass`, `outbound`,
+`taskcost`, ...).
+
+#### `P1-S4`, built from the mechanism list — what the code does and what it chose
+
+The ledger's three mechanisms map onto two functions in `src/security/toctou.ts`,
+because one of them has to run at a different time from the other two:
+
+- `assertNoSymlinkedTraversal(boundary, candidate)` — walks the components of the
+  path **as spelled**, `lstat`ing each, and refuses a symlink even when it currently
+  resolves back inside the boundary. It runs on the spelling, before the caller's
+  resolver, and that order is the whole design: `resolveInScope` canonicalises, so a
+  walk placed after it would inspect the real path, find no link, and be dead code
+  that reads like a defence. This is the mechanism that closes the class rather than
+  the instance — a link that points inward today is the hook a later swap needs, and
+  "the path was fine when it was resolved" is the exact shape of the failure.
+- `assertStillInside(boundary, resolved)` — the realpath re-check at the point of
+  use, against the **task's** boundary rather than the scope: two parallel Code
+  tasks share `projects`/`worktrees` and are not each other's workspace, which a
+  scope-wide resolver cannot express. It replaces `locate`'s lexical prefix
+  comparison as the *named* refusal, while that comparison stays (it is what catches
+  an escape spelled with `..` before resolution).
+
+Both seams carry both checks: `files.ts::locate` for write/read/restore, and
+`containAgentCwd` for the cwd `executeCommand` spawns in. Both refusals are
+`scope_violation` with `details.reason` of `intermediate_symlink` (naming the
+`component`) or `resolves_outside`, because the two need different user responses.
+
+**Three policy decisions this needed, none of them in the ledger's list:**
+
+1. **A symlink at the target itself is allowed** (only intermediate directory links
+   are refused); if it points outside, the containment check refuses it anyway.
+2. **An inward link is refused too**, which costs a project that intentionally
+   symlinks a directory: the model's canonical respelling of the same file succeeds
+   and the refusal message names the directory to use. Refusing the class is the
+   point — "is this link about to be re-pointed?" is not decidable at use time.
+3. **A refusal stops the task** rather than being fed back to the model as tool
+   output, matching what the file tools already do for `not_found` and a stale
+   `expectedSha256` (`runTool` rethrows; `runCodeTask` reports `ok: false` with the
+   coded error, which `subagents.test.ts` already asserts elsewhere).
+
+**The limit, written down so it is not overclaimed:** the window between the check
+and the syscall cannot be removed by a pre-check — they are two operations. What is
+closed is the *unbounded* window, where a path resolved once at task start was
+trusted for the task's whole lifetime. An escape now needs a race won in
+microseconds instead of a symlink planted minutes earlier, and the traversal refusal
+removes the pre-planted hook that race would use. If the real 1.39 text asks for
+more (a flat "no symlinks anywhere along the path", for example), the target-link
+clause is the single place to change.
 
 ## Prompt-1 series — the owner-supplied text, digested (2026-09-21)
 
@@ -794,21 +853,22 @@ Where the scope says done, this is what was checked:
 | Prompt 1.39 (frontend addendum) | **In progress, ledger above.** A2 landed, A4/A5 largely, A3 frame landed, B landed for Chat; A1 (Attention Center) is the next piece and A6 has no target surface yet. |
 | Frontend (Prompt 2) | Out of this scope by design. Shell + Chat tool landed; Code, Cowork, Design, Playground, Plugins, Skills, Settings remain. Frontend-side items that *wait on backend contracts* are tracked in `frontend/contracts/gaps.md`, and one of them (no cross-tool pending-approval endpoint, no per-project active-task listing) is the earliest backend work the frontend will ask for. |
 
-**So: the backend core is complete, including `§6.2` as of 2026-09-21.** What is
-*not* complete is now enumerated rather than assumed: the series ledger above
-lists seven unlanded addenda and six partial ones, and the four undone security
-items (`P1-S1`, `P1-S3`, `P1-S4`, `P1-S17`) are blocked on the 1.39 document that
-specifies them. `1.25` is closed. The one item buildable from the material in hand
-is **`P1-S4`** — the ledger's three mechanisms (pre-spawn and pre-write canonical
-revalidation, `lstat` rejection of intermediate directory symlinks, realpath
-re-check at point of use) are specific enough to implement and test against
-`fsScope` without inventing policy. The audit
+**So: the backend core is complete, including `§6.2` as of 2026-09-21, and one of
+the four security items is now built.** What is *not* complete is enumerated rather
+than assumed: the series ledger above lists seven unlanded addenda and six partial
+ones, `1.25` is closed, and of the four undone security items (`P1-S1`, `P1-S3`,
+`P1-S4`, `P1-S17`) **`P1-S4` is landed** — it was the one item specific enough to
+build against its own mechanism list without inventing policy, and the section above
+records the three choices that had to be made anyway plus the limit it cannot
+remove. The other three stay blocked on the 1.39 document: each of them needs a
+field encoding, a consumer, or a scope decision that no amount of reading the seam
+can supply. The audit
 queue is **empty**: HTTP input validation was S17, `mcp_config.json` S18,
 the push payload S19, the memory store S20, and the last item — per-provider
 egress in `colibri.ts` — became S21 (with S22 falling out of the same lookup).
-Suite baseline for every future claim in this file: **914 tests / 166 suites
-green, `tsc --noEmit` clean** (backend), **84 tests and five gates green**
-(frontend).
+Suite baseline for every future claim in this file: **925 tests / 169 suites
+green, `tsc --noEmit` clean** (backend — `P1-S4` added 11 tests and 3 suites),
+**96 tests and five gates green** (frontend).
 
 ## Resolved verifications
 
@@ -941,6 +1001,18 @@ the record of what was said); this section is the correction layer.
   purpose, documented as possibly needing a one-time `wigolo init`. If Cowork's
   research loop finds it off with nothing to fall through to, does it need an
   explicit "not enabled, here is how" state? User decision, still open.
+- **`P1-S4`'s symlink policy — three choices made without the requirement text
+  (2026-09-21).** The ledger's mechanism list says "rejection of intermediate
+  directory symlinks", so a policy was unavoidable and is recorded in full in the
+  `P1-S4` section and in CONTRACTS. Two of the three are narrow (a link *at* the
+  target is allowed; a refusal stops the task), and one has a real cost worth a
+  decision rather than a footnote: an *inward* directory link is refused even though
+  it resolves inside the boundary, so a project that intentionally symlinks a
+  directory gets a refusal on the linked spelling and a successful retry on the
+  canonical one. If the real 1.39 text is stricter ("no symlinks anywhere"), the
+  target-link clause is the only thing to loosen; if it is looser (inward links
+  followed), that is the `assertNoSymlinkedTraversal` call sites to drop. Both edits
+  are one line plus its test.
 
 ---
 

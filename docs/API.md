@@ -1048,6 +1048,12 @@ a branch named `hyperion-task-<taskId>`. Two consequences worth knowing:
   to `projects/` at large. A Code task cannot read or write another task's
   checkout, or the original project directory, even though all of them are inside
   the allowed roots. Escapes are `scope_violation`, as everywhere else.
+  Containment is re-checked at the point of use rather than trusted from resolve
+  time, and a path is never used *through* a symlinked directory: that refusal is
+  also **403** `scope_violation`, with `details.reason` of
+  `intermediate_symlink` (plus the offending `component`) or `resolves_outside`.
+  CONTRACTS, "A path is not used through a symlink", has the two checks and the
+  three deliberate policy choices behind them.
 - **Commits survive; scratch space does not.** When a task ends its worktree is
   removed, but only when removing it provably loses nothing. Uncommitted changes
   leave the directory in place, and a branch that is ahead of where the task

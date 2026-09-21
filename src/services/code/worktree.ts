@@ -40,7 +40,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { env } from '../../config/env.ts';
-import { resolveInScope, resolveInSubtree } from '../../security/fsScope.ts';
+import { getRoot, resolveInScope, resolveInSubtree } from '../../security/fsScope.ts';
+import { assertNoSymlinkedTraversal, assertStillInside } from '../../security/toctou.ts';
 import { AppError } from '../../util/errors.ts';
 import { createLogger } from '../../util/logger.ts';
 
@@ -437,24 +438,34 @@ export async function reapHeldWorktrees(options: { ttlMs: number; now?: number }
  * was handed a worktree path can still use it.
  */
 export function containAgentCwd(cwd: string, taskId?: string): string {
+  // The traversal check runs on the spelling, before anything canonicalises it,
+  // and deliberately outside the fallback attempts below: "this path goes through
+  // a symlink" is a refusal, not a reason to look for a wider scope that would
+  // accept it. See `security/toctou.ts` for why the two checks are separate.
   if (taskId !== undefined) {
     const worktree = worktrees.get(safeTaskId(taskId));
     if (worktree) {
       const scope = worktree.mode === 'worktree' ? 'worktrees' : 'projects';
-      return resolveInSubtree(scope, worktree.dir, cwd);
+      assertNoSymlinkedTraversal(worktree.dir, cwd);
+      return assertStillInside(worktree.dir, resolveInSubtree(scope, worktree.dir, cwd));
     }
   }
 
   for (const worktree of worktrees.values()) {
     if (worktree.mode !== 'worktree') continue;
+    assertNoSymlinkedTraversal(worktree.dir, cwd);
+    let resolvedIn: string;
     try {
-      return resolveInSubtree('worktrees', worktree.dir, cwd);
+      resolvedIn = resolveInSubtree('worktrees', worktree.dir, cwd);
     } catch {
       // Not this task's directory. Try the next, then fall through to projects.
+      continue;
     }
+    return assertStillInside(worktree.dir, resolvedIn);
   }
 
-  return resolveInScope('projects', cwd);
+  assertNoSymlinkedTraversal(getRoot('projects'), cwd);
+  return assertStillInside(getRoot('projects'), resolveInScope('projects', cwd));
 }
 
 // --- inspection -------------------------------------------------------------
