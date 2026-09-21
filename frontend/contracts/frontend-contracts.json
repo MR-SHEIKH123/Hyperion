@@ -117,7 +117,7 @@
       "method": "GET",
       "expectedPath": "/api/providers",
       "status": "partial",
-      "reason": "Registry exists but does not expose explicit failover cooldown reason and duration."
+      "reason": "Enforced, not reported: 1.36 classifies every provider failure and applies a cooldown per class (401/403 60m, 402 30m, 429 5m or Retry-After, 404 2m, 5xx 1m, network 30s), and the router skips a cooled provider — but no read route says which provider is cooling or until when. The provider list is where that belongs, and nothing renders it yet."
     },
     {
       "id": "providers.egress-proxy",
@@ -205,7 +205,9 @@
       "id": "artifacts.lineage",
       "method": "GET",
       "expectedPath": "/api/artifacts/:id/versions",
-      "status": "missing"
+      "status": "route-mismatch",
+      "specifiedPath": "/api/artifacts/:id/versions",
+      "reason": "The spec asked for lineage by artifact id; the implementation serves it by artifact key (`GET /api/artifacts/versions?key=`, 1.39 A6), which is what the provenance panel calls. An id-based route would be a second way to ask the same question."
     },
     {
       "id": "settings.spending-cap",

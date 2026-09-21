@@ -1023,6 +1023,24 @@ it found is indistinguishable from a pass that only looked where it expected to.
   comment that a run writes "running, then complete or error" understates the
   vocabulary (`stopped`, `blocked`, `ready_for_review` and `interrupted` all exist);
   the comment is the only thing wrong there.
+- **Two declared frontend gaps were re-read against the code and one was stale.**
+  `artifacts.lineage` claimed lineage was *missing*; it is implemented — A6 serves
+  `GET /api/artifacts/versions?key=`, the provenance panel calls it, and the tests
+  pin both — so the row is now `route-mismatch` with the real path, which is the
+  truth the file is supposed to hold. `providers.cooldown` was re-verified and kept
+  as `partial`, with its reason sharpened to what is actually true: cooldown is
+  **enforced** (1.36 classifies every provider failure, applies 401/403 60m, 402
+  30m, 429 5m or the provider's own `Retry-After` whichever is longer and clamped,
+  404 2m, 5xx 1m, network 30s, and the router skips a cooling provider) but never
+  **reported** — no read route says which provider is cooling or until when. That
+  is a surface waiting to exist, not a mechanism missing.
+- **The cooldown classifier was read line by line rather than trusted, and it is
+  deliberate where it looks loose.** An unrecognised HTTP status returns `null` —
+  no class, no cooldown, no recorded failure — which is the honest reading: a
+  status this build cannot interpret says nothing about the provider. The
+  exclusions are listed in the module (other 4xx, `aborted`, and errors with no
+  provider meaning at all), and the clamp on `Retry-After` is what keeps a
+  gateway's `86400` from decommissioning a provider on the strength of one header.
 - **22 value exports have no reference anywhere in the tree** (listed here rather
   than deleted wholesale, since several are affordances a planned item wants:
   `failRun` for a discard path, `runTaskSchedulerNow`/`runBackupSchedulerNow` and
