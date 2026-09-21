@@ -53,8 +53,15 @@ behavior in the browser.
   Code mounts the panel. Of the rest of 1.31, the unattended-run notification and the
   interactive-wait timeout both landed on 2026-09-21 (a prompt now expires after
   `approval_wait_ttl_hours`, default 72, and the Attention Center says so instead of
-  announcing an allowance that was never applied); the **Design environment** remains, and
-  it is the last open half of the item.
+  announcing an allowance that was never applied); the **Design environment** remains, and it
+  is the last open half of the item — with its requirement text absent from every document in
+  this repository (the phrase appears once, in the register's digest of the owner-supplied
+  increments, and nowhere in `docs/SPEC.md`'s Design deep-dive or the Design agent's prose).
+  The register's Open decisions records both possible readings and why neither was built: a
+  filesystem environment for Design is refused by the ratified `S-2` (its artifacts are
+  `artifact_versions` rows and its toolset excludes `write`/`bash`/`command`), and the Design
+  *surface* is Prompt-2 frontend work this scope excludes — the placeholder above is that
+  scope's honest state, not this entry's.
 
   One thing this list should carry while it is here: **the approval deadline has no
   settings control.** The value is a setting (three days by default) and the read reports

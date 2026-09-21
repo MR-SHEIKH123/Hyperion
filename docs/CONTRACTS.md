@@ -4733,12 +4733,29 @@ Three consequences worth keeping:
   the pre-`020` schema refuses `interrupted`, and after the migration an unknown
   word is still refused.
 
-What is *not* here, and must not be read as covered by "1.31 landed": the
-recovery UX (view the partial work, discard it), the unattended-run notification,
-the interactive-wait timeout and the Design environment. Item 1.31 is a list, and
-its state half plus the `orphaned_worktree` check are built — the worktree half is
-described further down ("An orphaned worktree is reported, never reclaimed"), and
-this paragraph said otherwise until it was checked against the tree on 2026-09-21.
+Item 1.31 is a list, and by 2026-09-21 every clause but one is built: the state
+half, the `orphaned_worktree` check ("An orphaned worktree is reported, never
+reclaimed"), the recovery read and its screen for Code ("An interrupted run says
+what it left…"), the unattended-run notification, the park reason and the
+interactive-wait timeout ("An unanswered prompt expires, and the task does not").
+This paragraph named the first four as missing until it was re-checked against the
+tree, which is the failure mode it exists to prevent.
+
+**The one clause left is "the Design environment", and it is recorded as blocked
+rather than guessed at.** The phrase appears in exactly one place in this
+repository — the register's digested table of the owner-supplied increments — and
+nowhere else: not in `docs/SPEC.md`'s Design deep-dive, not in the Design agent's
+module prose, not in any plan. Two readings are possible and neither is buildable
+without the source text. Read as *Design needs a run environment of its own* (a
+filesystem surface like Code's worktree), it is refused by `S-2`, which the owner
+ratified: Design's artifacts are `artifact_versions` rows and its toolset
+contractually excludes `write`/`bash`/`command`, so it has no shared filesystem to
+protect and no environment to provision. Read as *the Design tool's surface in the
+app*, it is Prompt-2 frontend work that this scope excludes by design, and the
+honest state of it is the placeholder plus the entry in
+`frontend/contracts/gaps.md`. Inventing a third reading — say, a container or a
+preview server — would be building a feature the requirement never named, which is
+the one thing an undetermined clause must not produce.
 
 ## Provenance is two fields, and both are derived *(Prompt 1.39 A6)*
 
