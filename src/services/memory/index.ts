@@ -34,6 +34,7 @@
 import path from 'node:path';
 
 import { env } from '../../config/env.ts';
+import { isTemporaryChat } from '../../db/temporaryChats.ts';
 import { getBoolSetting, setSetting } from '../../db/settings.ts';
 import type { ToolName } from '../../types/core.ts';
 import { createLogger } from '../../util/logger.ts';
@@ -267,22 +268,49 @@ export async function recallForTurn(prompt: string, tool: ToolName): Promise<str
 }
 
 /**
+ * Why a turn was or was not handed to the extractor. Returned rather than void so
+ * the decision is observable — a caller cannot re-open the incognito hole by
+ * ignoring a `void`.
+ */
+export type RememberOutcome = 'queued' | 'disabled' | 'temporary' | 'empty';
+
+/**
  * Hand a completed exchange to mem0's extraction flow.
  *
  * Fire-and-forget on purpose: this is called after the assistant message is
  * already persisted and billed, so a slow or broken memory write must not
  * delay the `done` event or fail a turn that genuinely succeeded.
+ *
+ * **A temporary chat is refused here, in the writer.** Memory is a store the
+ * storage layer's temporary-chat guard does not reach: `chats.ts` filters
+ * temporary ids out of every write that goes through it, but a memory row is not
+ * a chat row, so an incognito exchange was being extracted into facts on disk —
+ * durable, retrievable, injected into later turns, and carrying the private
+ * chat's id as metadata. That is the failure `temporaryChats.ts` warns about,
+ * where "the one that forgot would persist the transcript with no visible
+ * symptom": incognito was promised, and the promise held for the transcript while
+ * this path quietly kept the substance.
+ *
+ * Recall is deliberately *not* skipped — reading memories into an incognito turn
+ * records nothing new, and the promise is about what is written. Spending is not
+ * skipped either; `usage_log` takes an anonymous row, which is the one write
+ * whose absence would be a bypass.
  */
 export function rememberTurn(
   prompt: string,
   reply: string,
   meta: { tool: ToolName; chatId: string },
-): void {
-  if (!memoryEnabled()) return;
+): RememberOutcome {
+  if (!memoryEnabled()) return 'disabled';
+  // Before the emptiness check and before `getMemory()`: nothing about a private
+  // conversation — not even the id it was asked to store as metadata — may reach
+  // the extractor, and loading the backend for a turn that will be discarded
+  // would itself be work the user did not ask for.
+  if (isTemporaryChat(meta.chatId)) return 'temporary';
   const userText = prompt.trim();
   const assistantText = reply.trim();
   // Nothing meaningful was exchanged, so there is nothing to learn.
-  if (userText.length === 0 || assistantText.length === 0) return;
+  if (userText.length === 0 || assistantText.length === 0) return 'empty';
 
   void (async () => {
     try {
@@ -300,6 +328,8 @@ export function rememberTurn(
       log.warn('memory write failed; turn is unaffected', error);
     }
   })();
+
+  return 'queued';
 }
 
 // --- management surface (Settings UI) --------------------------------------

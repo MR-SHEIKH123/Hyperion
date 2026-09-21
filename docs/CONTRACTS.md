@@ -2240,6 +2240,44 @@ the write does not exist.
 The session ends when it is deleted, when its idle timer expires, or when the
 process exits — and process exit is a real, intended ending, not a leak of state.
 
+### Memory is the seventh writer, and it is refused too *(S20)*
+
+The rule above is enforced by a guard in the storage layer, and the reason given
+for that placement is exact: *every writer must pass through it.* Memory was a
+writer that did not. After a completed turn the orchestrator handed the exchange
+to `rememberTurn`, which asked mem0 to extract facts and wrote them to
+`~/Hyperion/memory/` — durable, retrievable, injected into later turns, and
+carrying the private chat's id as metadata on each one.
+
+Nothing about that path is the chat table, so the storage guard never saw it, and
+nothing about it looks like a transcript, so it did not read as a write. The user
+was told the conversation was not being recorded; the transcript was not, and the
+*facts distilled from it* were — which is the same promise, kept in letter only.
+
+The guard therefore lives in `rememberTurn`, before the backend is even loaded:
+
+```ts
+if (isTemporaryChat(meta.chatId)) return 'temporary';
+```
+
+**Returned, not void.** `rememberTurn` reports `'queued' | 'disabled' |
+'temporary' | 'empty'`, so the decision is observable and a future caller cannot
+re-open the hole by ignoring a `void`. `test/memoryincognito.test.ts` asserts the
+temporary case and that the memory directory stays untouched, that a saved chat
+is still queued (the guard is about the chat, not about everything), and that the
+toggle and the emptiness check still come first.
+
+**Recall is not skipped, deliberately.** An incognito turn may still be given
+memories to read: reading records nothing new, and the promise is about what is
+written. Spending is not skipped either — `usage_log` takes an anonymous row,
+which is the one write whose absence would be a bypass.
+
+**Checked while here, and clean:** the other stores a turn can reach either cannot
+see a temporary id or refuse it — `usage_log` nulls it deliberately,
+`task_runs`' `linkedChatId` stores NULL for an id with no row, and the only asset
+write on a tool path (`design.brand_propose`) passes no chat id at all, so
+`attachments.chat_id` stays NULL.
+
 ### Incognito usage is recorded anonymously, and this is load-bearing
 
 A temporary turn writes a real `usage_log` row: real tokens, real cost, with

@@ -538,6 +538,12 @@ failed once is retried instead of staying broken until restart.
 Retrieval and storage happen inside the chat turn, not here — see
 `docs/SPEC.md` §Addendum. When the toggle is off there are no background writes.
 
+**A temporary (incognito) chat is never handed to the extractor.** No fact is
+distilled from it, and its id is not stored as metadata — the promise that the
+conversation is not recorded is about the substance, not only the transcript. The
+turn may still *read* memories; reading records nothing. `rememberTurn` returns
+why it did or did not dispatch (`queued` | `disabled` | `temporary` | `empty`).
+
 ---
 
 ## 6. MCP — `/api/mcp`

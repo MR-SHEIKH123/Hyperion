@@ -177,6 +177,7 @@ findings.
 | S17 | `limit` reached SQL unchecked on seven of the nine list routes: `limit=2.5` was a **500** quoting SQLite ("datatype mismatch"), and `limit=-1` returned the **whole table**, because SQLite reads a negative `LIMIT` as no limit at all. The two routes that got it right (`/api/activity`, `/api/chat/:id/messages`) proved the rule was known and simply not applied. | **Fixed** 2026-09-21 — `queryLimit`/`queryOffset` in `src/http/params.ts`, one bound per route; found by the HTTP-input audit, pinned by `test/listlimits.test.ts` (nine routes, five of its eight cases failed before the fix). |
 | S18 | A **default** backup (`includeKeys=false`) shipped `mcp_config.json` unconditionally, and `registry.ts::toEntry` writes a remote server's token into it as a plaintext `Authorization: Bearer` header — so the archive whose own comment promises it "exposes conversations but not credentials" contained a working credential in the clear. | **Fixed** 2026-09-21 — the file travels only with `includeKeys`, on the same reasoning as the key itself; the manifest's `warning` names the omission. Pinned by `test/backupsecrets.test.ts` (asserted against the archive's bytes). |
 | S19 | The notification body was the run's summary, unbounded past the transport: a long report built a push message over the 4,096-octet cap, the push service refused it, the refusal is not 404/410 so the subscription was kept — and **no notification arrived, silently, for exactly the runs with the most to report**. | **Fixed** 2026-09-21 — `buildPushBody` clamps every text field (title 240 B, body 600, url 512, tag 128, cut on a character boundary); pinned by `test/pushpayload.test.ts`. The privacy half of the item was verified clean. |
+| S20 | The **incognito guarantee was walked around by the memory plugin.** After a completed turn, `rememberTurn` handed the exchange to mem0 — durable facts under `~/Hyperion/memory/`, injected into later turns, with the private chat's id as metadata. The storage-layer guard that enforces the temporary-chat rule never saw it: a memory row is not a chat row. "This conversation is not being recorded" held for the transcript and not for its substance. | **Fixed** 2026-09-21 — the guard lives in the writer, `rememberTurn` returns `'temporary'` and never loads the backend; pinned by `test/memoryincognito.test.ts`. Found by auditing the memory plugin's local store. |
 
 ### S13 in full — a path rule matched the string, not the file
 
@@ -457,8 +458,60 @@ fields survive being clamped, multi-byte text is cut on a code-point boundary (n
 the envelope. All five fail before the fix — four of them on the missing export,
 one on the size assertion.
 
-**Not yet audited** (next sessions, in the order they look worth the time): the
-memory plugin's local store, and per-provider egress handling in `colibri.ts`.
+### S20 in full — the memory plugin kept what incognito promised not to
+
+**How it was found.** The queued item was "the memory plugin's local store", and
+the first question was what is *in* it. Following `rememberTurn`'s callers reached
+`orchestrator/chat.ts`, where the call site is unconditional —
+
+```ts
+if (input.prompt) {
+  rememberTurn(input.prompt, content, { tool: input.tool, chatId: chat.id });
+}
+```
+
+— and `chat.id` is whatever chat the turn ran in, including a temporary one.
+`temporaryChats.ts` states the invariant and the reason the guard sits in the
+storage layer: *"every writer must pass through it. Branching inside the
+orchestrator instead would mean each of the six write sites had to remember, and
+the one that forgot would persist the transcript with no visible symptom."*
+Memory is a seventh writer, and it writes to a different store, so the guard never
+saw it. The prediction in that comment is exactly what had happened.
+
+**What was actually written.** mem0 extracts facts from the exchange and stores
+them with `metadata: { tool, chatId }`. So an incognito conversation left behind
+(a) facts distilled from it, retrievable through `GET /api/memory` and injected
+into later turns, and (b) the private chat's id on every one of them — the same id
+the 1.20 work went to some trouble to keep off disk in `usage_log`.
+
+**The fix, and where it goes.** `rememberTurn` returns early on
+`isTemporaryChat(meta.chatId)`, before `getMemory()` — a private turn must not
+even cause the backend to be constructed. It returns a `RememberOutcome`
+(`queued` | `disabled` | `temporary` | `empty`) rather than `void`, because the
+failure mode here was invisibility: a decision nobody can observe is a decision a
+later refactor can erase with no test objecting.
+
+**Considered and deliberately kept:** recall. An incognito turn may still be given
+memories to *read* — the promise is about what is written, and silently degrading
+the assistant inside incognito would trade a real capability for nothing. Spending
+likewise: `usage_log` writes an anonymous row, and that is load-bearing in the
+other direction (a cap bypassable by toggling incognito is not a cap).
+
+**Adjacent, verified — not findings:** the other stores a turn can reach either
+cannot see a temporary id or refuse it. `usage_log` nulls it by design; `task_runs`
+stores NULL through `linkedChatId` for an id with no row (the S16 fix, same
+mechanism); `attachments.chat_id` is a real foreign key, and the only asset write
+on a tool path — `design.brand_propose` — passes no chat id at all, so it stays
+NULL rather than raising or storing it.
+
+**Tests.** `test/memoryincognito.test.ts` — with the toggle **on**, a temporary
+chat yields `'temporary'` and the memory directory is still empty after the
+detached dispatch would have run (250 ms later, with the backend pointed at a dead
+port so a write that *was* started fails fast); a saved chat still yields
+`'queued'`; the toggle still reports `'disabled'`; an empty turn reports
+`'empty'`. All four fail before the fix, on the outcome alone.
+
+**Not yet audited** (next session): per-provider egress handling in `colibri.ts`.
 
 ## Prompt-1 scope — status (2026-09-21, verified against the code, not transcribed)
 
@@ -479,14 +532,14 @@ Where the scope says done, this is what was checked:
 | D-table decisions (D1/D4/D7/D8/D9/D11/D12/D13–D15, D-1.2) | **Landed**, each with the code and test the D-table entry names. |
 | v4 backend items `§6.1` context windows, `§6.3` approvals + continuation, `§6.4` unattended hardening, `§6.5` write-path downgrade, `§6.6` subagent isolation, `§6.7` profiles, `§6.8` observability + golden runs | **Landed.** |
 | v4 `§6.2` cost accounting per task | **Landed 2026-09-21.** `usage_log` gained `run_id` (migration `018`; `task_id` was `017`), the agent context records one priced row per provider request — so every task run is attributed whatever started it, and a delegated child's spend lands in its parent's task total — the task-state route returns a `usage` summary, and the activity feed carries each run's `spend`. The two findings this surfaced are S15 and S16 above. |
-| S-series audit (S12 fixed in PR #6; S13–S19 fixed 2026-09-21) | **Continuous.** `S2`–`S11` are not recoverable from this repo — like `1.25`, their list lived in conversation. If they exist in a local note, they need pasting in to be verified or closed. |
+| S-series audit (S12 fixed in PR #6; S13–S20 fixed 2026-09-21) | **Continuous.** `S2`–`S11` are not recoverable from this repo — like `1.25`, their list lived in conversation. If they exist in a local note, they need pasting in to be verified or closed. |
 | Frontend (Prompt 2) | Out of this scope by design. Shell + Chat tool landed; Code, Cowork, Design, Playground, Plugins, Skills, Settings remain. Frontend-side items that *wait on backend contracts* are tracked in `frontend/contracts/gaps.md`, and one of them (no cross-tool pending-approval endpoint, no per-project active-task listing) is the earliest backend work the frontend will ask for. |
 
 **So: the backend core is complete, including `§6.2` as of 2026-09-21.** The
 remaining work in the series is the audit queue above and whatever `S2`–`S11` and
-`1.25` turn out to be. The HTTP-input item of that queue is done (`S17`–`S19`), which
-leaves the memory plugin's local store and `colibri.ts` egress. Suite baseline for every future claim in this file:
-**892 tests / 163 suites green, `tsc --noEmit` clean** (backend), **84 tests and
+`1.25` turn out to be. The HTTP-input item of that queue is done (`S17`–`S20`), which
+leaves `colibri.ts` egress. Suite baseline for every future claim in this file:
+**896 tests / 164 suites green, `tsc --noEmit` clean** (backend), **84 tests and
 five gates green** (frontend).
 
 ## Resolved verifications
