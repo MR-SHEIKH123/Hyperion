@@ -4890,3 +4890,47 @@ ones the provider did not report, so a client cannot render a zero it was never
 given. Ollama reports no cache accounting at all: local rows stay NULL, and that
 is stated rather than papered over with a zero.
 
+
+## An orphaned worktree is reported, never reclaimed *(added in 1.31)*
+
+The worktree registry is in-memory by design — a task id resolves to a directory
+for the life of a process — and the consequence is that a restart turns every
+checkout on disk into an orphan. The module header called that a known limitation;
+what it did not say is that it was silent in two directions at once. A leftover
+directory is indistinguishable from a leak a user should reclaim, and a task
+continued after a restart was handed a **fresh** checkout (`freePath` suffixes past
+anything already on disk), so its previous edits stayed on disk with nothing
+pointing at them.
+
+Four rules, each a way the fix could be worse than the problem:
+
+1. **The check reports and deletes nothing.** A scan that removed what it found
+   would be a cleanup routine wearing a diagnostic's name, and the directory it
+   removed might be the only copy of an afternoon's work. Nothing in the boot pass
+   or `GET /api/storage/worktrees` unlinks anything; removal only ever happens on
+   an explicit request, by name.
+2. **Risk is measured, and unverifiable is not safe.** `git status --porcelain`
+   catches edits never committed; a detached HEAD with no ref pointing at it
+   catches commits that would become garbage. When git cannot answer, the orphan is
+   reported with `checked: false` **and a reason**, never as clean — "I could not
+   look" and "there is nothing there" are different facts, and the destructive path
+   fails closed on the first.
+3. **Coverage is part of the answer.** The scan is bounded (one git spawn per
+   directory), so `unchecked` counts what it did not inspect. A bounded scan whose
+   output looked complete would teach a user to trust a number that is only about
+   the first fifty directories.
+4. **Adoption is what makes the report actionable.** The same pass's finding is
+   reachable: provisioning a task id re-attaches the directory left for it, when —
+   and only when — `--git-common-dir` matches the project's, so a task can never be
+   handed write access to a checkout from a repository the user did not point at. A
+   finding a user cannot act on is a report, and the queue's own rule is that this
+   build does not ship reports.
+
+The queue carries the finding only when it holds work (`orphaned_worktree`), and
+its row links to the owning surface rather than firing the `resolve` call: that call
+deletes a directory, and an inbox row is one stray click from a link someone is
+scanning. Destructive calls belong on the screen that describes them.
+
+The `unchecked` and `checked` fields exist for the same reason `rowsWithCacheReporting`
+exists beside the cache-hit rate: a number without what it covers is a coincidence
+wearing a measurement's clothes.

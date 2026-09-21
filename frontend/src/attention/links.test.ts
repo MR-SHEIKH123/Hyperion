@@ -74,6 +74,16 @@ describe('attentionDestination', () => {
     }
   });
 
+  it('does not turn a destructive resolve into a one-click link', () => {
+    // The orphaned-worktree item's `resolve` deletes a checkout. Sending the user
+    // to the owning surface, with a caveat saying where the listing is, keeps the
+    // queue from being a place where a stray click destroys work.
+    const destination = attentionDestination(item({ kind: 'orphaned_worktree', tool: 'code', taskId: 'task-9' }));
+    expect(destination.href).toBe('/code');
+    expect(destination.caveat).toMatch(/no screen yet/);
+    expect(KIND_TONE.orphaned_worktree).toBe('warning');
+  });
+
   it('rejects a resolve path that is not an API path', () => {
     const parsed = attentionItemSchema.safeParse({
       ...BASE,

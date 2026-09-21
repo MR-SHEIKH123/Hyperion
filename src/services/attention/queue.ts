@@ -35,6 +35,7 @@ import { countPendingApprovals, listAllPendingApprovals } from '../../db/approva
 import { queryErrorLog } from '../../db/errorLog.ts';
 import { mcpStatus } from '../../orchestrator/agents.ts';
 import { listPausedRuns } from '../../orchestrator/runState.ts';
+import { orphanedWorktreeSnapshot } from '../code/worktree.ts';
 import { spendStatus } from '../limits/budget.ts';
 
 import type { PendingApproval } from '../../db/approvals.ts';
@@ -55,7 +56,9 @@ export type AttentionKind =
   | 'scheduled_run_failed'
   | 'backup_failure'
   | 'spending_cap'
-  | 'mcp_disconnected';
+  | 'mcp_disconnected'
+  /** A task's checkout left behind by a restart, holding work no task owns. */
+  | 'orphaned_worktree';
 
 export type AttentionTool = 'chat' | 'code' | 'cowork' | 'design' | 'system';
 
@@ -109,6 +112,9 @@ const KIND_RANK: Record<AttentionKind, number> = {
   backup_failure: 7,
   spending_cap: 8,
   mcp_disconnected: 9,
+  // Last: nothing here is broken and nothing is blocked on it. It is disk that
+  // may be a decision, which is the least urgent thing a queue can carry.
+  orphaned_worktree: 10,
 };
 
 /**
@@ -431,6 +437,45 @@ export function attentionQueue(now = Date.now()): AttentionQueue {
     reason:
       'detected from the error log over the last 24h: a backup has no run record, so a success leaves nothing to compare a failure against',
   });
+
+  // The worktree check (1.31). Reported from the last completed scan rather than
+  // run here: this function is synchronous and reads live state with no caching,
+  // while a scan spawns git per directory. When no scan has run, that is said —
+  // an absent check and a clean check would otherwise render identically, which
+  // is the one thing a source list must never do.
+  const worktreeScan = orphanedWorktreeSnapshot();
+  if (worktreeScan === null) {
+    sources.push({
+      source: 'worktrees',
+      status: 'unavailable',
+      count: 0,
+      reason: 'no scan has run in this process yet — GET /api/storage/worktrees runs one',
+    });
+  } else {
+    const holding = worktreeScan.scan.orphans.filter((orphan) => orphan.risk !== null);
+    for (const orphan of holding) {
+      items.push({
+        id: `worktree:${orphan.name}`,
+        kind: 'orphaned_worktree',
+        tool: 'code',
+        title: `A Code checkout was left behind: ${orphan.name}`,
+        detail:
+          `${orphan.risk} Nothing was deleted, and this directory belongs to no running task. ` +
+          `Remove it if that work is already somewhere else.`,
+        createdAt: orphan.lastModified,
+        taskId: orphan.taskId,
+        resolve: { method: 'POST', path: `/api/storage/worktrees/${orphan.name}/discard` },
+      });
+    }
+    sources.push({
+      source: 'worktrees',
+      status: holding.length === 0 ? 'empty' : 'ok',
+      count: holding.length,
+      ...(worktreeScan.scan.unchecked > 0
+        ? { reason: `${worktreeScan.scan.unchecked} director(ies) were not inspected: the scan is bounded` }
+        : {}),
+    });
+  }
 
   const spend = spendStatus(now);
   const spendWarning = spendItem(spend);

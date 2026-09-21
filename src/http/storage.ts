@@ -27,6 +27,7 @@ import {
 } from '../services/storage/gallery.ts';
 import type { AssetOrigin, AssetQuery } from '../services/storage/gallery.ts';
 import { listCleanupLog, runCleanup } from '../services/storage/cleanup.ts';
+import { discardOrphanedWorktree, scanOrphanedWorktrees } from '../services/code/worktree.ts';
 import { AppError } from '../util/errors.ts';
 
 const ORIGINS = ['uploaded', 'generated'] as const satisfies readonly AssetOrigin[];
@@ -46,6 +47,45 @@ function readQuery(req: Request): AssetQuery {
 }
 
 export const storageRouter = Router();
+
+/**
+ * Per-task worktrees this process does not own (1.31's `orphaned_worktree` check).
+ *
+ * `_` rather than `:id` for the discard's parameter, and it is worth saying why:
+ * the handle is a **directory name**, not a task id. `freePath` suffixes a second
+ * directory (`<task-id>-2`) when the first is unusable, so the name is the only
+ * thing that identifies exactly one thing on disk.
+ */
+storageRouter.get(
+  '/worktrees',
+  wrap(async (_req, res) => {
+    // A fresh scan on demand: this is the route a user reaches when they want to
+    // know, so answering from a snapshot taken an hour ago would be the wrong
+    // trade even though it is cheaper.
+    res.json(await scanOrphanedWorktrees());
+  }),
+);
+
+/**
+ * Remove one orphaned worktree, because the user said so.
+ *
+ * Refused with a `409` naming what would be lost unless `force: true` is passed;
+ * a directory a running task owns is refused outright, so this can never be a way
+ * to break a live run. There is no partial outcome: the directory is gone, or the
+ * answer says why it is not.
+ */
+storageRouter.post(
+  '/worktrees/:name/discard',
+  wrap(async (req, res) => {
+    const payload = body(req);
+    const force = asBool(payload.force, 'force') ?? false;
+    const result = await discardOrphanedWorktree(pathParam(req, 'name'), { force });
+    // The listing of what is left is refreshed as part of the answer, so a caller
+    // does not have to ask twice to see the effect. A refusal never reaches here:
+    // the service throws instead of returning a half-done result.
+    res.json({ ...result, scan: await scanOrphanedWorktrees() });
+  }),
+);
 
 // Literal segments are declared before any `:id` route so they are not shadowed.
 

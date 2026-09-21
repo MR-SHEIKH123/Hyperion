@@ -30,6 +30,10 @@ export const attentionKindSchema = z.enum([
   'backup_failure',
   'spending_cap',
   'mcp_disconnected',
+  // 1.31's orphaned-worktree check: a Code checkout a restart left behind that
+  // holds work no task owns. Last in the list because it is disk that may be a
+  // decision, not something broken.
+  'orphaned_worktree',
 ]);
 
 export const attentionToolSchema = z.enum(['chat', 'code', 'cowork', 'design', 'system']);

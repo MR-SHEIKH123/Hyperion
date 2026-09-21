@@ -31,7 +31,7 @@ const item = (
 
 export const attentionQueueFixture: AttentionQueue = {
   generatedAt: NOW,
-  total: 10,
+  total: 11,
   counts: {
     approval_required: 1,
     plan_ready: 1,
@@ -43,6 +43,7 @@ export const attentionQueueFixture: AttentionQueue = {
     backup_failure: 1,
     spending_cap: 1,
     mcp_disconnected: 1,
+    orphaned_worktree: 1,
   },
   items: [
     item('approval:a1', 'approval_required', 'code', 'bash needs a decision', 'The project rules deny this command.', {
@@ -79,6 +80,17 @@ export const attentionQueueFixture: AttentionQueue = {
       createdAt: NOW - 6 * 60 * 60_000,
     }),
     item('mcp:wigolo', 'mcp_disconnected', 'system', 'MCP server "wigolo" is not running', 'the supervisor reported a failed handshake'),
+    item(
+      'worktree:task-9c1',
+      'orphaned_worktree',
+      'code',
+      'A Code checkout was left behind: task-9c1',
+      'it has uncommitted changes Nothing was deleted, and this directory belongs to no running task. Remove it if that work is already somewhere else.',
+      {
+        taskId: 'task-9c1',
+        resolve: { method: 'POST', path: '/api/storage/worktrees/task-9c1/discard' },
+      },
+    ),
   ],
   sources: [
     { source: 'pending_approvals', status: 'ok', count: 1 },
@@ -94,5 +106,6 @@ export const attentionQueueFixture: AttentionQueue = {
     },
     { source: 'spending', status: 'ok', count: 1 },
     { source: 'mcp', status: 'unavailable', count: 0, reason: 'the MCP process manager is not managed by this process' },
+    { source: 'worktrees', status: 'ok', count: 1 },
   ],
 };

@@ -150,6 +150,20 @@ export async function provisionWorktree(taskId: string, repoDir: string): Promis
   // with this path in it, and the scope check is what makes that safe.
   const project = resolveInScope('projects', repoDir);
 
+  // A directory from a previous process is adopted rather than replaced. Without
+  // this, `create` would call `freePath`, which deliberately suffixes past
+  // anything already on disk: a task continued after a restart got a *fresh*
+  // checkout and its prior edits sat stranded in the abandoned directory, still
+  // on disk, with nothing pointing at them. Adoption is what makes the recovery
+  // the orphan scan reports actually reachable — a finding a user cannot act on
+  // is a report, and this build does not ship reports.
+  const adopted = await adoptOrphan(id, project);
+  if (adopted !== null) {
+    worktrees.set(id, adopted);
+    log.info(`task ${id}: adopted the worktree left at ${adopted.dir} by a previous process`);
+    return adopted;
+  }
+
   const worktree = await create(id, project);
   worktrees.set(id, worktree);
 
@@ -159,6 +173,79 @@ export async function provisionWorktree(taskId: string, repoDir: string): Promis
     log.info(`task ${id}: working directly in ${worktree.dir} (${worktree.reason ?? 'no reason'})`);
   }
   return worktree;
+}
+
+/**
+ * Take back a directory a previous process left for this task, if there is one.
+ *
+ * Three things are verified rather than assumed, because adopting the wrong
+ * directory gives a task write access to a stranger's checkout:
+ *
+ *   - **The name.** Only the exact task id or its `freePath` suffixes (`<id>-2`)
+ *     are candidates; a similar-looking id is not this task's.
+ *   - **The repository.** `--git-common-dir` inside the candidate must equal the
+ *     one inside the project. A directory left by a *different* project is never
+ *     adopted, however it is named.
+ *   - **The path.** The traversal and containment assertions run on it exactly as
+ *     they would for a newly provisioned directory. A crash is not a reason to
+ *     trust a path that has been sitting on disk since.
+ *
+ * The newest candidate wins when a task left more than one behind; `freePath` only
+ * creates a second directory when the first was unusable, so the later one is the
+ * one that was actually worked in.
+ */
+async function adoptOrphan(taskId: string, project: string): Promise<Worktree | null> {
+  const root = getRoot('worktrees');
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+
+  const candidates: { dir: string; modified: number }[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || taskIdFromName(entry.name) !== taskId) continue;
+    const dir = path.join(root, entry.name);
+    const stat = fs.statSync(dir, { throwIfNoEntry: false });
+    if (stat === undefined) continue;
+    candidates.push({ dir, modified: stat.mtimeMs });
+  }
+  if (candidates.length === 0) return null;
+  candidates.sort((a, b) => b.modified - a.modified);
+
+  const wanted = await git(['rev-parse', '--git-common-dir'], { cwd: project });
+  if (!wanted.ok) return null;
+  const wantedCommon = path.resolve(project, wanted.stdout.trim());
+
+  for (const candidate of candidates) {
+    assertNoSymlinkedTraversal(root, candidate.dir);
+    const dir = assertStillInside(root, resolveInSubtree('worktrees', root, path.basename(candidate.dir)));
+
+    const common = await git(['rev-parse', '--git-common-dir'], { cwd: dir });
+    if (!common.ok) continue;
+    if (path.resolve(dir, common.stdout.trim()) !== wantedCommon) {
+      log.warn(`task ${taskId}: not adopting ${dir} — it belongs to a different repository`);
+      continue;
+    }
+
+    const branch = await git(['branch', '--show-current'], { cwd: dir });
+    const head = await git(['rev-parse', 'HEAD'], { cwd: dir });
+    return {
+      taskId,
+      mode: 'worktree',
+      dir,
+      repo: project,
+      branch: branch.ok && branch.stdout.trim() !== '' ? branch.stdout.trim() : null,
+      baseCommit: head.ok ? head.stdout.trim() : null,
+      // The registry's `createdAt` is gone with the process; the directory's own
+      // mtime is the honest substitute and is only ever reported as an age.
+      createdAt: candidate.modified,
+      reason: null,
+      heldSince: null,
+    };
+  }
+  return null;
 }
 
 async function create(taskId: string, project: string): Promise<Worktree> {
@@ -422,6 +509,298 @@ export async function reapHeldWorktrees(options: { ttlMs: number; now?: number }
     log.info(`task ${worktree.taskId}: releasing a worktree held since ${new Date(worktree.heldSince ?? now).toISOString()}`);
   }
   return released;
+}
+
+// --- orphaned directories ---------------------------------------------------
+
+/**
+ * A directory under the worktrees root that no live task owns.
+ *
+ * The registry above is in-memory, so a restart makes **every** existing
+ * worktree an orphan: the directories survive, the knowledge of which task they
+ * belonged to does not. Until 1.31 nothing looked, which is why the module header
+ * called this a known limitation rather than a bug — the directory still exists,
+ * so no work was lost by *forgetting* it. What was lost is the ability to decide
+ * about it: a stale directory is indistinguishable from a leak, and a task
+ * continued after a restart silently got a fresh checkout with the previous
+ * edits stranded beside it.
+ *
+ * So the check reports, and nothing else. It never deletes: an orphan with
+ * uncommitted work and a clean one a user wants gone are the same fact to a
+ * scanner and different decisions for a person.
+ */
+export interface OrphanedWorktree {
+  /** Directory name under the worktrees root — the handle a caller uses. */
+  name: string;
+  dir: string;
+  /** The task id parsed out of the name; the run it belonged to, if one still knows. */
+  taskId: string;
+  /**
+   * The directory's own mtime. For a checkout that is roughly when it was made or
+   * last written to, which is the closest thing to a date an orphan has — a
+   * registry entry carries `createdAt`, this does not.
+   */
+  lastModified: number;
+  /** Why removing it would lose something; null when it provably holds nothing. */
+  risk: string | null;
+  /** True when the risk check actually ran, false when it could not. */
+  checked: boolean;
+}
+
+export interface OrphanScan {
+  root: string;
+  scannedAt: number;
+  orphans: OrphanedWorktree[];
+  /** Orphans that hold work, and so are the ones genuinely waiting on a decision. */
+  holding: number;
+  /** Directories present but not inspected, because the limit was reached. */
+  unchecked: number;
+  /** Worktrees this process knows about, for contrast: `orphans` is everything else. */
+  registered: number;
+}
+
+/** Bound on per-directory git calls. Each one is a process spawn. */
+const ORPHAN_SCAN_LIMIT = 50;
+
+let lastScan: { scan: OrphanScan; at: number } | null = null;
+
+/**
+ * Directories in the worktrees root this process does not own.
+ *
+ * Bounded: `limit` directories are inspected and the rest are counted as
+ * `unchecked` rather than quietly omitted — "there are more, unexamined" is a
+ * fact the caller has to be able to state, because otherwise a bounded scan looks
+ * like a complete one.
+ */
+export async function scanOrphanedWorktrees(options: { limit?: number } = {}): Promise<OrphanScan> {
+  const limit = options.limit ?? ORPHAN_SCAN_LIMIT;
+  const root = getRoot('worktrees');
+  const registered = new Set([...worktrees.values()].map((worktree) => path.resolve(worktree.dir)));
+
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    // A missing root is an empty one: `ensureDirectories` creates it at boot, and
+    // before that there is nothing that could have been left behind.
+    const empty: OrphanScan = {
+      root,
+      scannedAt: Date.now(),
+      orphans: [],
+      holding: 0,
+      unchecked: 0,
+      registered: worktrees.size,
+    };
+    lastScan = { scan: empty, at: empty.scannedAt };
+    return empty;
+  }
+
+  const orphans: OrphanedWorktree[] = [];
+  let unchecked = 0;
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    let dir: string;
+    try {
+      dir = resolveInSubtree('worktrees', root, entry.name);
+    } catch {
+      continue; // a name that cannot be resolved inside the root is not ours
+    }
+    if (registered.has(path.resolve(dir))) continue;
+    if (orphans.length >= limit) {
+      unchecked += 1;
+      continue;
+    }
+
+    const stat = fs.statSync(dir, { throwIfNoEntry: false });
+    const risk = await orphanRisk(dir);
+    orphans.push({
+      name: entry.name,
+      dir,
+      taskId: taskIdFromName(entry.name),
+      lastModified: stat?.mtimeMs ?? 0,
+      risk: risk.reason,
+      checked: risk.checked,
+    });
+  }
+
+  const scan: OrphanScan = {
+    root,
+    scannedAt: Date.now(),
+    orphans,
+    holding: orphans.filter((orphan) => orphan.risk !== null).length,
+    unchecked,
+    registered: worktrees.size,
+  };
+  lastScan = { scan, at: scan.scannedAt };
+  return scan;
+}
+
+/**
+ * The last completed scan, for callers that cannot await one.
+ *
+ * `GET /api/attention` is synchronous by design — it reads live state with no
+ * caching — and a git-backed scan is not something to run inside it. So a scan
+ * that has already happened is *reported* here, and the queue says the source is
+ * unavailable, with the reason, when none has. An absent check and a clean check
+ * are different facts and must not render the same.
+ */
+export function orphanedWorktreeSnapshot(): { scan: OrphanScan; at: number } | null {
+  return lastScan;
+}
+
+/** Test hook: forget the last scan, as a fresh process would. */
+export function resetOrphanedWorktreeSnapshot(): void {
+  lastScan = null;
+}
+
+/** `taskId` or `taskId-2` — the two shapes `freePath` produces. */
+function taskIdFromName(name: string): string {
+  const match = /^(.*?)(?:-(\d+))?$/.exec(name);
+  return match?.[1] ?? name;
+}
+
+/**
+ * What removing this directory would lose, if anything.
+ *
+ * Deliberately weaker than `workAtRisk`: a registered worktree knows the commit it
+ * started from, an orphan does not, so the detached-HEAD case is decided by
+ * whether any branch points at HEAD rather than by comparison with a base that
+ * no longer exists. `checked: false` means git could not answer — an unverifiable
+ * directory is reported as unchecked, never as safe.
+ */
+async function orphanRisk(dir: string): Promise<{ reason: string | null; checked: boolean }> {
+  const status = await git(['status', '--porcelain'], { cwd: dir });
+  if (!status.ok) return { reason: `its state could not be checked (${firstLine(status.output)})`, checked: false };
+  if (status.stdout.trim() !== '') return { reason: 'it has uncommitted changes', checked: true };
+
+  const branch = await git(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: dir });
+  if (branch.ok && branch.stdout.trim() === 'HEAD') {
+    const refs = await git(['branch', '--points-at', 'HEAD'], { cwd: dir });
+    if (refs.ok && refs.stdout.trim() === '') {
+      return { reason: 'it has commits on a detached HEAD that no branch would keep', checked: true };
+    }
+  }
+  return { reason: null, checked: true };
+}
+
+export interface DiscardResult {
+  name: string;
+  dir: string;
+  /** How it was removed. A discard that removed nothing throws instead. */
+  method: 'git' | 'filesystem';
+  /** What was at risk when the caller forced a removal past it. */
+  lostReason: string | null;
+}
+
+/**
+ * Remove an orphaned directory, on an explicit request from the user.
+ *
+ * This is the one place in the module that destroys anything, so the rules are
+ * narrow:
+ *
+ *   - **Only orphans.** A directory this process has registered belongs to a
+ *     running task; taking it away through a cleanup route would be a way to
+ *     break a live run, so it is refused outright.
+ *   - **A directory holding work needs `force`.** The check is the same one the
+ *     scanner reports, and the refusal names what would be lost — uncommitted
+ *     changes, unreferenced commits, or a state git could not read. Forcing it
+ *     past a risk is allowed, because a user who has read the reason and asked
+ *     again has made a decision; it is recorded in the result as `lostReason`.
+ *   - **Git removes it when git can.** `git worktree remove` keeps the parent
+ *     repository's metadata consistent, which a plain `rm -rf` does not: the
+ *     stale entry would keep showing up in `git worktree list` and in
+ *     `git worktree prune` decisions.
+ *
+ * **It either removes the directory or throws.** An earlier draft returned a
+ * result with `removed: false` for one refusal path and threw for another, which
+ * meant two mechanisms for one rule and a `keptReason` field that only one caller
+ * could ever read. A caller now gets the directory gone, or a `409` saying exactly
+ * why not — including when git could not identify the repository, which is the
+ * case where an unexamined delete is least defensible.
+ */
+export async function discardOrphanedWorktree(
+  name: string,
+  options: { force?: boolean } = {},
+): Promise<DiscardResult> {
+  const root = getRoot('worktrees');
+  // The name is a single segment; anything else is not a directory in this root.
+  if (name.trim() === '' || name.includes('/') || name.includes('\\') || name.includes('..')) {
+    throw new AppError('bad_request', 'name must be one directory name inside the worktrees root.', {
+      details: { field: 'name' },
+    });
+  }
+
+  let dir: string;
+  try {
+    dir = resolveInSubtree('worktrees', root, name);
+  } catch {
+    throw new AppError('not_found', `No worktree directory named "${name}".`, {
+      details: { field: 'name', name },
+    });
+  }
+  if (!fs.existsSync(dir)) {
+    throw new AppError('not_found', `No worktree directory named "${name}".`, {
+      details: { field: 'name', name },
+    });
+  }
+
+  const base = { name, dir };
+
+  if ([...worktrees.values()].some((worktree) => path.resolve(worktree.dir) === path.resolve(dir))) {
+    throw new AppError(
+      'conflict',
+      `"${name}" is in use by a running task, so it is not orphaned and will not be removed.`,
+      { details: { field: 'name', name, dir } },
+    );
+  }
+
+  const risk = await orphanRisk(dir);
+  if (risk.reason !== null && options.force !== true) {
+    throw new AppError('conflict', `"${name}" was not removed: ${risk.reason}.`, {
+      details: { name, dir, reason: risk.reason, checked: risk.checked, force: 'pass force to remove it anyway' },
+    });
+  }
+  const lostReason = risk.reason;
+  const forced = options.force === true;
+
+  // The parent repository, from git's own metadata: `git worktree remove` has to
+  // run where git can see the worktree registration.
+  const common = await git(['rev-parse', '--git-common-dir'], { cwd: dir });
+  let gitRefusal: string;
+  if (common.ok) {
+    const commonDir = path.resolve(dir, common.stdout.trim());
+    const repo = path.dirname(commonDir);
+    const args = forced ? ['worktree', 'remove', '--force', dir] : ['worktree', 'remove', dir];
+    const removed = await git(args, { cwd: repo, timeoutMs: CHECKOUT_TIMEOUT_MS });
+    if (removed.ok) {
+      await git(['worktree', 'prune'], { cwd: repo });
+      log.info(`discarded orphaned worktree ${dir} (git)`);
+      return { ...base, method: 'git', lostReason };
+    }
+    if (!fs.existsSync(dir)) {
+      // git removed the directory and then failed on the bookkeeping, or vice
+      // versa: report what is true of the filesystem rather than of the command.
+      return { ...base, method: 'git', lostReason };
+    }
+    gitRefusal = `git declined to remove it (${firstLine(removed.output)})`;
+    log.warn(`task worktree ${dir}: ${gitRefusal}`);
+  } else {
+    gitRefusal = 'git could not identify the repository that owns this directory';
+  }
+
+  if (!forced) {
+    // Without a force, a directory git would not take away is left alone. A
+    // filesystem delete here would be this module overruling the second opinion
+    // it asked for, which is the one thing `releaseWorktree` explicitly refuses
+    // to do (`--force` is absent there for the same reason).
+    throw new AppError('conflict', `"${name}" was not removed: ${gitRefusal}.`, {
+      details: { name, dir, reason: gitRefusal, force: 'pass force to remove it anyway' },
+    });
+  }
+
+  fs.rmSync(dir, { recursive: true, force: true });
+  log.warn(`discarded orphaned worktree ${dir} (filesystem): ${gitRefusal}`);
+  return { ...base, method: 'filesystem', lostReason };
 }
 
 // --- containment ------------------------------------------------------------

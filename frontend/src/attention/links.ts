@@ -36,6 +36,12 @@ const TASK_TOOL_LABEL: Record<'code' | 'cowork' | 'design', string> = {
  * says the live view does not exist. A dead-looking row with no link at all would
  * be worse — the queue is where the user learns the task is waiting, and it has to
  * take them somewhere that tells them the truth.
+ *
+ * One kind is deliberately not actionable from here: an orphaned worktree carries
+ * a `resolve` call that *deletes a directory*, and a queue row is one mis-click
+ * away from a link someone is scanning. It links to the surface that owns Code
+ * and says where the listing actually is. Destructive calls belong on the screen
+ * that describes them, not behind a row in an inbox.
  */
 export function attentionDestination(item: AttentionItem): AttentionDestination {
   switch (item.kind) {
@@ -84,10 +90,22 @@ export function attentionDestination(item: AttentionItem): AttentionDestination 
       return { href: '/settings', label: 'Open Settings', caveat: 'The daily cap is set in Settings, whose surface is not built yet.' };
     case 'mcp_disconnected':
       return { href: '/settings', label: 'Open Settings', caveat: 'MCP servers are managed in Settings, whose surface is not built yet.' };
+    case 'orphaned_worktree':
+      // No screen lists worktrees yet, and the queue is not the place to invent
+      // one: the row says what the directory is and the caveat says where the
+      // decision actually lives. `resolve` on the item is the call, and the queue
+      // does not fire destructive calls from a link — that would make a mis-click
+      // delete a checkout.
+      return {
+        href: '/code',
+        label: 'Open Code',
+        caveat:
+          'The leftover checkout is listed by the storage API (`GET /api/storage/worktrees`), which has no screen yet.',
+      };
   }
 }
 
-/** Human labels for the ten kinds, in one place so a badge cannot drift from a heading. */
+/** Human labels for the eleven kinds, in one place so a badge cannot drift from a heading. */
 export const KIND_LABEL: Record<AttentionItem['kind'], string> = {
   approval_required: 'Decision needed',
   plan_ready: 'Plan ready',
@@ -99,6 +117,7 @@ export const KIND_LABEL: Record<AttentionItem['kind'], string> = {
   backup_failure: 'Backup failed',
   spending_cap: 'Spending',
   mcp_disconnected: 'MCP disconnected',
+  orphaned_worktree: 'Leftover checkout',
 };
 
 export const KIND_TONE: Record<
@@ -115,6 +134,9 @@ export const KIND_TONE: Record<
   backup_failure: 'error',
   spending_cap: 'warning',
   mcp_disconnected: 'error',
+  // A warning, not an error: nothing failed. Work may be sitting in a directory
+  // nobody owns, which is a decision rather than a fault.
+  orphaned_worktree: 'warning',
 };
 
 /** "3m ago" — short because it sits in a dense list, and never "in the future". */

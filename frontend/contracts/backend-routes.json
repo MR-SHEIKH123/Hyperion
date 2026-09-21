@@ -1172,6 +1172,20 @@
       "capability": "storage.manage"
     },
     {
+      "method": "GET",
+      "path": "/api/storage/worktrees",
+      "source": "src/http/storage.ts:60",
+      "exposure": "frontend",
+      "capability": "storage.manage"
+    },
+    {
+      "method": "POST",
+      "path": "/api/storage/worktrees/:name/discard",
+      "source": "src/http/storage.ts:77",
+      "exposure": "deferred-frontend",
+      "capability": "storage.manage"
+    },
+    {
       "method": "POST",
       "path": "/api/storage/assets/:id/pin",
       "source": "src/http/storage.ts:119",

@@ -991,6 +991,8 @@ against a local copy of the file the user picked.
 | DELETE | `/api/storage/assets/:id` | `{ deleted: true, keepFile, bytesFreed }` |
 | POST | `/api/storage/cleanup` | `CleanupResult` (bare) |
 | GET | `/api/storage/cleanup/log` | `{ entries: CleanupLogEntry[] }` — query `limit` (default 50, max 500) |
+| GET | `/api/storage/worktrees` | `OrphanScan` (bare) *(new in 1.31)* |
+| POST | `/api/storage/worktrees/:name/discard` | `{ name, dir, method, lostReason, scan }` — body `force?` *(new in 1.31)* |
 
 `GET /assets` query: `chatId`, `tool`, `origin` (`uploaded` \| `generated`),
 `pinned`, `brandApproved`, `search` (filename substring), `limit` (default 200,
@@ -1006,6 +1008,74 @@ from the TTL sweep entirely.
 
 `DELETE /assets/:id` accepts `keepFile` as a query param or a body field and
 echoes back what it did, including `bytesFreed`.
+
+### 8.1 Orphaned worktrees — the check that reports and does not delete  *(new in 1.31)*
+
+Per-task checkouts live under the `worktrees` scope, and the registry that maps a
+directory to a task is **in-memory**. So a restart makes everything on disk an
+orphan: the directories survive, the knowledge of which task they belonged to does
+not. Before this, nothing looked, and two things were silently true — a leftover
+directory was indistinguishable from a leak, and a task continued after a restart
+got a *fresh* checkout (`freePath` deliberately suffixes past anything already on
+disk) with its previous edits stranded beside it.
+
+```ts
+OrphanedWorktree { name, dir, taskId, lastModified, risk: string|null, checked: boolean }
+OrphanScan       { root, scannedAt, orphans: OrphanedWorktree[],
+                   holding, unchecked, registered }
+```
+
+`GET /api/storage/worktrees` scans the scope on demand — never a cached listing,
+because this is the route a user reaches when they want to know — and reports every
+directory no task owns. Each one carries what removing it would lose:
+
+| `risk` | meaning |
+| --- | --- |
+| `it has uncommitted changes` | `git status --porcelain` is not empty |
+| `it has commits on a detached HEAD that no branch would keep` | commits exist and no ref points at them |
+| `its state could not be checked (…)` | git could not answer. `checked: false` — an unverifiable directory is never reported as safe |
+| `null` | it provably holds nothing |
+
+`limit` bounds how many directories are inspected (default 50, one git spawn
+each), and **`unchecked` counts the ones it skipped**. A bounded scan that
+reported itself as complete would be a lie about coverage.
+
+Nothing here deletes. `POST /api/storage/worktrees/:name/discard` is the explicit
+request, and it is narrow:
+
+- **Only orphans.** A directory a running task owns is a `409`, so this can never
+  be a route that breaks a live run.
+- **A directory holding work needs `force: true`.** Without it the answer is a
+  `409` naming what would be lost (`details.reason`). With it, the removal happens
+  and `lostReason` records what it cost. A user who read the reason and asked again
+  has made a decision; the response states the price.
+- **An unverifiable directory also needs `force`**, and without it the answer is a
+  `409` naming what git said, not a deletion. Failing closed is the same posture
+  `zdr` and the egress classifier take.
+- **Git removes it when git can** (`git worktree remove` [+ `--force`], then
+  `prune`), because a plain directory delete leaves the parent repository's
+  metadata stale — the entry keeps appearing in `git worktree list`. `method` says
+  which path was taken. A directory git refused to remove is **not** deleted from
+  the filesystem without `force`: that would be this module overruling the second
+  opinion it asked for.
+- **There is no partial outcome.** The directory is gone, or the response is a
+  `409` saying why not; a refusal never leaves a half-removed tree behind.
+
+`name` is a single directory segment — not a task id. `freePath` suffixes a second
+directory (`<task-id>-2`) when the first is unusable, so the name is the only
+handle that identifies exactly one thing on disk. The response carries the
+refreshed `scan`, so a caller need not ask twice.
+
+**Adoption is the other half.** When a task is provisioned after a restart,
+`provisionWorktree` looks for a directory left for *that* task id and re-attaches
+it if the repository matches (`--git-common-dir` compared with the project's), with
+the traversal and containment assertions run on the path exactly as for a new one.
+Without this, the check would report work the user could never get back — a finding
+nobody can act on is a report, and this build does not ship those. The same fact
+reaches the queue: `GET /api/attention` carries a `worktrees` source and one
+`orphaned_worktree` item per orphan that holds work. Its `resolve` points at the
+discard call, but the item's *link* goes to Code with a caveat: the queue does not
+put a destructive call one click away from a row somebody is scanning.
 
 `POST /cleanup` runs the sweep on demand; body `dryRun?`, `assetTtlDays?`,
 `chatTtlDays?` (the TTL overrides exist so a sweep can be rehearsed without
