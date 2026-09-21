@@ -69,6 +69,7 @@ import {
 } from '../services/code/worktree.ts';
 import { exportCodeTask } from '../services/export/index.ts';
 import { findChat } from '../db/chats.ts';
+import { listRunKnowledge } from '../db/runKnowledge.ts';
 import { concurrencyMode } from '../db/settings.ts';
 import { taskUsage } from '../db/usage.ts';
 import {
@@ -565,6 +566,33 @@ function taskStateRoute(tool: TaskRunTool) {
     res.json({ run, usage: taskUsage(taskId) });
   });
 }
+
+/**
+ * What a Cowork run was built on, for `GET /api/cowork/tasks/:taskId/provenance`.
+ *
+ * Prompt 1.39 A6 asks for exactly two additions to provenance, and this is the
+ * second of them: the knowledge sources *used* — the ones that went into the
+ * prompt as evidence, not the ones that were merely listed as unavailable. The
+ * `run` object comes along so the caller can tell which run it is looking at: a
+ * task can have been restarted, and provenance belongs to the attempt, not to the
+ * task.
+ *
+ * An empty list is a real answer and means one of two things — the library is
+ * empty, or every source was unusable. They are not distinguished here because
+ * `GET /api/cowork/knowledge` already answers what the library holds, and
+ * `startedAt` says whether this run predates the recording.
+ */
+agentsRouter.get(
+  '/cowork/tasks/:taskId/provenance',
+  wrap(async (req, res) => {
+    const taskId = pathParam(req, 'taskId');
+    const run = latestRunForTask('cowork', taskId);
+    if (run === null) {
+      throw new AppError('not_found', `No cowork task run recorded for "${taskId}".`, { details: { taskId } });
+    }
+    res.json({ run, knowledgeSources: listRunKnowledge(run.runId) });
+  }),
+);
 
 agentsRouter.get('/code/tasks/:taskId/state', taskStateRoute('code'));
 agentsRouter.get('/cowork/tasks/:taskId/state', taskStateRoute('cowork'));

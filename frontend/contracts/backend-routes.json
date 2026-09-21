@@ -60,6 +60,13 @@
     },
     {
       "method": "GET",
+      "path": "/api/cowork/tasks/:taskId/provenance",
+      "source": "src/http/agents.ts:586",
+      "exposure": "frontend",
+      "capability": "cowork.read"
+    },
+    {
+      "method": "GET",
       "path": "/api/design/tasks/:taskId/state",
       "source": "src/http/agents.ts:560",
       "exposure": "frontend",
@@ -134,6 +141,13 @@
       "source": "src/http/agents.ts:745",
       "exposure": "frontend",
       "capability": "agents.status"
+    },
+    {
+      "method": "GET",
+      "path": "/api/artifacts/versions",
+      "source": "src/http/artifacts.ts:42",
+      "exposure": "frontend",
+      "capability": "artifacts.read"
     },
     {
       "method": "GET",
@@ -565,42 +579,56 @@
     {
       "method": "GET",
       "path": "/api/memory",
-      "source": "src/http/memory.ts:22",
+      "source": "src/http/memory.ts:45",
       "exposure": "frontend",
       "capability": "memory.manage"
     },
     {
       "method": "GET",
       "path": "/api/memory/status",
-      "source": "src/http/memory.ts:37",
+      "source": "src/http/memory.ts:60",
+      "exposure": "frontend",
+      "capability": "memory.manage"
+    },
+    {
+      "method": "POST",
+      "path": "/api/memory",
+      "source": "src/http/memory.ts:91",
+      "exposure": "frontend",
+      "capability": "memory.manage"
+    },
+    {
+      "method": "POST",
+      "path": "/api/memory/import",
+      "source": "src/http/memory.ts:127",
       "exposure": "frontend",
       "capability": "memory.manage"
     },
     {
       "method": "POST",
       "path": "/api/memory/enable",
-      "source": "src/http/memory.ts:56",
+      "source": "src/http/memory.ts:79",
       "exposure": "frontend",
       "capability": "memory.manage"
     },
     {
       "method": "POST",
       "path": "/api/memory/disable",
-      "source": "src/http/memory.ts:57",
+      "source": "src/http/memory.ts:80",
       "exposure": "frontend",
       "capability": "memory.manage"
     },
     {
       "method": "DELETE",
       "path": "/api/memory",
-      "source": "src/http/memory.ts:60",
+      "source": "src/http/memory.ts:151",
       "exposure": "frontend",
       "capability": "memory.manage"
     },
     {
       "method": "DELETE",
       "path": "/api/memory/:id",
-      "source": "src/http/memory.ts:68",
+      "source": "src/http/memory.ts:159",
       "exposure": "frontend",
       "capability": "memory.manage"
     },

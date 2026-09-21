@@ -6,6 +6,11 @@ import { TaskStateBanner } from '../components/TaskStateBanner/TaskStateBanner';
 import { ApertureMark } from '../design-system/components/ApertureMark/ApertureMark';
 import styles from './HarnessRouter.module.css';
 import { AttentionList } from '../attention/AttentionList';
+import {
+  KnowledgeSourceList,
+  VersionTimeline,
+} from '../components/Provenance/ProvenancePanel';
+import { artifactVersionsFixture, knowledgeSourcesFixture } from './fixtures/provenance';
 import { attentionQueueFixture } from './fixtures/attentionQueue';
 import { operationalFixtures } from './fixtures/operationalStates';
 import { taskStateFixtures } from './fixtures/taskStates';
@@ -87,6 +92,34 @@ function AttentionFixture() {
   );
 }
 
+/**
+ * Provenance, rendered from fixtures (1.39 A6).
+ *
+ * The production halves, not a copy: `VersionTimeline` and `KnowledgeSourceList`
+ * take their data as props and never fetch, which is why the harness can show a
+ * version chain and a run's evidence without a server. What the harness cannot
+ * show is the panel's failure states — those need a failing request, and the
+ * component tests cover them.
+ */
+function ProvenanceFixture() {
+  return (
+    <section aria-labelledby="provenance-fixture-heading" className={styles.section}>
+      <h2 className={styles.sectionHeading} id="provenance-fixture-heading">
+        Provenance fixture
+      </h2>
+      <p className={styles.note}>
+        A version chain and the knowledge sources a Cowork run used as evidence. The first
+        version has no parent, and one entry has no recorded digest — both are states the
+        display has to distinguish from “unknown”.
+      </p>
+      <div className={styles.provenanceGrid}>
+        <VersionTimeline versions={artifactVersionsFixture} />
+        <KnowledgeSourceList sources={knowledgeSourcesFixture} />
+      </div>
+    </section>
+  );
+}
+
 export function Component() {
   if (!import.meta.env.DEV) {
     throw new Error('The state harness is unavailable outside development.');
@@ -135,6 +168,8 @@ export function Component() {
       </section>
 
       <AttentionFixture />
+
+      <ProvenanceFixture />
 
       <section aria-labelledby="dialog-fixtures-heading" className={styles.section}>
         <h2 className={styles.sectionHeading} id="dialog-fixtures-heading">Dialog fixtures</h2>

@@ -18,6 +18,7 @@ const { cleanupHome, freshDb } = await import('./helpers.ts');
 const { AppError } = await import('../src/util/errors.ts');
 const { createCoworkAgent, readKnowledgeSource, runCoworkTask } = await import('../src/services/cowork/agent.ts');
 const { saveKnowledgeSource } = await import('../src/services/cowork/knowledge.ts');
+const { listRunKnowledge } = await import('../src/db/runKnowledge.ts');
 
 type StreamPlan = { chunks?: StreamChunk[]; error?: unknown };
 
@@ -34,6 +35,9 @@ function context(
   let artifactIndex = 0;
   const ctx = {
     taskId: 'task-1',
+    // Provenance is per run (1.39 A6), so the context carries one exactly as the
+    // route does. A run with no id records nothing rather than failing.
+    runId: 'run-cowork-1',
     emit: (event: string, data: Record<string, unknown>) => events.push({ event, data }),
     llm: {
       async *stream(request: CompletionRequest): AsyncGenerator<StreamChunk, void, unknown> {
@@ -86,7 +90,14 @@ function makeManager(
   return { manager: value, starts, listed, calls };
 }
 
-before(async () => { await freshDb(); });
+const { startTaskRun } = await import('../src/db/taskRuns.ts');
+
+before(async () => {
+  await freshDb();
+  // The run row the context names. Provenance has a foreign key to it, exactly as
+  // `task_steps` does: a record of what a run used needs a run.
+  startTaskRun({ runId: 'run-cowork-1', taskId: 'task-1', tool: 'cowork' });
+});
 after(async () => { await cleanupHome(); });
 
 describe('the additive Cowork agent', () => {
@@ -130,6 +141,18 @@ describe('the additive Cowork agent', () => {
     assert.match(system, /missing; not used as evidence/);
     assert.match(system, /binary; not used as evidence/);
     assert.match(system, /hash_mismatch; not used as evidence/);
+
+    // Provenance (1.39 A6) says the same thing the prompt does, and that is the
+    // point: "used" means evidence, so the consulted-but-unusable sources are
+    // absent rather than listed. A digest and a byte count come from the read
+    // itself, not from the source's registration.
+    const recorded = listRunKnowledge('run-cowork-1');
+    assert.deepEqual(
+      recorded.map((row) => row.sourceId),
+      [usable.id],
+    );
+    assert.equal(recorded[0]?.filename, 'guide.md');
+    assert.equal(recorded[0]?.sha256, null, 'this read did not report a digest, so none is claimed');
   });
 
   it('uses Wigolo only when enabled and running, and preserves MCP errors as results', async () => {
@@ -220,7 +243,16 @@ describe('Cowork knowledge reading', () => {
   it('reads a stored UTF-8 source through the scoped path and rejects unsupported bytes', async () => {
     const saved = saveKnowledgeSource({ filename: 'reference.md', buffer: Buffer.from('scoped text', 'utf8'), mimeType: 'text/markdown' });
     const usable = await readKnowledgeSource(saved);
-    assert.deepEqual(usable, { status: 'usable', text: 'scoped text' });
+    // A usable read reports the text *and* the identity of the bytes it read: the
+    // digest and the byte count are what a provenance row stores, and computing
+    // them only when a source happens to pin a digest would leave the common case
+    // unable to say which version of a file a run was given.
+    assert.deepEqual(usable, {
+      status: 'usable',
+      text: 'scoped text',
+      bytes: 11,
+      sha256: 'b36158d82c1a1cd721b437e9c7c1bea712e7881abba617fd8b8af3e96659fb55',
+    });
 
     const unsupported = await readKnowledgeSource({ ...saved, filename: 'reference.exe', mimeType: 'application/octet-stream' });
     assert.deepEqual(unsupported, { status: 'unsupported' });

@@ -13,6 +13,8 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 
+import { createLogger } from '../../util/logger.ts';
+
 import { getMcpProcessManager } from '../../orchestrator/agents.ts';
 import { findServerByName } from '../mcp/registry.ts';
 import { recallForTurn, rememberTurn } from '../memory/index.ts';
@@ -25,6 +27,7 @@ import { runAgentLoop } from '../agent/loop.ts';
 import { createPermissionResolver } from '../agent/permissions.ts';
 import { assertKnownTools, permissionLayers, profileSelector, resolveProfile } from '../agent/profiles.ts';
 import { sessionPermissionRules } from '../../db/approvals.ts';
+import { recordRunKnowledge } from '../../db/runKnowledge.ts';
 import { loadConversation } from '../../db/taskMessages.ts';
 import { resolveContextWindow } from '../agent/compaction.ts';
 import { findCachedModel } from '../../providers/registry.ts';
@@ -46,6 +49,8 @@ import type {
   ToolSchema,
 } from '../../types/core.ts';
 import type { KnowledgeSource } from './knowledge.ts';
+
+const log = createLogger('cowork');
 
 const WIGOLO_NAME = 'wigolo';
 const WIGOLO_GUIDANCE = 'Wigolo is unavailable. To set it up, run `npx -y wigolo init`.';
@@ -72,6 +77,17 @@ export interface CoworkDependencies {
 export interface KnowledgeReadResult {
   status: 'usable' | 'missing' | 'unreadable' | 'binary' | 'unsupported' | 'hash_mismatch';
   text?: string;
+  /**
+   * The digest of the bytes actually read, and how many there were.
+   *
+   * Computed for every successful read, not only when the source pins one, because
+   * this is the identity a provenance row stores: "this run used *these* bytes" is
+   * the only claim worth keeping, and a digest that only exists when someone
+   * happened to register one could not make it. `unsupported`/`binary`/`missing`
+   * carry neither — nothing was read.
+   */
+  sha256?: string;
+  bytes?: number;
 }
 
 export interface CoworkRunOptions {
@@ -123,6 +139,8 @@ export async function readKnowledgeSource(
   if (bytes.byteLength > MAX_SOURCE_BYTES) return { status: 'unsupported' };
   if (bytes.includes(0)) return { status: 'binary' };
 
+  const digest = createHash('sha256').update(bytes).digest('hex');
+
   const text = new TextDecoder('utf-8', { fatal: true });
   let decoded: string;
   try {
@@ -131,10 +149,7 @@ export async function readKnowledgeSource(
     return { status: 'binary' };
   }
 
-  if (source.sha256 !== null) {
-    const digest = createHash('sha256').update(bytes).digest('hex');
-    if (digest !== source.sha256) return { status: 'hash_mismatch' };
-  }
+  if (source.sha256 !== null && digest !== source.sha256) return { status: 'hash_mismatch' };
 
   const extension = source.filename.toLowerCase().split('.').pop();
   const mime = source.mimeType?.toLowerCase() ?? '';
@@ -145,7 +160,9 @@ export async function readKnowledgeSource(
     mime === 'application/csv' ||
     extension === 'txt' || extension === 'md' || extension === 'markdown' ||
     extension === 'csv' || extension === 'json' || extension === 'xml';
-  return supported ? { status: 'usable', text: decoded } : { status: 'unsupported' };
+  return supported
+    ? { status: 'usable', text: decoded, sha256: digest, bytes: bytes.byteLength }
+    : { status: 'unsupported' };
 }
 
 function isNodeFsError(error: unknown): error is { code?: string } {
@@ -275,6 +292,31 @@ export async function runCoworkTask(
       source,
       result: await (deps.readKnowledge ?? readKnowledgeSource)(source),
     })));
+    // Provenance (1.39 A6): record the sources this run is about to be given as
+    // evidence — the usable ones, which is what the prompt's own header promises
+    // ("only entries marked usable are evidence"). Best-effort on purpose: a run
+    // whose answer is already computed must not fail because a history row could
+    // not be written.
+    try {
+      // A run with no id has nowhere to hang the record; the route always starts
+      // one, and a test calling the agent directly may not, which is not a reason
+      // to fail the run.
+      if (ctx.runId !== undefined) recordRunKnowledge(
+        ctx.runId,
+        prepared
+          .filter((item) => item.result.status === 'usable')
+          .map((item) => ({
+            sourceId: item.source.id,
+            label: item.source.label,
+            filename: item.source.filename,
+            bytes: item.result.bytes ?? null,
+            sha256: item.result.sha256 ?? null,
+          })),
+      );
+    } catch (error) {
+      log.warn('could not record the knowledge sources this run used', error);
+    }
+
     const memory = await (deps.recallForTurn ?? recallForTurn)(input.prompt, 'cowork');
     const wigolo = await wigoloState(deps);
     const system = [

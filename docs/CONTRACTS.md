@@ -4604,3 +4604,50 @@ What is *not* here, and must not be read as covered by "1.31 landed": the
 recovery UX (view the partial work, discard it), the unattended-run notification,
 the `orphaned_worktree` check, the interactive-wait timeout and the Design
 environment. Item 1.31 is a list, and only its state half is built.
+
+## Provenance is two fields, and both are derived *(Prompt 1.39 A6)*
+
+"What was this built on?" has exactly two answers worth storing, and the item that
+asks for them also says not to store more. Both landed with that shape:
+
+- **The version a version replaced.** `artifact_versions` has no `parent` column,
+  and it does not need one: the parent of version *n* is *n-1*, and the table's own
+  `UNIQUE (artifact_key, version)` is what makes that unambiguous. A column would be
+  a second source of truth for a fact the key already holds, and the first thing to
+  drift after a restore or a hand-edited row. `GET /api/artifacts/versions?key=…`
+  derives it, so `parentVersion: null` means "this is where the artifact started"
+  rather than "the parent is unknown" — which is only true for version 1.
+- **The knowledge sources a run used.** Recorded where the sources are read, before
+  the agent loop starts, and *used* keeps the meaning the prompt already gives it:
+  only sources marked usable are evidence. A source that was consulted and turned
+  out missing, binary or hash-mismatched is deliberately **absent** from the
+  provenance list, because listing it would claim evidence the run never had — the
+  prompt says so in as many words (`not used as evidence`), and the two must not
+  disagree.
+
+Four decisions underneath:
+
+1. **A run's sources, not a task's.** A task can be restarted while its id stays,
+   so the row is keyed `(run_id, source_id)` and cascades with the run. A retried run
+   id replaces its set rather than accumulating — `startTaskRun`'s `INSERT OR
+   REPLACE` clears this table by cascade exactly as it clears `task_steps` — and the
+   writer deletes the run's rows first so the rule holds for any caller, not only
+   the one that re-starts the run before reading.
+2. **No foreign key to `knowledge_sources`.** Label, filename, byte count and
+   digest are copied into the row, so deleting a source later cannot erase the fact
+   that a run used it. That is the opposite of what a cascading reference would do,
+   and it is the point: provenance is a claim about the past.
+3. **The read reports what it read.** `readKnowledgeSource` now returns the digest
+   and length of the bytes it decoded, not only when the source pins a digest.
+   Without it a provenance row could say *which file* but never *which version of
+   it*, which is the half that matters when a source is edited underneath a
+   library that is not versioned.
+4. **A missing digest stays missing.** `sha256: null` and `bytes: null` mean the
+   read did not report them — never zero bytes, and never a hash of nothing.
+
+Both fields are read back through the API and rendered by one component
+(`frontend/src/components/Provenance/`), which the dev harness shows with fixture
+data. What is still missing is a *tool* to host it: the Code/Design task surfaces
+that would put a version timeline under a diff do not exist yet, so the panel is
+reviewable in the harness and unwired in the app — stated here rather than implied
+by a passing test suite.

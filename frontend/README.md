@@ -55,6 +55,13 @@ npm run build
   aperture identity, and accessible primitives.
 - `src/workspaces/` is the shared Code/Design/Cowork frame. It owns composition,
   resize/restoration, focus regions, and deep-link panel targets, not tool logic.
+- `src/components/Provenance/` is the provenance view (Prompt 1.39 A6): a version
+  timeline where each row names the version it replaced (derived by the backend,
+  so "no parent" reads as a beginning and never as an unknown) and the knowledge
+  sources a Cowork run used *as evidence* — the usable ones, because a source that
+  was consulted and found missing is not evidence and saying otherwise would
+  overclaim. Both reads render their own failure; the panel is shown in the dev
+  harness, and the tool surfaces that will host it are still placeholders.
 - `src/components/PrivacyIndicator/` is the point-of-action privacy line
   (Prompt 1.39 B): egress class, retention status, standing requirement and the
   redaction-check flag, rendered by the composer from

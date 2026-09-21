@@ -510,7 +510,7 @@ paused on failure.
 
 ---
 
-## 5. Memory — `/api/memory`  *(new in 1.5)*
+## 5. Memory — `/api/memory`  *(new in 1.5; writes added in 1.21)*
 
 Backed by self-hosted mem0. Off by default; toggle is the setting
 `plugins.memory.enabled`.
@@ -528,8 +528,29 @@ MemoryStatus { enabled, available, error: string|null,
 | GET | `/api/memory/status` | `{ status: MemoryStatus }` |
 | POST | `/api/memory/enable` | `{ status }` |
 | POST | `/api/memory/disable` | `{ status }` |
+| POST | `/api/memory` | `{ stored: true }` — body `{ text }`, at most 4000 characters |
+| POST | `/api/memory/import` | `{ imported, dropped, found, error }` — body `{ text }` |
 | DELETE | `/api/memory/:id` | `{ deleted: boolean }` |
 | DELETE | `/api/memory` | `{ cleared: boolean }` |
+
+**The write routes refuse rather than no-op**, which is the one thing a read route
+never has to get right. A disabled plugin is `403 capability_disabled` (nothing was
+stored, whatever the response looks like), an empty or oversized body is
+`400 bad_request` naming the field and the bound, and a backend that will not load
+is `500 storage_error` with the reason `GET /status` would have given. A `200 {}`
+here would be indistinguishable from a memory that was stored and then lost.
+
+**Import is bounded, and says what it dropped.** Blank lines separate memories and
+single line breaks do not — a memory that is a short list is more useful stored
+whole than shredded. Chunks are added one at a time (each is a local-model
+extraction pass; firing a hundred at once against one Ollama queues them anyway
+while making a failure unreadable), capped at 100 chunks or 20 000 characters. A
+piece that does not fit is **dropped, never truncated**: storing a memory the user
+did not write is worse than storing nothing and saying so. A run that stops early
+returns its counts with `error` set, because 40 of 60 chunks landing is a real
+outcome and a 500 would throw it away — with one exception: if *nothing* landed,
+the response is the storage error, since a success-shaped answer for zero work is
+the reading this route must not allow.
 
 The list route returns an **empty array rather than an error** when memory is
 disabled or the backend failed to load, so `GET /status` is the single place that
@@ -1152,6 +1173,37 @@ through to the next location and misreporting where the rules came from.
 `null`. Agents additionally carry `tools` (`tools: [read, bash]`, or a lone
 `tool: bash`, normalised to an array) and `model`, both `null` when undeclared.
 Commands carry only `name`, `description` and `path`.
+
+### 12.3a Provenance  *(new in Prompt 1.39 A6)*
+
+Two read routes, one field each — the version a version replaced, and the
+knowledge sources a run used as evidence.
+
+| Method | Path | Response |
+| --- | --- | --- |
+| GET | `/api/artifacts/versions` | `{ artifactKey, versions: ArtifactVersion[] }` — query `key` (required), `limit` (default 200, max 1000) |
+| GET | `/api/cowork/tasks/:taskId/provenance` | `{ run: TaskRun, knowledgeSources: RunKnowledgeSource[] }` |
+
+```ts
+ArtifactVersion     { id, artifactKey, tool, version, label, inline: boolean,
+                      bytes: number|null, sha256: string|null, createdAt,
+                      parentVersion: number|null }
+RunKnowledgeSource  { sourceId, label: string|null, filename, bytes: number|null,
+                      sha256: string|null, usedAt }
+```
+
+`parentVersion` is **derived**, not stored: the parent of version *n* is *n-1*, and
+`UNIQUE (artifact_key, version)` is what makes that unambiguous. `null` therefore
+means "version 1 — this is where the artifact started", never "unknown". Versions
+come back newest first, so a `limit` drops the oldest.
+
+`knowledgeSources` are the sources whose text went into the prompt as evidence
+(status `usable`), not every source the library held: a source that was consulted
+and found missing, binary or hash-mismatched is absent on purpose, because listing
+it would claim evidence the run never had. The task's `run` travels with them,
+because provenance belongs to an attempt — a restarted run replaces its list.
+An empty list is a real answer (an empty library, or nothing usable); the library
+itself is `GET /api/cowork/knowledge`.
 
 ### 12.4 Task state endpoints  *(new in 1.15)*
 

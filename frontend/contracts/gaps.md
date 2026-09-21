@@ -25,9 +25,19 @@ behavior in the browser.
 
 - No unified `/api/plugins` surface or durable per-tool plugin availability.
 - No Chat fork endpoint or dedicated Chat state endpoint.
-- No Code file-tree, file-read, task-diff, or walkthrough retrieval contracts.
+- No Code file-tree, file-read, task-diff, or walkthrough retrieval contracts. (`GET /api/code/tasks`
+  reports the live lane — running slots and held worktrees — which is what a task rail needs for
+  *active* work; a per-project *history* of code tasks is still absent, and `GET /api/code/tasks/:id/export`
+  covers one task's diff.)
 - No Design file tree, version timeline, rendered diff, or design-system context contract.
-- No general artifact lineage/list endpoint.
+- ~~No general artifact lineage/list endpoint.~~ **Partly closed 2026-09-21**: `GET /api/artifacts/versions?key=…`
+  lists one artifact's version chain with its derived parent (Prompt 1.39 A6). There is still no
+  cross-artifact listing or a "what produced this" graph — the version stack answers "what did this
+  replace", not "where did this come from".
 - No Pulse, discovery, watchlist, or browser-use assignment contracts.
 - Backup does not expose the specified encrypted destination/passphrase system.
-- Memory has no direct-add or text-import endpoint.
+- ~~Memory has no direct-add or text-import endpoint.~~ **Closed 2026-09-21**: `POST /api/memory`
+  (one memory, bounded to a paragraph) and `POST /api/memory/import` (pasted text, split on blank
+  lines, bounded to 100 chunks / 20 000 characters, dropped pieces counted rather than truncated).
+  The Settings surface that will call them does not exist yet — the routes are ready and the
+  placeholder tool is not.
