@@ -195,6 +195,45 @@ describe('the attention center', () => {
     expect(screen.getByText('bash needs a decision')).toBeInTheDocument();
   });
 
+  it('says a prompt expired instead of announcing an allowance that did not happen', async () => {
+    // `applied: false` is the server saying this decision changed nothing. The
+    // banner used to ignore it and announce "Allowed ..." for every non-deny
+    // answer — the worst possible wording for a prompt that timed out, because it
+    // promises a call that was never authorised.
+    stubFetch((url) =>
+      url === '/api/attention'
+        ? json(queue([APPROVAL]))
+        : json({ tool: 'code', taskId: 'task-1', approvalId: 'a1', state: 'expired', applied: false, continuable: false }),
+    );
+
+    renderCenter();
+    await screen.findByText('bash needs a decision');
+    const group = screen.getByRole('group', { name: /Decide bash needs a decision/ });
+    fireEvent.click(within(group).getByRole('button', { name: 'Allow once' }));
+
+    const notice = await screen.findByRole('status');
+    expect(notice).toHaveTextContent(/expired before it was answered/);
+    expect(notice).toHaveTextContent(/continue it to be asked again/);
+    expect(notice).not.toHaveTextContent(/Allowed/);
+  });
+
+  it('says a prompt was already answered when the decision changed nothing', async () => {
+    stubFetch((url) =>
+      url === '/api/attention'
+        ? json(queue([APPROVAL]))
+        : json({ tool: 'code', taskId: 'task-1', approvalId: 'a1', state: 'allow_session', applied: false, continuable: false }),
+    );
+
+    renderCenter();
+    await screen.findByText('bash needs a decision');
+    const group = screen.getByRole('group', { name: /Decide bash needs a decision/ });
+    fireEvent.click(within(group).getByRole('button', { name: 'Allow once' }));
+
+    const notice = await screen.findByRole('status');
+    expect(notice).toHaveTextContent(/had already been answered \(allow_session\)/);
+    expect(notice).not.toHaveTextContent(/Allowed/);
+  });
+
   it('never renders an empty queue when the read failed', async () => {
     stubFetch(() => json({ error: { code: 'internal_error', message: 'boom', retryable: true } }, 500));
     renderCenter();

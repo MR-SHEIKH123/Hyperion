@@ -44,6 +44,21 @@ export default function AttentionCenter() {
       setNotice(null);
     },
     onSuccess: (result, { item, decision }) => {
+      // `applied: false` is an answer, not a failure: the server is saying this
+      // decision changed nothing. It happens for two reasons that mean different
+      // things to the user, and the banner used to ignore the flag entirely and
+      // announce an allowance that had not been granted — which is the worst
+      // possible wording for a *timed-out* prompt, because it tells the user to
+      // expect a call that will never be authorised.
+      if (!result.applied) {
+        setNotice(
+          result.state === 'expired'
+            ? `“${item.title}” expired before it was answered, so ${decision === 'deny' ? 'nothing was denied' : 'nothing was allowed'}. Open the task and continue it to be asked again.`
+            : `“${item.title}” had already been answered (${result.state}), so this decision changed nothing.`,
+        );
+        void queryClient.invalidateQueries({ queryKey: ['attention'] });
+        return;
+      }
       setNotice(
         decision === 'deny'
           ? `Denied “${item.title}”. The run has been finalised.`

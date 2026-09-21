@@ -266,6 +266,7 @@ export const TASK_ITERATION_CEILING_KEY = 'task_iteration_ceiling';
 export const SUBAGENT_COUNT_LIMIT_KEY = 'subagent_count_limit';
 export const REDACTION_CHECK_KEY = 'redaction_check_enabled';
 export const PARKED_WORKTREE_TTL_KEY = 'parked_worktree_ttl_hours';
+export const APPROVAL_WAIT_TTL_KEY = 'approval_wait_ttl_hours';
 
 
 // --- spending and runaway limits (Part 1.19) -------------------------------
@@ -333,6 +334,37 @@ export function subagentCountLimit(): number {
 export function parkedWorktreeTtlHours(): number {
   const raw = getNumberSetting(PARKED_WORKTREE_TTL_KEY, 168);
   return raw > 0 ? raw : 168;
+}
+
+
+/**
+ * How long a prompt waits for an answer before it expires (1.31).
+ *
+ * Three days by default. This is the deadline on the *question*, not on the task:
+ * a `pending_approvals` row older than this is closed as `expired` by the reaper,
+ * and answering it afterwards no longer authorises anything. What it buys is the
+ * thing an unbounded wait gets wrong twice — a prompt left `pending` forever is
+ * still shown as answerable, and a click on a week-old prompt replays a call
+ * against a checkout from a week ago, which is not what the user is picturing
+ * when they approve it.
+ *
+ * Deliberately shorter than `parkedWorktreeTtlHours` above: the question goes
+ * first and the work survives it, so an expired prompt still leaves the directory
+ * and its edits on disk to be looked at. The reverse order would reap the work
+ * while the question that could still consume it is answerable.
+ *
+ * A long weekend is the scale this has to clear — a task parked on Friday
+ * evening must still be answerable on Monday morning — and it is measured in
+ * hours rather than days because the useful values below a day (8, 12) are real
+ * ones for an unattended box.
+ *
+ * Zero and negatives read as the default rather than as "expire immediately",
+ * the same rule the worktree TTL uses: nobody types zero on purpose, and a
+ * zero-TTL reaper would close every prompt the moment the timer fired.
+ */
+export function approvalWaitTtlHours(): number {
+  const raw = getNumberSetting(APPROVAL_WAIT_TTL_KEY, 72);
+  return raw > 0 ? raw : 72;
 }
 
 

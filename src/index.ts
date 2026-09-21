@@ -18,6 +18,7 @@ import { reconcileOrphanedTaskRuns } from './db/taskRuns.ts';
 import { reconcileOrphanedRuns } from './orchestrator/runState.ts';
 import { startBackupScheduler, stopBackupScheduler } from './services/backup/schedule.ts';
 import { startTaskScheduler, stopTaskScheduler } from './services/cowork/scheduler.ts';
+import { expireWaitingApprovals } from './services/agent/approvalWait.ts';
 import { scanOrphanedWorktrees } from './services/code/worktree.ts';
 import { seedDefaultServers } from './services/mcp/defaults.ts';
 import { startMcpSupervisor, stopMcpSupervisor } from './services/mcp/supervisor.ts';
@@ -72,6 +73,11 @@ function bootstrap(): void {
   if (orphanedTaskRuns > 0) {
     log.warn('reconciled orphaned task runs from a previous process', { count: orphanedTaskRuns });
   }
+
+  // A wait can end while nothing is running — a deadline passes on a machine that
+  // is off — so the sweep is here as well as on the cleanup timer, and it is the
+  // reason a prompt cannot outlive the process that would have reaped it.
+  expireWaitingApprovals();
 
   // Beside the reconciliation above because it answers the same question for the
   // filesystem: what did a previous process leave behind? The worktree registry is

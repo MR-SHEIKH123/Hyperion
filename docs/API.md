@@ -1844,7 +1844,7 @@ what the handlers do rather than pointing at a design note.
 
 | Method | Path | Response |
 | --- | --- | --- |
-| GET | `/api/{code\|cowork\|design}/tasks/:taskId/approvals` | `{ tool, taskId, state, pauseReason, count, approvals }` |
+| GET | `/api/{code\|cowork\|design}/tasks/:taskId/approvals` | `{ tool, taskId, state, pauseReason, count, approvals:[{…, createdAt, expiresAt }] }` |
 | POST | `/api/{code\|cowork\|design}/tasks/:taskId/approve` | `{ tool, taskId, approvalId, state, applied, continuable }` |
 | POST | `/api/{code\|cowork\|design}/tasks/:taskId/continue` | SSE stream (the agent protocol) |
 | GET | `/api/code/permissions` | `{ project, mode, profile, layers }` |
@@ -1856,7 +1856,10 @@ call's `arguments` **verbatim** — the point of showing an approval is that the
 sees exactly what would run, and a summarised or reformatted call is a different
 call from the one they would be authorising. There is no `404` for a task with no
 approvals: an empty list is the honest answer, and the cross-task view is
-`GET /api/attention` (§19).
+`GET /api/attention` (§19). Each prompt carries `createdAt` and the `expiresAt` the
+reaper will hold it to (§12.6b), computed from the same setting the sweep reads — a
+client that hard-coded the deadline would show a countdown that reaches zero at a
+different moment than the prompt stops being answerable.
 
 **Approving** records a decision (`approvalId`, `decision` one of `allow_once` /
 `allow_session` / `deny`) and deliberately **does not start the agent** — that is
@@ -1865,7 +1868,10 @@ notification without committing to drive the run from that connection, which
 matters because continuing is an SSE stream and answering a prompt is a single JSON
 call. It is **idempotent**: approving an already-resolved approval returns the state
 it actually reached with `applied: false` rather than failing, because answering a
-moment after somebody else did is a race the user cannot avoid. A `deny` on a parked
+moment after somebody else did is a race the user cannot avoid. A prompt past its
+deadline answers the same way with `state: "expired"` — it was never resolved, so
+`applied: false` and `continuable: false`, and the honest client wording is that the
+wait expired rather than that an allowance was granted. A `deny` on a parked
 run finalises it (`stopped`, `pauseReason` `approval_denied` — or `loop_detected`
 when a doom loop was declined), and `continuable` says whether the caller still has
 work to do: true only for an allow, and only while the run's conversation still
@@ -1875,7 +1881,11 @@ exists to continue.
 the module lookup all happen **before** the response becomes a stream, so every
 refusal is JSON a client can read rather than an error buried in an SSE frame — the
 same discipline `run-task` follows. The body may carry `approvalId`/`decision` to
-resolve an approval and continue in one call. The agent rebuilds its own system
+resolve an approval and continue in one call. Answering an **expired** prompt is
+refused here (409, `details.reason: "expired"`, with the configured `waitHours`) and
+in its own words — `already_resolved` would say somebody answered it, and nobody did.
+Continuing **without** an `approvalId` is the way back: the conversation is replayed,
+the gated call is re-emitted, and the user is asked again with fresh arguments. The agent rebuilds its own system
 prompt for the continuation, which is correct rather than wasteful: the profile,
 project rules and session permissions may all have changed while the task was
 parked, and that change is usually the reason it was continued. The last user
@@ -1930,6 +1940,42 @@ Two properties are load-bearing:
 
 The reason map is a total `Record<ParkReason, string>`: adding a park reason is a
 compile error there until somebody decides what to tell the user.
+
+### 12.6b An unanswered prompt expires  *(new in 1.31)*
+
+The wait for an answer had no end. `pending_approvals` declared an `expired` state and
+the comment said why it existed — "the reaper" — while no reaper had ever been written,
+so a prompt stayed `pending` indefinitely: still listed as answerable, and a click on a
+month-old one still authorised its call, against a conversation and a checkout from a
+month ago. The deadline is `approval_wait_ttl_hours` (default **72**; zero and
+negatives read as the default, the same rule the worktree TTL uses), and the sweep runs
+once at boot and on the cleanup tick — boot because a deadline can pass while the
+process is not running, which is exactly the case a timer-only sweep misses.
+
+Four rules, each one a way this could be wrong:
+
+- **The question expires; the task does not.** A parked run whose prompt expired stays
+  parked and stays continuable: `POST /continue` without an `approvalId` replays the
+  conversation and asks again. Ending the run would make a timer the thing that
+  destroyed a recoverable task, so the deadline is on the row, never on the run.
+- **Only `pending` is a wait.** `allow_session` is a standing rule and `allow_once` is
+  spent by the replay it authorises; `closeApprovals` clears both at the task's
+  terminal transition, because session allowances are scoped to the task that granted
+  them (1.27 §1). A sweep that expired them would silently revoke a permission.
+- **An answer beats the reaper.** The update is guarded on the row still being
+  `pending`, so a decision landing in the same instant wins — the same mutex
+  `resolveApproval` uses, and the reason the sweep reports only rows it actually moved.
+- **A restart closes its own questions.** Boot reconciliation demotes a `blocked` run
+  to `interrupted` with the message "it can no longer receive an answer"; leaving that
+  run's approvals `pending` was the same bug one layer down, and would keep a dead
+  prompt in the task's list and in the Attention Center as a `resolve` call that can
+  only fail. The demoted park's approvals are closed in the same pass, session rules
+  included.
+
+The Attention Center reads `applied` from the decision response and says what happened:
+a prompt that expired reads as **expired** and points at continuing the task, and a
+prompt somebody already answered reads as already answered. Announcing an allowance
+that was not granted is the one wording a prompt with a deadline must never produce.
 
 ### 12.7 The Design agent  *(new — the Design slice)*
 

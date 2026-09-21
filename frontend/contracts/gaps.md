@@ -16,15 +16,9 @@ behavior in the browser.
   reconciliation), so an interruption is a state the backend holds rather than one this
   frontend derives. One thing it does not close: there is still no per-project active-task
   listing.
-- ~~No way to see what an interrupted run left.~~ **The read landed 2026-09-21 (1.31); the
-  screen is still missing.** `GET /api/{tool}/tasks/:taskId/recovery` reports the run's
-  bounded step history with SQL totals over all of it, the leftover checkout and what
-  discarding it would lose, and whether a resume or a discard is available and why not —
-  so the three verbs of the recovery surface have their data. What does not exist is the
-  surface: nothing renders it (`tasks.recovery` is declared here as `missing`), which is
-  why 1.31 is still partial. Worth knowing for whoever builds it: resuming an interrupted
-  run is a **re-run** of the task (whose provisioning re-attaches the leftover checkout),
-  not a continuation — the continuation routes only move a parked run.
+- ~~No way to see what an interrupted run left.~~ **Closed for Code 2026-09-21 (1.31)** —
+  read and screen; see the fuller entry below, which `tasks.recovery` is declared
+  `partial` against.
 - No complete per-project active-task listing for switch warnings.
 - Health summary has no backup component and no explicit provider cooldown detail.
 - ~~No per-provider egress-proxy contract.~~ **Closed 2026-09-21 (1.37).**
@@ -56,8 +50,18 @@ behavior in the browser.
   button, because resuming an interrupted run is a **re-run** (`POST /api/{tool}/run-task`
   with the same task id, whose provisioning re-attaches the leftover checkout) and no
   surface can start a run yet; and Cowork and Design have no surfaces of their own, so only
-  Code mounts the panel. The unattended-run notification, the interactive-wait timeout and
-  the Design environment remain the rest of 1.31.
+  Code mounts the panel. Of the rest of 1.31, the unattended-run notification and the
+  interactive-wait timeout both landed on 2026-09-21 (a prompt now expires after
+  `approval_wait_ttl_hours`, default 72, and the Attention Center says so instead of
+  announcing an allowance that was never applied); the **Design environment** remains, and
+  it is the last open half of the item.
+
+  One thing this list should carry while it is here: **the approval deadline has no
+  settings control.** The value is a setting (three days by default) and the read reports
+  each prompt's `expiresAt`, so a settings screen has everything it needs to show or change
+  it — nothing does yet, the same gap the context ceiling has. Until then the deadline is a
+  default the user cannot see, which is exactly the kind of invisible rule this file exists
+  to keep visible.
 - No global search endpoint; later shell search must report federated partial coverage.
 
 ## Later

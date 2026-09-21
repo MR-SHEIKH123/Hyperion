@@ -25,5 +25,8 @@ which no gate noticed because only the route *set* was ever compared. A stale
 pointer is a claim the snapshot cannot support, so it now fails the check.
 
 This is also why the line numbers here are honest rather than decorative: if you
-edit `src/http/*` above a route, regenerate the file's pointers (the check names
-the expected line for each one) instead of leaving them to rot.
+edit `src/http/*` above a route, regenerate the file's pointers instead of leaving
+them to rot. `node frontend/scripts/check-contracts.mjs --fix` does that — it
+rewrites `source` from the same discovery pass the check uses and prints every
+pointer it changed, while everything else it checks still fails the run. It cannot
+make a wrong pointer pass; it can only make a stale one current.

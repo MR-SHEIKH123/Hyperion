@@ -353,6 +353,12 @@ export function latestRunForTask(tool: TaskRunTool, taskId: string): TaskRun | n
  */
 export function reconcileOrphanedTaskRuns(): number {
   const now = Date.now();
+  // Read the parks *before* demoting them: after the UPDATE below the state is
+  // `interrupted`, and the task ids are exactly what closing their prompts needs.
+  const abandonedParks = getDb()
+    .prepare<{ task_id: string }>(`SELECT task_id FROM task_runs WHERE state = 'blocked'`)
+    .all()
+    .map((row) => row.task_id);
   const result = getDb()
     .prepare(
       // SET expressions see the pre-update row, so this CASE reads the state the
@@ -370,5 +376,14 @@ export function reconcileOrphanedTaskRuns(): number {
         WHERE state IN ('running', 'blocked')`,
     )
     .run(now, now);
+
+  // A demoted run's question is unanswerable — the message above says as much
+  // ("it can no longer receive an answer") — so leaving its `pending_approvals`
+  // rows `pending` would keep a dead prompt listed as answerable, in the task's own
+  // approval list and as an attention item whose `resolve` call can only fail.
+  // Closing them is the same terminal-transition rule `finishTaskRun` applies; the
+  // difference is only that a restart, not a task, is what ended this run.
+  for (const taskId of abandonedParks) closeApprovals(taskId);
+
   return Number(result.changes ?? 0);
 }

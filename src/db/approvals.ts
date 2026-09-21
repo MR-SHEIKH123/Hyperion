@@ -41,9 +41,11 @@ import type { PermissionAction, PermissionLayer, PermissionRule } from '../types
  * single `allowed` value would make it impossible to tell which the user chose
  * when reading the history back.
  *
- * `expired` exists for the reaper — a park abandoned past its TTL has its
- * approvals closed out rather than left `pending` forever, so "what is this task
- * waiting on?" has an honest answer.
+ * `expired` exists for the reaper — `expireStaleApprovals` below closes out a
+ * prompt nobody answered rather than leaving it `pending` forever, so "what is
+ * this task waiting on?" has an honest answer. It was written here before it was
+ * written anywhere else, which is why the sentence used to describe a mechanism
+ * that did not exist yet.
  */
 export const APPROVAL_STATES = ['pending', 'allow_once', 'allow_session', 'denied', 'expired'] as const;
 
@@ -218,6 +220,61 @@ export function countPendingApprovals(): number {
     )
     .get();
   return row?.total ?? 0;
+}
+
+/**
+ * Close out prompts nobody answered, past the deadline (1.31).
+ *
+ * The wait for an answer used to have no end: a prompt stayed `pending` forever,
+ * so it kept being listed as something the user could act on and a click on a
+ * month-old one still authorised its call — against a conversation and a checkout
+ * from a month ago. The deadline is the fix at the row level; the caller owns the
+ * policy (see `services/agent/approvalWait.ts`).
+ *
+ * Three properties are the point, and each one is a way this could be wrong:
+ *
+ *   - **Only `pending` is touched.** `allow_once` / `allow_session` / `denied` are
+ *     answers, not waits: a session allowance is a standing rule and outlives its
+ *     prompt by design (it is `closeApprovals` that clears those, at the task's
+ *     terminal transition, because 1.27 §1 scopes them to the task).
+ *   - **The decision guard stays per row.** A user answering at the same moment the
+ *     reaper runs must win, so the update is `WHERE id = ? AND state = 'pending'`
+ *     and a row that moved is not reported as expired. The same mutex shape
+ *     `resolveApproval` uses — a read-then-write of the same field would expire a
+ *     prompt that had just been approved.
+ *
+ *     That guard and the `state = 'pending'` filter on the read overlap, and both
+ *     are kept: the filter narrows the write to rows that looked unanswered, and
+ *     the guard is what makes the answer win if one lands in the gap between the
+ *     two statements. Neither is observable on its own — dropping either leaves
+ *     every non-racy behaviour identical, which is also why the mutation checks in
+ *     `test/approvalwait.test.ts` do not claim to kill them individually.
+ *   - **It reports what it expired.** The caller has to know *which* waits ended,
+ *     because a prompt going away silently is indistinguishable from a bug; the
+ *     rows come back with their `state`/`resolvedAt` already advanced.
+ */
+export function expireStaleApprovals(input: { ttlMs: number; now?: number }): PendingApproval[] {
+  const now = input.now ?? Date.now();
+  const stale = getDb()
+    .prepare<ApprovalRow>(
+      `SELECT * FROM pending_approvals
+        WHERE state = 'pending' AND created_at <= ?
+        ORDER BY created_at`,
+    )
+    .all(now - input.ttlMs)
+    .map(mapRow);
+  if (stale.length === 0) return [];
+
+  const expire = getDb().prepare(
+    `UPDATE pending_approvals SET state = 'expired', resolved_at = ?
+      WHERE id = ? AND state = 'pending'`,
+  );
+  const expired: PendingApproval[] = [];
+  for (const approval of stale) {
+    if (expire.run(now, approval.id).changes === 0) continue;
+    expired.push({ ...approval, state: 'expired', resolvedAt: now });
+  }
+  return expired;
 }
 
 /**

@@ -355,63 +355,63 @@
     {
       "method": "POST",
       "path": "/api/code/tasks/:taskId/continue",
-      "source": "src/http/continuation.ts:438",
+      "source": "src/http/continuation.ts:452",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "POST",
       "path": "/api/cowork/tasks/:taskId/continue",
-      "source": "src/http/continuation.ts:439",
+      "source": "src/http/continuation.ts:453",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "POST",
       "path": "/api/design/tasks/:taskId/continue",
-      "source": "src/http/continuation.ts:440",
+      "source": "src/http/continuation.ts:454",
       "exposure": "frontend",
       "capability": "design.core"
     },
     {
       "method": "GET",
       "path": "/api/code/tasks/:taskId/approvals",
-      "source": "src/http/continuation.ts:476",
+      "source": "src/http/continuation.ts:495",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "GET",
       "path": "/api/cowork/tasks/:taskId/approvals",
-      "source": "src/http/continuation.ts:477",
+      "source": "src/http/continuation.ts:496",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "GET",
       "path": "/api/design/tasks/:taskId/approvals",
-      "source": "src/http/continuation.ts:478",
+      "source": "src/http/continuation.ts:497",
       "exposure": "frontend",
       "capability": "design.core"
     },
     {
       "method": "POST",
       "path": "/api/code/tasks/:taskId/approve",
-      "source": "src/http/continuation.ts:539",
+      "source": "src/http/continuation.ts:558",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "POST",
       "path": "/api/cowork/tasks/:taskId/approve",
-      "source": "src/http/continuation.ts:540",
+      "source": "src/http/continuation.ts:559",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "POST",
       "path": "/api/design/tasks/:taskId/approve",
-      "source": "src/http/continuation.ts:541",
+      "source": "src/http/continuation.ts:560",
       "exposure": "frontend",
       "capability": "design.core"
     },

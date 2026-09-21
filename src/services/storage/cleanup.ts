@@ -57,6 +57,7 @@ import { clearConversation, orphanedSnapshotTaskIds } from '../../db/taskMessage
 import { getRoot } from '../../security/fsScope.ts';
 import { createLogger } from '../../util/logger.ts';
 import { reapHeldWorktrees } from '../code/worktree.ts';
+import { approvalWaitTtlMs, expireWaitingApprovals } from '../agent/approvalWait.ts';
 import { pruneStaging } from '../skills/intake.ts';
 
 import { deleteAsset, type AssetRow } from './gallery.ts';
@@ -382,6 +383,42 @@ let bootTimer: NodeJS.Timeout | null = null;
 let intervalTimer: NodeJS.Timeout | null = null;
 
 /**
+ * One pass of everything the timer does.
+ *
+ * Three sweeps rather than one, and the separation is deliberate: `runCleanup`
+ * deletes user data and writes a `cleanup_log` row, `expireWaitingApprovals` closes
+ * prompts nobody answered, and `reapParkedWorktrees` shells out to git. Each failure
+ * is caught on its own so a crashed storage sweep cannot silently skip the other
+ * two, and each runs even when a previous one threw.
+ *
+ * Exported so the wiring is testable: the timers below are
+ * `setTimeout`/`setInterval` around this, so a test that calls it directly pins the
+ * work the timer does without waiting out `BOOT_DELAY_MS`.
+ */
+export function runCleanupTick(): void {
+  try {
+    runCleanup();
+  } catch (error) {
+    // A crashed sweep must not take the server with it; it'll try again tomorrow.
+    log.error('cleanup run failed', { error: String(error) });
+  }
+  // In the synchronous half, unlike the worktree reap, because it is one bounded
+  // UPDATE and not a git spawn.
+  try {
+    expireWaitingApprovals();
+  } catch (error) {
+    log.error('approval expiry failed', { error: String(error) });
+  }
+  // Separate from `runCleanup` because it is genuinely asynchronous — it shells out
+  // to git — and `runCleanup` is deliberately synchronous and single-pass so it can
+  // never interleave with a live request. Awaiting git inside it would give up that
+  // property for an unrelated sweep.
+  void reapParkedWorktrees().catch((error: unknown) => {
+    log.error('parked worktree reap failed', { error: String(error) });
+  });
+}
+
+/**
  * Start the background job. Safe to call twice (the second call is ignored),
  * and a no-op when HYPERION_CLEANUP_DISABLED is set — which is the switch to
  * reach for while debugging, rather than commenting this out.
@@ -393,35 +430,22 @@ export function startCleanupScheduler(): void {
   }
   if (intervalTimer || bootTimer) return;
 
-  const tick = (): void => {
-    try {
-      runCleanup();
-    } catch (error) {
-      // A crashed sweep must not take the server with it; it'll try again
-      // tomorrow.
-      log.error('cleanup run failed', { error: String(error) });
-    }
-    // Separate from `runCleanup` because it is genuinely asynchronous — it shells
-    // out to git — and `runCleanup` is deliberately synchronous and single-pass so
-    // it can never interleave with a live request. Awaiting git inside it would
-    // give up that property for an unrelated sweep.
-    void reapParkedWorktrees().catch((error: unknown) => {
-      log.error('parked worktree reap failed', { error: String(error) });
-    });
-  };
-
   bootTimer = setTimeout(() => {
     bootTimer = null;
-    tick();
+    runCleanupTick();
   }, BOOT_DELAY_MS);
   bootTimer.unref();
 
-  intervalTimer = setInterval(tick, INTERVAL_MS);
+  intervalTimer = setInterval(runCleanupTick, INTERVAL_MS);
   intervalTimer.unref();
 
   log.info('cleanup scheduler started', {
     assetTtlDays: env.assetTtlDays,
     chatTtlDays: env.chatTtlDays,
+    // Not a deletion, unlike the two above, but the same kind of fact: this timer
+    // is why a prompt a user was still looking at stopped being answerable, so the
+    // deadline belongs in the line that says the timer started.
+    approvalWaitHours: approvalWaitTtlMs() / 3_600_000,
     everyHours: INTERVAL_MS / 3_600_000,
   });
 }

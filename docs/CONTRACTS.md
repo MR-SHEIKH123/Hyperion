@@ -5133,3 +5133,58 @@ scanning. Destructive calls belong on the screen that describes them.
 The `unchecked` and `checked` fields exist for the same reason `rowsWithCacheReporting`
 exists beside the cache-hit rate: a number without what it covers is a coincidence
 wearing a measurement's clothes.
+
+## An unanswered prompt expires, and the task does not *(added in 1.31)*
+
+`pending_approvals` has carried an `expired` state since 1.27, and the comment above
+the constant explained what it was for: *"a park abandoned past its TTL has its
+approvals closed out rather than left `pending` forever, so 'what is this task
+waiting on?' has an honest answer."* No reaper existed. `closeApprovals` — the only
+writer of the state — runs on a task's **terminal** transition, so it can never
+reach the case the sentence describes: a prompt still waiting. The consequence was
+not merely untidy rows. A prompt that stays `pending` stays listed as something the
+user can act on, and answering it a month later still authorised its call, against a
+conversation and a checkout from a month ago — which is not the object the user was
+looking at when they clicked.
+
+The deadline is `approval_wait_ttl_hours` (default 72 — a long weekend is the scale
+it has to clear; zero and negatives read as the default, the same rule
+`parkedWorktreeTtlHours` uses), and `src/services/agent/approvalWait.ts` is where the
+three things that must agree about it live together: the sweep, the `expiresAt` a
+client is shown, and the interval it is wired to. One module because they are one
+number — a route computing `createdAt + 72h` itself would be wrong for every user who
+changed the setting, and wrong invisibly until a countdown hit zero at the wrong
+moment.
+
+1. **The question expires; the task does not.** `expireStaleApprovals` moves rows, not
+   runs. A parked run whose prompt expired is still parked and still continuable:
+   `POST /continue` without an `approvalId` replays the conversation, the gated call
+   is re-emitted, and the user is asked again against the current checkout. Ending the
+   run on a timer would make the timer the thing that destroyed a recoverable task,
+   and the vocabulary has no honest state for it — `interrupted` means the *process*
+   went away (migration `020`), not that someone failed to reply.
+2. **Only `pending` is a wait.** `allow_session` is a standing rule, `allow_once` is
+   spent by the replay it authorises, and `denied` is an answer. None of them is
+   waiting on anybody, and `closeApprovals` is what clears the session ones at the
+   task's terminal transition because 1.27 §1 scopes them to that task. A sweep that
+   expired them would revoke a permission the user granted, silently.
+3. **An answer beats the reaper.** The update is `WHERE id = ? AND state = 'pending'`,
+   so a decision landing between the candidate read and the write wins and the row is
+   not reported as expired. The read carries the same filter as a narrowing; the two
+   overlap deliberately, and neither is observable on its own — dropping either leaves
+   every non-racy behaviour identical, which the mutation notes record rather than
+   pretend otherwise.
+4. **A restart closes the questions it can no longer take.** Boot reconciliation
+   demotes a `blocked` run to `interrupted` with the message *"the server restarted
+   while this task was waiting for you, so it can no longer receive an answer"* — and
+   then left its approvals `pending`, which is the same bug one layer down: a dead
+   prompt in the task's list and in the Attention Center, whose `resolve` call could
+   only ever fail. The demoted park's approvals are closed in the same pass, session
+   allowances included, because that run has ended and the allowance was scoped to it.
+
+The client half is the part that was actively wrong: `AttentionCenter` ignored
+`applied` and announced **"Allowed …"** for every non-deny answer, including one the
+server had just refused to apply. It now reads the flag, distinguishes `expired`
+(nothing was allowed — continue the task to be asked again) from an already-answered
+prompt, and says which. Announcing an allowance that was not granted is the one
+wording a prompt with a deadline must never produce.

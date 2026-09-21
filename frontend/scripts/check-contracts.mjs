@@ -1,5 +1,12 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+
+// `--fix` rewrites the snapshot's `source` pointers from the same discovery pass
+// the check uses, for the recurring case the comparison cannot avoid: a route file
+// gains lines above a registration and every pointer below it drifts. Pointers are
+// derived data, so regenerating them is not a review decision — the check stays the
+// authority, and a `--fix` run still reports what it rewrote.
+const fix = process.argv.includes('--fix');
 
 const root = resolve(import.meta.dirname, '../..');
 const readJson = async (path) => JSON.parse(await readFile(resolve(root, path), 'utf8'));
@@ -82,7 +89,24 @@ const missingSse = [
   ...requiredAgentChannels.filter((event) => !agentChannels.has(event)).map((event) => `agent:${event}`),
 ];
 
-if (removed.length || added.length || duplicates.length || invalidContracts.length || duplicateContractIds.length || missingSse.length || mispointed.length) {
+// `--fix` clears the pointer complaint by regenerating it; the other checks still
+// fail the run, because none of them is derived data.
+if (fix && mispointed.length > 0) {
+  for (const route of snapshot.routes) {
+    const expectedSource = discoveredSources.get(`${route.method} ${route.path}`);
+    if (expectedSource !== undefined) route.source = expectedSource;
+  }
+  await writeFile(
+    resolve(root, 'frontend/contracts/backend-routes.json'),
+    `${JSON.stringify(snapshot, null, 2)}\n`,
+  );
+  console.log(`Rewrote ${mispointed.length} route source pointer(s):`);
+  for (const entry of mispointed) console.log(`  ${entry}`);
+}
+
+const stalePointers = fix ? [] : mispointed;
+
+if (removed.length || added.length || duplicates.length || invalidContracts.length || duplicateContractIds.length || missingSse.length || stalePointers.length) {
   console.error('Frontend contract snapshot check failed.');
   if (removed.length) console.error('\nRemoved or changed routes:\n' + removed.map((x) => `  - ${x}`).join('\n'));
   if (added.length) console.error('\nUndocumented routes:\n' + added.map((x) => `  + ${x}`).join('\n'));
@@ -90,9 +114,10 @@ if (removed.length || added.length || duplicates.length || invalidContracts.leng
   if (invalidContracts.length) console.error(`\nInvalid frontend contracts: ${invalidContracts.length}`);
   if (duplicateContractIds.length) console.error('\nDuplicate contract ids:\n' + duplicateContractIds.join('\n'));
   if (missingSse.length) console.error('\nMissing required SSE declarations:\n' + missingSse.join('\n'));
-  if (mispointed.length) {
-    console.error(`\nRoute sources that no longer point at their registration (${mispointed.length}):\n`
-      + mispointed.map((x) => `  - ${x}`).join('\n'));
+  if (stalePointers.length) {
+    console.error(`\nRoute sources that no longer point at their registration (${stalePointers.length}):\n`
+      + stalePointers.map((x) => `  - ${x}`).join('\n')
+      + '\n  (run `node scripts/check-contracts.mjs --fix` to rewrite them)');
   }
   process.exitCode = 1;
 } else {

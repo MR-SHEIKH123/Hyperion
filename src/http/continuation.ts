@@ -69,6 +69,7 @@ import {
   type TaskRunTool,
 } from '../db/taskRuns.ts';
 import { nextStepNumber, recordStep } from '../db/taskSteps.ts';
+import { approvalExpiresAt, approvalWaitTtlMs } from '../services/agent/approvalWait.ts';
 import { provisionWorktree } from '../services/code/worktree.ts';
 import { AppError, toAppError } from '../util/errors.ts';
 import { createLogger } from '../util/logger.ts';
@@ -150,8 +151,21 @@ function applyDecision(
 
   const { applied } = resolveApproval(approvalId, decision);
   if (!applied) {
+    // `expired` is not `already_resolved`: nobody answered this one, and the
+    // difference is the whole reason the deadline exists. A prompt that timed out
+    // gets its own sentence and its own reason code, because the retry is
+    // different — a second attempt at an answered prompt is a bug, while a
+    // prompt that expired is answered by continuing the task, which asks again.
+    const state = getApproval(approvalId)?.state;
+    if (state === 'expired') {
+      throw new AppError(
+        'conflict',
+        'That approval expired before it was answered, so this decision cannot be applied. Continue the task to be asked again.',
+        { details: { approvalId, state, reason: 'expired', waitHours: approvalWaitTtlMs() / 3_600_000 } },
+      );
+    }
     throw new AppError('conflict', 'That approval has already been resolved.', {
-      details: { approvalId, state: getApproval(approvalId)?.state, reason: 'already_resolved' },
+      details: { approvalId, state, reason: 'already_resolved' },
     });
   }
   return { approvalId, decision };
@@ -468,6 +482,11 @@ function listApprovalsRoute(tool: TaskRunTool) {
         matchedPattern: approval.matchedPattern,
         reason: approval.reason,
         createdAt: approval.createdAt,
+        // The deadline the reaper will hold this row to, computed from the same
+        // setting the sweep reads. A client that had to guess it — or that
+        // hard-coded the default — would show a countdown that disagrees with the
+        // moment the prompt actually stops being answerable.
+        expiresAt: approvalExpiresAt(approval.createdAt),
       })),
     });
   });
