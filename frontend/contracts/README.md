@@ -30,3 +30,33 @@ them to rot. `node frontend/scripts/check-contracts.mjs --fix` does that — it
 rewrites `source` from the same discovery pass the check uses and prints every
 pointer it changed, while everything else it checks still fails the run. It cannot
 make a wrong pointer pass; it can only make a stale one current.
+
+## The statuses are claims too (2026-09-22)
+
+`frontend-contracts.json` is hand-curated, and until this pass the check verified
+its **shape** and the route snapshot beside it, but never asked whether a row's
+`status` was still true. Two rows had drifted while the gate stayed green:
+
+- `artifacts.lineage` recorded `/api/artifacts/:id/versions` as both the specified
+  and the implemented path — a mismatch against itself — while its own `reason`
+  documented the real, key-based route. The name it pointed at does not exist.
+- `settings.reload` was the only mismatch row with no `reason` for the mismatch.
+
+Four facts are decidable from the two snapshots, so they are checked now:
+
+| rule | why |
+| --- | --- |
+| `implemented` ⇒ the route exists | a client calls a real route; if the route is gone, "implemented" is a claim about nothing. `{tool}` is expanded to `code`/`cowork`/`design` first, the same way the API-coverage check expands it. |
+| `route-mismatch` ⇒ its own `expectedPath` exists | a mismatch needs an implementation to be mismatched with. This is the rule that catches a row naming a path that was never built. |
+| `route-mismatch` ⇒ a non-empty `specifiedPath` **different** from `expectedPath`, plus a `reason` | "the spec asked for something else" is only useful with the something else named, and a row whose two paths are equal is not describing a mismatch. |
+| no other status carries `specifiedPath` | that field answers "which path is this?" for a mismatch, and two answers on an `implemented` row is one too many. |
+
+These are not derivable data, so `--fix` does **not** rewrite them: a status is a
+review decision, and silently re-statusing a contract is exactly the kind of
+change this directory exists to prevent. The check reports them and exits
+non-zero, naming the row, its status and the fact that contradicts it.
+
+`partial` and `missing` are deliberately **not** constrained this way. `partial`
+can point at a route that does not exist yet (`projects.active-tasks`,
+`search.global`) because it describes how far the frontend has got with a
+requirement, not what the backend serves; `missing` is a gap by definition.

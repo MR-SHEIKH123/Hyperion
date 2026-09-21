@@ -72,6 +72,63 @@ const removed = expected.filter((route) => !discoveredSet.has(route));
 const added = discovered.filter((route) => !expectedSet.has(route));
 const duplicates = expected.filter((route, index) => expected.indexOf(route) !== index);
 
+/**
+ * The status of every contract is a claim, and until now nothing checked it.
+ *
+ * `frontend-contracts.json` is hand-curated — the check verified its *shape* (a
+ * known status string, no duplicate ids) and the route snapshot beside it, but
+ * never asked whether a row's status was still true. Two rows had drifted while
+ * the gate stayed green: `artifacts.lineage` named a path that does not exist while
+ * its own reason documented the real one, and `settings.reload` was the only
+ * mismatch row with no reason for the mismatch. Four facts are mechanically
+ * decidable from the two snapshots, so they are checked rather than trusted:
+ *
+ * - `implemented` means a client calls a real route, so the route must exist.
+ * - `route-mismatch` means the specification and the implementation disagree,
+ *   which needs an implementation: the recorded `expectedPath` must exist.
+ * - a mismatch must say *what* it is measured against (`specifiedPath`) and why
+ *   (`reason`), and the two paths must actually differ — a row whose specified
+ *   path is its implemented path is not describing a mismatch at all.
+ * - `specifiedPath` belongs to a mismatch: carrying it on an `implemented` or
+ *   `missing` row would leave two answers to "which path is this?".
+ *
+ * `{tool}` is expanded the way the API-coverage check expands it, because the
+ * three agent tools share one contract each.
+ */
+const routeExists = (method, path) =>
+  ['code', 'cowork', 'design']
+    .map((tool) => `${method} ${path.replaceAll('{tool}', tool)}`)
+    .some((route) => expectedSet.has(route));
+
+const statusProblems = [];
+for (const contract of frontend.contracts) {
+  const where = `${contract.id} (${contract.status})`;
+  if (contract.status === 'implemented' && !routeExists(contract.method, contract.expectedPath)) {
+    statusProblems.push(
+      `${where} claims an implemented route that does not exist: ${contract.method} ${contract.expectedPath}`,
+    );
+  }
+  if (contract.status === 'route-mismatch') {
+    if (!routeExists(contract.method, contract.expectedPath)) {
+      statusProblems.push(
+        `${where} is a mismatch, so its own path must exist: ${contract.method} ${contract.expectedPath}`,
+      );
+    }
+    if (typeof contract.specifiedPath !== 'string' || contract.specifiedPath.trim() === '') {
+      statusProblems.push(`${where} does not say what the specification asked for (specifiedPath)`);
+    } else if (contract.specifiedPath === contract.expectedPath) {
+      statusProblems.push(
+        `${where} records the same path as specified and implemented, which is not a mismatch: ${contract.specifiedPath}`,
+      );
+    }
+    if (typeof contract.reason !== 'string' || contract.reason.trim() === '') {
+      statusProblems.push(`${where} does not say why the two paths differ (reason)`);
+    }
+  } else if (contract.specifiedPath !== undefined) {
+    statusProblems.push(`${where} carries a specifiedPath without the route-mismatch status`);
+  }
+}
+
 const allowedStatuses = new Set(frontend.statuses);
 const invalidContracts = frontend.contracts.filter(
   (contract) => !contract.id || !contract.method || !contract.expectedPath || !allowedStatuses.has(contract.status),
@@ -106,7 +163,7 @@ if (fix && mispointed.length > 0) {
 
 const stalePointers = fix ? [] : mispointed;
 
-if (removed.length || added.length || duplicates.length || invalidContracts.length || duplicateContractIds.length || missingSse.length || stalePointers.length) {
+if (removed.length || added.length || duplicates.length || invalidContracts.length || duplicateContractIds.length || missingSse.length || stalePointers.length || statusProblems.length) {
   console.error('Frontend contract snapshot check failed.');
   if (removed.length) console.error('\nRemoved or changed routes:\n' + removed.map((x) => `  - ${x}`).join('\n'));
   if (added.length) console.error('\nUndocumented routes:\n' + added.map((x) => `  + ${x}`).join('\n'));
@@ -114,6 +171,13 @@ if (removed.length || added.length || duplicates.length || invalidContracts.leng
   if (invalidContracts.length) console.error(`\nInvalid frontend contracts: ${invalidContracts.length}`);
   if (duplicateContractIds.length) console.error('\nDuplicate contract ids:\n' + duplicateContractIds.join('\n'));
   if (missingSse.length) console.error('\nMissing required SSE declarations:\n' + missingSse.join('\n'));
+  if (statusProblems.length) {
+    console.error(
+      `\nContracts whose declared status the tree contradicts (${statusProblems.length}):\n`
+      + statusProblems.map((x) => `  - ${x}`).join('\n')
+      + '\n  (a status is a review decision, so `--fix` does not rewrite it)',
+    );
+  }
   if (stalePointers.length) {
     console.error(`\nRoute sources that no longer point at their registration (${stalePointers.length}):\n`
       + stalePointers.map((x) => `  - ${x}`).join('\n')

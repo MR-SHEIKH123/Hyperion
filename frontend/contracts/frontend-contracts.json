@@ -211,10 +211,10 @@
     {
       "id": "artifacts.lineage",
       "method": "GET",
-      "expectedPath": "/api/artifacts/:id/versions",
+      "expectedPath": "/api/artifacts/versions",
       "status": "route-mismatch",
       "specifiedPath": "/api/artifacts/:id/versions",
-      "reason": "The spec asked for lineage by artifact id; the implementation serves it by artifact key (`GET /api/artifacts/versions?key=`, 1.39 A6), which is what the provenance panel calls. An id-based route would be a second way to ask the same question."
+      "reason": "The spec asked for lineage by artifact id (`GET /api/artifacts/:id/versions`); the implementation serves it by artifact key (`GET /api/artifacts/versions?key=`, 1.39 A6), which is what the provenance panel calls. An id-based route would be a second way to ask the same question \u2014 artifact ids name a single version, while the lineage is the version list of one key."
     },
     {
       "id": "settings.spending-cap",
@@ -229,7 +229,8 @@
       "method": "POST",
       "expectedPath": "/api/settings/reload-config",
       "status": "route-mismatch",
-      "specifiedPath": "GET|PUT /api/settings/reload-config"
+      "specifiedPath": "GET|PUT /api/settings/reload-config",
+      "reason": "The spec asked for `GET|PUT /api/settings/reload-config`; the implementation is a `POST`. A `PUT` would have to name what it replaces, and nothing is cached to replace \u2014 `db/settings.ts` keeps settings un-cached and project files are read per task \u2014 while the route itself only re-reads, validates and reports the on-disk configuration, which is why `docs/CONTRACTS.md` argues it adds no cache at all. The capability is present, so this row is a verb mismatch rather than a missing route: a client that followed the specification and sent a GET would get a 404."
     },
     {
       "id": "backup.inspect",
