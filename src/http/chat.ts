@@ -5,6 +5,7 @@ import {
   deleteChat,
   deleteChats,
   findChat,
+  forkChat,
   listChats,
   listMessagePage,
   listMessages,
@@ -354,6 +355,36 @@ chatRouter.get(
   }),
 );
 
+
+/**
+ * Branch a conversation (1.27's session fork).
+ *
+ * `201` with the new chat and the messages copied into it, so the client can open
+ * the branch without a second round trip. The source chat is not touched — see
+ * `forkChat` for why that is the contract rather than an implementation detail.
+ */
+chatRouter.post(
+  '/:id/fork',
+  wrap(async (req, res) => {
+    const id = pathParam(req, 'id');
+    const payload = body(req);
+    const upToMessageId = asOptionalString(payload.upToMessageId, 'upToMessageId');
+    const title = asOptionalString(payload.title, 'title');
+    const chatId = asOptionalString(payload.chatId, 'chatId');
+    const result = forkChat({
+      sourceId: id,
+      ...(upToMessageId === undefined ? {} : { upToMessageId }),
+      ...(title === undefined ? {} : { title }),
+      ...(chatId === undefined ? {} : { id: chatId }),
+    });
+    res.status(201).json({
+      chat: result.chat,
+      messages: result.messages,
+      forkedFrom: id,
+      pausedPartials: result.pausedPartials,
+    });
+  }),
+);
 
 /** Resets the idle timer used by the cleanup job. */
 chatRouter.post(

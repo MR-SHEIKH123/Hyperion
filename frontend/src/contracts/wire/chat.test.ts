@@ -7,6 +7,7 @@ import {
   chatSseResumedSchema,
   chatSseTokenSchema,
   chatSseUsageSchema,
+  forkChatResponseSchema,
   messageRecordSchema,
   messagesPageSchema,
   openChatResponseSchema,
@@ -66,6 +67,21 @@ describe('chat wire schemas', () => {
     expect(chatRecordSchema.safeParse(chat).success).toBe(true);
     expect(messageRecordSchema.safeParse(message).success).toBe(true);
     expect(runStateSnapshotSchema.safeParse(run).success).toBe(true);
+  });
+
+  it('accepts a fork response and requires the paused count', () => {
+    const branch = { ...chat, id: 'c2', title: 'First (fork)' };
+    const copy = { ...message, id: 'm2', chatId: 'c2' };
+    const payload = { chat: branch, messages: [copy], forkedFrom: 'c1', pausedPartials: 1 };
+    expect(forkChatResponseSchema.safeParse(payload).success).toBe(true);
+
+    // The count is how a surface explains a copied message that was mid-stream.
+    // Optional would mean the UI could not tell "none paused" from "not said".
+    const missing: Record<string, unknown> = { ...payload };
+    delete missing.pausedPartials;
+    expect(forkChatResponseSchema.safeParse(missing).success).toBe(false);
+    expect(forkChatResponseSchema.safeParse({ ...payload, pausedPartials: -1 }).success).toBe(false);
+    expect(forkChatResponseSchema.safeParse({ ...payload, forkedFrom: null }).success).toBe(false);
   });
 
   it('rejects an unknown tool name', () => {

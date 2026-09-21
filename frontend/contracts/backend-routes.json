@@ -270,6 +270,13 @@
     },
     {
       "method": "POST",
+      "path": "/api/chat/:id/fork",
+      "source": "src/http/chat.ts:366",
+      "exposure": "frontend",
+      "capability": "chat.write"
+    },
+    {
+      "method": "POST",
       "path": "/api/chat/:id/open",
       "source": "src/http/chat.ts:365",
       "exposure": "frontend",

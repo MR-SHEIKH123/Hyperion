@@ -35,7 +35,9 @@ behavior in the browser.
 ## Later
 
 - No unified `/api/plugins` surface or durable per-tool plugin availability.
-- No Chat fork endpoint or dedicated Chat state endpoint.
+- ~~No Chat fork endpoint~~ **Closed 2026-09-21 (1.27)**: `POST /api/chat/:id/fork` branches a
+  conversation without touching it. A dedicated Chat state endpoint is still missing
+  (`chat.state` above): runs and paused runs are the only chat-state reads.
 - No Code file-tree, file-read, task-diff, or walkthrough retrieval contracts. (`GET /api/code/tasks`
   reports the live lane — running slots and held worktrees — which is what a task rail needs for
   *active* work; a per-project *history* of code tasks is still absent, and `GET /api/code/tasks/:id/export`

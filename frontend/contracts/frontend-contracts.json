@@ -40,7 +40,7 @@
       "id": "chat.fork",
       "method": "POST",
       "expectedPath": "/api/chat/:id/fork",
-      "status": "missing"
+      "status": "implemented"
     },
     {
       "id": "chat.stream",

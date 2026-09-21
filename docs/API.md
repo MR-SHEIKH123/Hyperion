@@ -464,11 +464,42 @@ no_healthy_provider | capability_mismatch | user_request`.
 | PATCH | `/api/chat/:id` | `{ chat }` |
 | DELETE | `/api/chat/:id` | `{ deleted: true, id }` |
 | GET | `/api/chat/:id/messages` | `{ messages, nextBefore }` — query `limit` (default 50, max 500), `before` |
+| POST | `/api/chat/:id/fork` | **201** `{ chat, messages, forkedFrom, pausedPartials }` *(1.27)* |
 | POST | `/api/chat/:id/open` | `{ chat, messages, latestRun }` |
 | POST | `/api/chat/:id/pin` | `{ chat }` |
 | POST | `/api/chat/:id/archive` | `{ chat }` |
 | POST | `/api/chat/:id/unarchive` | `{ chat }` |
 | GET | `/api/chat/:id/runs` | `{ latest, paused }` |
+
+**POST /api/chat/:id/fork** *(new in 1.27)* branches a conversation. Body:
+`upToMessageId?` (copy messages **up to and including** this one; omitted means all
+of them), `title?` (default `<source title> (fork)`), `chatId?` (the id for the new
+chat — the frontend generates chat ids client-side everywhere else, so a fork can
+too). The response carries the new chat, the copied messages with their new ids
+and sequence numbers, `forkedFrom` (the source id) and `pausedPartials` (how many
+copied messages were mid-stream and land `paused`).
+
+Four properties, each of which is a way a copy could be wrong:
+
+- **The source is untouched** — nothing is renumbered, truncated or re-stamped in
+  the original, so forking is safe on a conversation the user is still having, and
+  the gesture is offered from exactly there.
+- **The copy is a conversation, not a view.** Messages are inserted as new rows, so
+  the branch can be continued, renamed, exported and deleted on its own; appending
+  to it does not write into the source.
+- **A mid-stream message lands `paused`.** The source row may still be written to
+  by the run that owns it; the copy has no writer at all, and `streaming` would
+  claim a process is about to complete it. `paused` is the status this schema
+  already uses for "partial text, nothing running", and `pausedPartials` counts
+  them so a surface can say so.
+- **Timestamps are preserved**, so the branch's history reads in the order it
+  happened instead of every copied row claiming it was said now.
+
+`chats.forkedFrom` records the immediate parent (migration `017`, `ON DELETE SET
+NULL`): deleting the original keeps the branch and clears only the provenance
+line. A **temporary chat is refused** with `409 conflict` — its messages exist only
+in the process, so a fork would write down exactly what the user asked to leave no
+trace of.
 
 **GET /api/chat/:id/messages** is **cursor-paginated, never offset-paginated**
 *(new in 1.8)*. `before` names a **message id**, and the page returned is the

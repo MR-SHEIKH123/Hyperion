@@ -107,6 +107,24 @@
   font-size: var(--text-sm);
 }
 
+/* The branch notice (1.27): one line saying what the fork copied and where it
+   came from, dismissible because it describes the open, not the chat. */
+.forkNotice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: 0;
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  background: var(--surface-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.forkNoticeText {
+  flex: 1;
+}
+
 .messages {
   flex: 1;
   overflow-y: auto;

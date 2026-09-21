@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Archive, ArchiveRestore, Pin, PinOff, RefreshCw } from 'lucide-react';
-import { archiveChat, openChat, patchChat, pinChat, unarchiveChat } from '../../api/chat';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Archive, ArchiveRestore, GitFork, Pin, PinOff, RefreshCw } from 'lucide-react';
+import { archiveChat, forkChat, openChat, patchChat, pinChat, unarchiveChat } from '../../api/chat';
 import type { ChatReconciliation } from '../../api/chat';
 import type { MessageRecord, RunStateSnapshot } from '../../contracts/wire/chat';
 import { Button } from '../../design-system/components/Button/Button';
@@ -28,6 +29,17 @@ function pauseLabel(reason: string | null): string {
   return reason ? (PAUSE_REASON_LABELS[reason] ?? reason) : 'Paused';
 }
 
+/**
+ * What the fork handed to the surface it opened (1.27). Carried on the
+ * navigation rather than stored: it describes the act of branching, not the
+ * branch, and a branch reopened tomorrow is just a conversation.
+ */
+export interface ForkNotice {
+  sourceTitle: string;
+  copied: number;
+  pausedPartials: number;
+}
+
 interface ConversationProps {
   chatId: string;
   /** A prompt the user typed before this chat existed (new-chat fast path). */
@@ -50,6 +62,14 @@ export function ChatConversation({ chatId, pendingSend, onPendingSendConsumed }:
   // The unsent draft and the reading position are the two things this surface is
   // expected to come back to (1.39 A5).
   const draft = usePersistedDraft(chatDraftKey(chatId));
+
+  const location = useLocation();
+  const navigate = useNavigate();
+  const forkNotice: ForkNotice | null =
+    (location.state as { forkNotice?: ForkNotice } | null)?.forkNotice ?? null;
+  const dismissForkNotice = useCallback(() => {
+    void navigate(location.pathname, { replace: true, state: null });
+  }, [navigate, location.pathname]);
 
   const chatQuery = useQuery({
     queryKey: ['chat', chatId],
@@ -133,6 +153,30 @@ export function ChatConversation({ chatId, pendingSend, onPendingSendConsumed }:
       void queryClient.invalidateQueries({ queryKey: ['chats'] });
     });
   }, [chat, chatId, queryClient]);
+
+  /**
+   * Branch this conversation at its end and open the branch.
+   *
+   * The source is deliberately not refetched: the backend copies without
+   * touching it, and refetching would suggest otherwise (and would discard the
+   * cached page someone is reading). Only the chat list changes — a branch is a
+   * new entry in it.
+   */
+  const branch = useMutation({
+    mutationFn: () => forkChat(chatId),
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: ['chats'] });
+      void navigate(`/chat/${encodeURIComponent(result.chat.id)}`, {
+        state: {
+          forkNotice: {
+            sourceTitle: chat?.title ?? 'the original conversation',
+            copied: result.messages.length,
+            pausedPartials: result.pausedPartials,
+          } satisfies ForkNotice,
+        },
+      });
+    },
+  });
 
   const resume = useCallback(() => {
     const run = latestRun;
@@ -232,12 +276,43 @@ export function ChatConversation({ chatId, pendingSend, onPendingSendConsumed }:
           <Button variant="quiet" onClick={toggleArchive} disabled={chat === null} aria-label={chat?.archived ? 'Unarchive chat' : 'Archive chat'}>
             {chat?.archived ? <ArchiveRestore aria-hidden="true" /> : <Archive aria-hidden="true" />}
           </Button>
+          <Button
+            variant="quiet"
+            onClick={() => branch.mutate()}
+            disabled={chat === null || branch.isPending}
+            aria-label="Fork conversation"
+            title="Copy this conversation into a new branch"
+          >
+            <GitFork aria-hidden="true" />
+          </Button>
         </div>
       </header>
 
       {chatQuery.isError && (
         <p className={styles.problem} role="alert">
           This conversation could not be opened. {chatQuery.error instanceof Error ? chatQuery.error.message : ''}
+        </p>
+      )}
+
+      {branch.isError && (
+        <p className={styles.problem} role="alert">
+          This conversation could not be branched. {branch.error instanceof Error ? branch.error.message : ''}
+        </p>
+      )}
+
+      {forkNotice !== null && (
+        <p className={styles.forkNotice} role="status">
+          <span className={styles.forkNoticeText}>
+            Branched from “{forkNotice.sourceTitle}” — {forkNotice.copied}{' '}
+            {forkNotice.copied === 1 ? 'message' : 'messages'} copied
+            {forkNotice.pausedPartials > 0
+              ? `, ${forkNotice.pausedPartials} of them stopped mid-stream and are paused here`
+              : ''}
+            .
+          </span>
+          <Button variant="quiet" onClick={dismissForkNotice}>
+            Dismiss
+          </Button>
         </p>
       )}
 

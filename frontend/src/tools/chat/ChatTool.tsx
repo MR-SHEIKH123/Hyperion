@@ -27,7 +27,12 @@ interface ChatLocationState {
  */
 export default function ChatTool() {
   const params = useParams();
-  const chatId = params.chatId ?? null;
+  // The route is `/chat/*`, so the conversation id is the splat remainder.
+  // Reading `params.chatId` here returned undefined for every URL, which made
+  // `/chat/<id>` render the new-conversation pane: the list could link to a chat
+  // and the pane would ignore which one.
+  const remainder = params['*'] ?? '';
+  const chatId = (remainder.split('/')[0] ?? '') === '' ? null : (remainder.split('/')[0] as string);
   const location = useLocation();
   const navigate = useNavigate();
   const pendingSend: PendingSend | null =

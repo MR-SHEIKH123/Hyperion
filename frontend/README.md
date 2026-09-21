@@ -122,7 +122,16 @@ npm run build
     away from someone reading;
   - model picker against the active provider's live model list
     (`GET /api/providers/active/models`); a switched model persists to the
-    chat.
+    chat;
+  - fork (1.27): branches the open conversation (`POST /api/chat/:id/fork`) and
+    opens the branch, saying how many messages came across and how many of them
+    were mid-stream and landed paused — the branch has no writer, so `streaming`
+    there would be a claim nothing can keep. The source is deliberately left
+    alone *and* not refetched: the copy does not touch it, and a refetch would
+    only risk dropping the page someone is reading. A refused fork (a temporary
+    chat, a `409`) says so and leaves the user in the conversation they were in.
+- A conversation is addressed by `/chat/<chatId>` — the id is the splat
+  remainder of the `chat/*` route, and `/chat` is the new-conversation state.
 - New-chat fast path: `/chat` accepts a prompt and creates the chat on first
   send; the pending prompt rides on location state into the created
   conversation and is cleared on consumption, so a reload cannot double-send.

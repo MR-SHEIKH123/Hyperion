@@ -4,6 +4,7 @@ import {
   chatRunsResponseSchema,
   chatsResponseSchema,
   deletedResponseSchema,
+  forkChatResponseSchema,
   messagesPageSchema,
   openChatResponseSchema,
   pausedRunsResponseSchema,
@@ -70,6 +71,18 @@ export const unarchiveChat = (id: string, signal?: AbortSignal) =>
 /** Cursor-paginated transcript: `before` names a message id; feed `nextBefore` back. */
 export const listMessages = (chatId: string, params: { limit?: number; before?: string } = {}, signal?: AbortSignal) =>
   request(`/api/chat/${encodeURIComponent(chatId)}/messages` + qs({ limit: params.limit, before: params.before }), messagesPageSchema, { ...(signal === undefined ? {} : { signal }) });
+
+/**
+ * Branch a conversation (1.27's session fork). `upToMessageId` is **inclusive** —
+ * it names the last message the branch gets. Omit everything for a full copy;
+ * the branch's title defaults to `<source title> (fork)`.
+ */
+export const forkChat = (
+  id: string,
+  body: { upToMessageId?: string; title?: string; chatId?: string } = {},
+  signal?: AbortSignal,
+) =>
+  request(`/api/chat/${encodeURIComponent(id)}/fork`, forkChatResponseSchema, { method: 'POST', body, ...(signal === undefined ? {} : { signal }) });
 
 export const getChatRuns = (chatId: string, signal?: AbortSignal) =>
   request(`/api/chat/${encodeURIComponent(chatId)}/runs`, chatRunsResponseSchema, { ...(signal === undefined ? {} : { signal }) });

@@ -95,6 +95,19 @@ export const openChatResponseSchema = z.object({
 }).passthrough();
 
 /** `GET /api/chat/:id/runs` — `{ latest, paused }`; `paused` is the paused runs for this chat. */
+/**
+ * `POST /api/chat/:id/fork` (docs/API.md §4.2). `pausedPartials` counts the copied
+ * messages that were mid-stream in the source and land `paused` in the branch —
+ * the branch has no writer, so `streaming` would be a claim nothing can keep.
+ */
+export const forkChatResponseSchema = z.object({
+  chat: chatRecordSchema,
+  messages: z.array(messageRecordSchema),
+  forkedFrom: z.string(),
+  pausedPartials: z.number().int().nonnegative(),
+}).passthrough();
+export type ForkChatResponse = z.infer<typeof forkChatResponseSchema>;
+
 export const chatRunsResponseSchema = z.object({
   latest: runStateSnapshotSchema.nullable(),
   paused: z.array(runStateSnapshotSchema),
