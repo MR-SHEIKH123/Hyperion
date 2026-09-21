@@ -50,6 +50,20 @@ import type { SecretKind } from '../../util/redact.ts';
 export type EgressClass = 'local' | 'remote' | 'unknown';
 
 /**
+ * A provider as far as egress is concerned: what it declares itself to be, and
+ * the URL it will actually be called at.
+ *
+ * Both are needed. The type alone cannot answer the question this module exists
+ * to answer, because two of the four types — `local` and `colibri` — *claim*
+ * locality and nothing used to check the claim against where the bytes go.
+ */
+export interface EgressSubject {
+  type: ProviderType | null | undefined;
+  /** Absent, null or unparseable is treated as "not this machine". */
+  baseUrl?: string | null;
+}
+
+/**
  * Map a provider type onto its egress class.
  *
  * `opencodex` is remote. It is easy to assume otherwise from the name — it is a
@@ -74,9 +88,67 @@ export function classifyProviderType(type: ProviderType | null | undefined): Egr
   }
 }
 
-/** True when a request to this provider type leaves the machine. */
-export function isEgress(type: ProviderType | null | undefined): boolean {
-  return classifyProviderType(type) === 'remote';
+/**
+ * Whether a *hostname* names this machine.
+ *
+ * Deliberately literal: `localhost`, anything under `.localhost` (RFC 6761),
+ * the IPv6 loopback, and the 127/8 block. No DNS resolution — a name that
+ * happens to resolve to loopback (`127.0.0.1.nip.io`) is still a name handed to
+ * a resolver, and the answer can change under us; treating it as local would be
+ * a locality claim this process cannot check.
+ */
+export function isLoopbackHost(hostname: string): boolean {
+  const host = hostname
+    .toLowerCase()
+    .replace(/\.$/, '')
+    .replace(/^\[|\]$/g, '');
+  if (host === 'localhost' || host.endsWith('.localhost')) return true;
+  if (host === '::1' || host === '0:0:0:0:0:0:0:1') return true;
+
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (!v4) return false;
+  const octets = v4.slice(1).map(Number);
+  if (octets.some((part) => part > 255)) return false;
+  // The whole /8, not just .1: 127.0.0.2 is this machine too.
+  return octets[0] === 127;
+}
+
+function isLoopbackBaseUrl(baseUrl: string | null | undefined): boolean {
+  if (typeof baseUrl !== 'string' || baseUrl.trim() === '') return false;
+  try {
+    return isLoopbackHost(new URL(baseUrl).hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The egress class of a provider whose record is in hand. **Prefer this over
+ * `classifyProviderType`**: the type-only mapping cannot see the URL, and for a
+ * local-typed provider that is the whole question.
+ *
+ * A type that claims locality is verified against the URL, because the claim is
+ * only true when that URL is this machine. Anything else — a LAN address, a
+ * hostname, an unreadable URL — is `remote`, and every surface that asks
+ * (the credential scan, the retention policy, the exposure summary) then says so.
+ *
+ * A declared *remote* type is never downgraded, not even pointed at 127.0.0.1.
+ * `opencodex` is a local proxy that forwards to upstream vendors and a `remote`
+ * provider may be anything at all; calling either local would *skip* the scan,
+ * and understating egress is the one direction this module refuses to fail in.
+ *
+ * A type this build does not recognise stays `unknown` whatever its URL: not
+ * knowing what a provider is cannot be improved by looking at its address.
+ */
+export function egressClassFor(provider: EgressSubject | null | undefined): EgressClass {
+  const declared = classifyProviderType(provider?.type ?? null);
+  if (declared !== 'local') return declared;
+  return isLoopbackBaseUrl(provider?.baseUrl) ? 'local' : 'remote';
+}
+
+/** True when a request to this provider leaves the machine. */
+export function isEgress(provider: EgressSubject | null | undefined): boolean {
+  return egressClassFor(provider) === 'remote';
 }
 
 // --- detection -------------------------------------------------------------
@@ -162,7 +234,13 @@ export function describeKinds(kinds: readonly SecretKind[]): string {
  */
 export interface OutboundGateInput {
   messages: readonly ChatMessage[];
-  providerType: ProviderType | null | undefined;
+  /**
+   * The provider the request is about to go to — its type *and* its URL. A type
+   * that claims locality is only local if that URL is this machine, so passing
+   * the type alone would wave through exactly the case this gate is for. Null
+   * means we cannot say, and an unclassifiable provider is not gated.
+   */
+  provider: EgressSubject | null | undefined;
   /** The user has seen the finding and asked to send anyway. */
   acknowledged?: boolean;
   /** False when the feature toggle is off; the scan is then skipped entirely. */
@@ -172,8 +250,10 @@ export interface OutboundGateInput {
 export function assertOutboundSafe(input: OutboundGateInput): SensitiveReport | null {
   if (!input.enabled) return null;
   // A local model is not egress. Scanning it would cost time and produce
-  // warnings about text that never left the machine.
-  if (!isEgress(input.providerType)) return null;
+  // warnings about text that never left the machine — which is why "local" has
+  // to be established from the URL and not taken from the type's word for it.
+  const providerClass = egressClassFor(input.provider);
+  if (providerClass !== 'remote') return null;
 
   const report = scanForSensitive(input.messages);
   if (!report.flagged) return report;
@@ -192,7 +272,7 @@ export function assertOutboundSafe(input: OutboundGateInput): SensitiveReport | 
       details: {
         kinds: report.kinds,
         hits: report.hits,
-        providerClass: classifyProviderType(input.providerType),
+        providerClass,
       },
     },
   );

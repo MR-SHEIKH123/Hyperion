@@ -178,6 +178,8 @@ findings.
 | S18 | A **default** backup (`includeKeys=false`) shipped `mcp_config.json` unconditionally, and `registry.ts::toEntry` writes a remote server's token into it as a plaintext `Authorization: Bearer` header — so the archive whose own comment promises it "exposes conversations but not credentials" contained a working credential in the clear. | **Fixed** 2026-09-21 — the file travels only with `includeKeys`, on the same reasoning as the key itself; the manifest's `warning` names the omission. Pinned by `test/backupsecrets.test.ts` (asserted against the archive's bytes). |
 | S19 | The notification body was the run's summary, unbounded past the transport: a long report built a push message over the 4,096-octet cap, the push service refused it, the refusal is not 404/410 so the subscription was kept — and **no notification arrived, silently, for exactly the runs with the most to report**. | **Fixed** 2026-09-21 — `buildPushBody` clamps every text field (title 240 B, body 600, url 512, tag 128, cut on a character boundary); pinned by `test/pushpayload.test.ts`. The privacy half of the item was verified clean. |
 | S20 | The **incognito guarantee was walked around by the memory plugin.** After a completed turn, `rememberTurn` handed the exchange to mem0 — durable facts under `~/Hyperion/memory/`, injected into later turns, with the private chat's id as metadata. The storage-layer guard that enforces the temporary-chat rule never saw it: a memory row is not a chat row. "This conversation is not being recorded" held for the transcript and not for its substance. | **Fixed** 2026-09-21 — the guard lives in the writer, `rememberTurn` returns `'temporary'` and never loads the backend; pinned by `test/memoryincognito.test.ts`. Found by auditing the memory plugin's local store. |
+| S21 | **The egress class was taken from the provider's type, and the URL was never checked.** `normalizeBaseUrl` accepts any http(s) host, and `local`/`colibri` *claim* locality — so a Colibrì (or Ollama) on another machine could be registered, enabled and used while `GET /api/providers/active` served `egress: "local"`, the credential scan was skipped, `zdrStatusFor` answered `local_no_egress` (a value that *satisfies* a `require` policy), and the exposure summary stamped the row `local`. One URL, four false statements, all of them "your bytes stayed home". | **Fixed** 2026-09-21 — the class is derived from type **and** URL (`egressClassFor`); loopback is this machine and nothing else is; a declared remote is never downgraded; the class is stamped to `usage_log.provider_egress` (migration 019). Found by the queue's last item, per-provider egress in `colibri.ts`. |
+| S22 | The **provider side of S16**: a usage row naming a provider id with no row raised the FK on `usage_log`, and `recordUsage` swallows its own errors, so the spend was discarded. `ON DELETE SET NULL` already says what a departed provider's link means; the FK failure only added the loss of the money. | **Fixed** 2026-09-21 in the same lookup S21 needed — an unresolvable provider id is stored as NULL with the spend kept, pinned by `test/taskcost.test.ts`. |
 
 ### S13 in full — a path rule matched the string, not the file
 
@@ -511,7 +513,93 @@ port so a write that *was* started fails fast); a saved chat still yields
 `'queued'`; the toggle still reports `'disabled'`; an empty turn reports
 `'empty'`. All four fail before the fix, on the outcome alone.
 
-**Not yet audited** (next session): per-provider egress handling in `colibri.ts`.
+### S21 in full — "local" was a claim about the type, not about the URL
+
+**How it was found.** The queue's last item was per-provider egress in
+`colibri.ts`, and the question was whether a Colibrì provider's base URL could
+point off this machine while everything classified it local. It could, and the
+probe (`egressprobe.mjs`, deleted after recording) showed all five answers from
+one provider — a colibri row whose stored `base_url` was
+`http://192.0.2.10:8000/v1`, accepted verbatim by `normalizeBaseUrl`:
+
+| Surface | Before | After |
+| --- | --- | --- |
+| `classifyProviderType('colibri')` | `local` | `local` — unchanged, and that is the point: the type-only mapping cannot see a URL |
+| `GET /api/providers/active` | `egress: "local"` | `egress: "remote"` |
+| credential gate (check on, prompt with `sk-…`) | passed through, `report = null` | refused, `code: redaction_flagged` |
+| `zdrStatusFor` | `local_no_egress` — satisfies `require` | `zdr_unknown` — fails closed under `require` |
+| `summarizeExposure()` | `local:1` | `remote:1` |
+
+**Why the type-only mapping existed, and why it was not wrong then.** `002` and
+`005` introduced `opencodex` and `colibri` as provider *types*, and the
+classification was written as a fact about the products: opencodex is a local
+proxy that forwards to upstream vendors (remote), Colibrì serves a model on this
+machine (local). Both statements are true of the *intended* deployment. What was
+missing is that the deployment is not enforced: `normalizeBaseUrl` validates the
+scheme and nothing else, so "on this machine" was an assumption held in a doc
+comment while the URL lived in a column.
+
+**The fix, and the rule it settles.** `egressClassFor(provider)` takes the type
+*and* the base URL, and `assertOutboundSafe` now takes the provider record rather
+than a type string — the same shape of fix as S20: a decision nobody can make
+from the information they were handed is a decision that will be made wrongly.
+
+  - **Only a loopback URL is this machine**: `localhost`, `*.localhost` (RFC
+    6761), `::1`, and the whole 127/8 block. No DNS: `127.0.0.1.nip.io` resolves
+    to loopback but is still a name handed to a resolver, so it is `remote`.
+  - **A declared remote is never downgraded** — `opencodex` at 127.0.0.1 stays
+    `remote`. It forwards to upstream vendors, and a `remote` provider may be
+    anything; calling either local would *skip* the scan.
+  - **An unverifiable claim is not believed**: a local-typed provider with an
+    absent or unparseable URL is `remote`. An unreadable address is not evidence
+    of locality.
+  - **An unknown type stays `unknown`**, URL or not; not knowing what a provider
+    *is* cannot be improved by looking at its address.
+
+**The record had to change too.** Classifying correctly while the summary still
+read `provider_type` would have left every future row in the wrong bucket, so the
+resolved class is stamped at write time — `usage_log.provider_egress` (migration
+`019`) — for the same anti-retroactivity reason `013` stamped the type. Rows
+written before `019` fall back to the type mapping they were written under, which
+is a **permanent, recorded understatement** for any pre-`019` local-typed provider
+that pointed elsewhere: the URL was never stored, so nothing can re-decide it, and
+a backfill would only restate the old judgement in SQL. No backfill; no second
+copy of the mapping in SQL; `classifyProviderType` keeps the type half and
+`rowEgressClass` is the one place the stamp is preferred.
+
+**Checked while here, and sound:** `zdrFlagFor` was already remote-only (so a
+misclassified provider did not get a retention header); the failover residual in
+`CONTRACTS.md` is unchanged and now compensates with the *class* rather than the
+type; `docs/API.md` §9.1's `providerTypes` list still names the type, so a user
+can see why a row landed in a bucket.
+
+**Tests.** `test/egressclass.test.ts` — 16 cases, all 16 failing before the fix:
+the classifier table (remote URLs, loopback literals, `127.0.0.2`, `[::1]`,
+nip.io, absent/garbage URLs, declared-remote-never-downgraded, unknown types), the
+gate refusing and reporting `providerClass: 'remote'`, `zdrStatusFor` asking the
+question instead of answering `local_no_egress`, `GET /api/providers/active`
+reporting where the bytes would go, the summary stamping `remote` at write time,
+and the pre-`019` fallback keeping its bucket.
+
+### S22 in full — the provider side of S16, found by the S21 lookup
+
+`recordUsage` resolves a chat id against `chats` before writing (S16). It did not
+do the same for a provider id, and `usage_log.provider_id` is
+`REFERENCES providers (id) ON DELETE SET NULL` — so an id with no row behind it
+raised FOREIGN KEY, the catch swallowed it, and the **spend row was dropped**. A
+provider deleted while a request is in flight is enough to hit it, and the
+schema's own answer (`ON DELETE SET NULL`) says the link should simply go.
+
+The S21 fix needed the provider row anyway, to read its URL, so the same lookup
+settles this: an unresolvable provider id is written as NULL, the name is kept,
+and the spend stays on the books. `provider_egress` for such a row is `remote`
+when the type claims locality — with no URL there is nothing to verify, and the
+record does not take a locality claim on faith.
+
+**Tests.** `rowsFor` gained `provider_id`/`provider_egress`, and
+`test/taskcost.test.ts` gained "a provider id with no provider behind it keeps the
+spend, and does not claim locality"; it fails with the lookup reverted, which is
+how it was confirmed to be red before the fix.
 
 ## Prompt-1 scope — status (2026-09-21, verified against the code, not transcribed)
 
@@ -527,20 +615,22 @@ Where the scope says done, this is what was checked:
 
 | Scope | Where it stands |
 | --- | --- |
-| SPEC deliverables 1–9 (server + endpoint surface, schema/migrations, provider registry + failover + Ollama detect, pause/resume, MCP config CRUD + test, skills intake, storage sweep, encryption + bind guard + scoped roots, usage + backup) | **Landed.** Every route in the spec's suggested surface resolves (see `docs/API.md` §24 for the deliberate deltas). 18 migrations, `001`–`018`; the next is `019`. |
+| SPEC deliverables 1–9 (server + endpoint surface, schema/migrations, provider registry + failover + Ollama detect, pause/resume, MCP config CRUD + test, skills intake, storage sweep, encryption + bind guard + scoped roots, usage + backup) | **Landed.** Every route in the spec's suggested surface resolves (see `docs/API.md` §24 for the deliberate deltas). 19 migrations, `001`–`019`; the next is `020`. |
 | Increment series 1.1–1.28 | **Landed and documented**, with one exception: **`1.25` appears nowhere in the repo** — no heading, no tag, no test name. Either it was folded into a neighbour or it never shipped; only the owner can say which. |
 | D-table decisions (D1/D4/D7/D8/D9/D11/D12/D13–D15, D-1.2) | **Landed**, each with the code and test the D-table entry names. |
 | v4 backend items `§6.1` context windows, `§6.3` approvals + continuation, `§6.4` unattended hardening, `§6.5` write-path downgrade, `§6.6` subagent isolation, `§6.7` profiles, `§6.8` observability + golden runs | **Landed.** |
 | v4 `§6.2` cost accounting per task | **Landed 2026-09-21.** `usage_log` gained `run_id` (migration `018`; `task_id` was `017`), the agent context records one priced row per provider request — so every task run is attributed whatever started it, and a delegated child's spend lands in its parent's task total — the task-state route returns a `usage` summary, and the activity feed carries each run's `spend`. The two findings this surfaced are S15 and S16 above. |
-| S-series audit (S12 fixed in PR #6; S13–S20 fixed 2026-09-21) | **Continuous.** `S2`–`S11` are not recoverable from this repo — like `1.25`, their list lived in conversation. If they exist in a local note, they need pasting in to be verified or closed. |
+| S-series audit (S12 fixed in PR #6; S13–S22 fixed 2026-09-21) | **Continuous.** `S2`–`S11` are not recoverable from this repo — like `1.25`, their list lived in conversation. If they exist in a local note, they need pasting in to be verified or closed. |
 | Frontend (Prompt 2) | Out of this scope by design. Shell + Chat tool landed; Code, Cowork, Design, Playground, Plugins, Skills, Settings remain. Frontend-side items that *wait on backend contracts* are tracked in `frontend/contracts/gaps.md`, and one of them (no cross-tool pending-approval endpoint, no per-project active-task listing) is the earliest backend work the frontend will ask for. |
 
 **So: the backend core is complete, including `§6.2` as of 2026-09-21.** The
-remaining work in the series is the audit queue above and whatever `S2`–`S11` and
-`1.25` turn out to be. The HTTP-input item of that queue is done (`S17`–`S20`), which
-leaves `colibri.ts` egress. Suite baseline for every future claim in this file:
-**896 tests / 164 suites green, `tsc --noEmit` clean** (backend), **84 tests and
-five gates green** (frontend).
+remaining work in the series is whatever `S2`–`S11` and `1.25` turn out to be. The
+audit queue is **empty**: HTTP input validation was S17, `mcp_config.json` S18,
+the push payload S19, the memory store S20, and the last item — per-provider
+egress in `colibri.ts` — became S21 (with S22 falling out of the same lookup).
+Suite baseline for every future claim in this file: **914 tests / 166 suites
+green, `tsc --noEmit` clean** (backend), **84 tests and five gates green**
+(frontend).
 
 ## Resolved verifications
 

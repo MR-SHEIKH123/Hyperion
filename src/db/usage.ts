@@ -15,7 +15,7 @@
 import { getDb } from './adapter.ts';
 import { findChat } from './chats.ts';
 import { isTemporaryChat } from './temporaryChats.ts';
-import { classifyProviderType } from '../services/safety/outbound.ts';
+import { classifyProviderType, egressClassFor } from '../services/safety/outbound.ts';
 import { zdrPreferenceUnmet } from '../services/safety/zdr.ts';
 import { isZdrRequirement } from '../types/core.ts';
 import { createLogger } from '../util/logger.ts';
@@ -113,6 +113,27 @@ export function computeCost(
 }
 
 /**
+ * The two provider facts the egress class needs, read at write time.
+ *
+ * A narrow `SELECT` rather than `findProvider` because that one is allowed to
+ * throw: this runs inside `recordUsage`'s catch-all, and a throwing lookup would
+ * turn "no such provider" into "no usage row at all". `undefined` means the row
+ * does not exist, which is answered rather than guessed at by the caller.
+ */
+function providerFacts(providerId: string | null): { type: string; base_url: string } | undefined {
+  if (providerId === null) return undefined;
+  try {
+    return getDb()
+      .prepare<{ type: string; base_url: string }>(
+        `SELECT type, base_url FROM providers WHERE id = ?`,
+      )
+      .get(providerId);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Appends a usage row. Never throws — a failure to log spend must not fail the
  * request that produced it.
  *
@@ -132,6 +153,14 @@ export function computeCost(
  * row in `usage_log` would attest that a private session happened, and when —
  * which is metadata the user asked not to keep.
  *
+ * The same reasoning governs `provider_id`, and it was learned the same way:
+ * the column is `REFERENCES providers (id) ON DELETE SET NULL`, so the schema
+ * already says what a link to a deleted provider means — NULL. A caller that
+ * names an id with no row is in exactly that state already; the FK failure would
+ * only add the loss of the spend row. The link is therefore resolved here too,
+ * and the egress class is stamped from the provider's actual URL rather than
+ * from its type alone.
+ *
  * A third case turned up with the per-task accounting in v4 §6.2, and it is the
  * same bug wearing different clothes: **a chat id with no chat row behind it.**
  * The FK is real, so the insert raised SQLITE_CONSTRAINT, the catch swallowed it,
@@ -146,6 +175,19 @@ export function computeCost(
 export function recordUsage(input: RecordUsageInput): void {
   try {
     const cost = computeCost(input.modelId, input.providerId ?? null, input.tokensIn, input.tokensOut);
+    const facts = providerFacts(input.providerId ?? null);
+    // A provider id with no row behind it is not a link to anything — the same
+    // call the chat linkage below makes, for the same reason. `ON DELETE SET
+    // NULL` means the schema already treats a departed provider as NULL.
+    const providerId = facts === undefined ? null : input.providerId ?? null;
+    // Stamped at write time, like the type beside it: a provider's URL can be
+    // edited or the row deleted, and history must not change retroactively. A
+    // local-typed provider whose URL is not this machine is `remote`, which is
+    // the whole point — see `egressClassFor`.
+    const egress = egressClassFor({
+      type: (input.providerType ?? facts?.type ?? null) as ProviderType | null,
+      baseUrl: facts?.base_url ?? null,
+    });
     const temporary = input.chatId != null && isTemporaryChat(input.chatId);
     if (temporary) {
       // The cost is the point of the row, so log that it was kept while the
@@ -169,20 +211,21 @@ export function recordUsage(input: RecordUsageInput): void {
       .prepare(
         `INSERT INTO usage_log
            (chat_id, message_id, tool, model_id, provider_id, provider_name, provider_type,
-            zdr_status, zdr_requirement, tokens_in, tokens_out, cost_usd, status, duration_ms,
-            task_id, run_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            provider_egress, zdr_status, zdr_requirement, tokens_in, tokens_out, cost_usd,
+            status, duration_ms, task_id, run_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         unlinked ? null : input.chatId ?? null,
         unlinked ? null : input.messageId ?? null,
         input.tool,
         input.modelId,
-        input.providerId ?? null,
+        providerId,
         input.providerName ?? null,
         // Stamped at write time rather than joined on read: a provider row can be
         // retyped or deleted afterwards, and history must not change retroactively.
         input.providerType ?? null,
+        egress,
         // Same rule, and it matters more here: a provider's recorded ZDR support
         // can be edited or attested at any time, and a row that re-derived its
         // status on read would silently restate history as the current settings.
@@ -491,6 +534,22 @@ export interface ZdrBucket extends UsageBucket {
 
 interface ExposureRow extends AggRow {
   provider_type: string | null;
+  provider_egress: string | null;
+}
+
+/**
+ * The class stamped on a row, or — for rows written before 019 — the type
+ * mapping they were written under.
+ *
+ * There is deliberately no attempt to re-decide old rows: the provider's URL was
+ * never stored, so the only available input is the same type string those rows
+ * were bucketed by. A stamped value this build does not recognise (a downgrade)
+ * falls back to the type rather than inventing a bucket.
+ */
+function rowEgressClass(row: ExposureRow): EgressClass {
+  const stamped = row.provider_egress;
+  if (stamped === 'local' || stamped === 'remote' || stamped === 'unknown') return stamped;
+  return classifyProviderType(row.provider_type as ProviderType | null);
 }
 
 interface ZdrRow extends AggRow {
@@ -628,15 +687,15 @@ export function summarizeExposure(query: UsageQuery = {}): ExposureSummary {
 
   const rows = getDb()
     .prepare<ExposureRow>(
-      `SELECT provider_type, provider_type AS key, ${AGG_COLUMNS}
+      `SELECT provider_type, provider_egress, provider_type AS key, ${AGG_COLUMNS}
          FROM usage_log ${sql}
-        GROUP BY provider_type`,
+        GROUP BY provider_type, provider_egress`,
     )
     .all(...values);
 
   const merged = new Map<EgressClass, { bucket: UsageBucket; types: Set<string> }>();
   for (const row of rows) {
-    const cls = classifyProviderType(row.provider_type as ProviderType | null);
+    const cls = rowEgressClass(row);
     const bucket = mapBucket(row, cls);
     const existing = merged.get(cls);
     if (existing) {

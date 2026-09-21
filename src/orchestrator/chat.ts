@@ -189,7 +189,9 @@ export async function sendMessage(input: SendMessageInput, sse: SseStream): Prom
   const intendedProvider = input.providerId ? findProvider(input.providerId) : getActiveProvider();
   assertOutboundSafe({
     messages: requestMessages,
-    providerType: intendedProvider?.type ?? null,
+    // The whole record, not just its type: a provider that declares itself local
+    // is only local if that is where the request will actually go.
+    provider: intendedProvider,
     ...(input.acknowledgeSensitive === true ? { acknowledged: true } : {}),
     enabled: redactionCheckEnabled(),
   });

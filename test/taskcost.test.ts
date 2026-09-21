@@ -128,11 +128,13 @@ function rowsFor(taskId: string): {
   cost_usd: number | null;
   status: string;
   chat_id: string | null;
+  provider_id: string | null;
+  provider_egress: string | null;
 }[] {
   return getDb()
     .prepare(
-      `SELECT task_id, run_id, tool, provider_name, provider_type, tokens_in, tokens_out,
-              cost_usd, status, chat_id
+      `SELECT task_id, run_id, tool, provider_name, provider_type, provider_id,
+              provider_egress, tokens_in, tokens_out, cost_usd, status, chat_id
          FROM usage_log WHERE task_id = ? ORDER BY id`,
     )
     .all(taskId) as never;
@@ -261,6 +263,36 @@ describe('a task run records what it spent', () => {
       .prepare<{ chat_id: string | null }>('SELECT chat_id FROM usage_log WHERE tool = ? ORDER BY id DESC LIMIT 1')
       .get('chat');
     assert.equal(linked?.chat_id, chat.id);
+  });
+
+  test('a provider id with no provider behind it keeps the spend, and does not claim locality', () => {
+    // The same bug as above, on the other foreign key. `usage_log.provider_id` is
+    // `REFERENCES providers (id) ON DELETE SET NULL`, so the schema already says
+    // what a link to a departed provider means — NULL — and a caller that names
+    // an id with no row is in that state already. The insert used to raise, the
+    // catch swallowed it, and the spend vanished; a provider deleted mid-run is
+    // enough to hit it.
+    const taskId = 'cost-task-9';
+    recordUsage({
+      tool: 'chat',
+      modelId: 'mock-model',
+      providerId: 'provider-that-was-never-created',
+      providerName: 'Ghost',
+      // Deliberately a type that *claims* locality with no URL to check: with
+      // nothing to verify, the class must be the conservative one rather than
+      // the flattering one (see `egressClassFor`).
+      providerType: 'colibri',
+      tokensIn: 7,
+      tokensOut: 8,
+      taskId,
+      runId: 'cost-run-9',
+    });
+
+    const rows = rowsFor(taskId);
+    assert.equal(rows.length, 1, 'the row must survive a provider id the FK cannot resolve');
+    assert.equal(rows[0]?.provider_id, null);
+    assert.equal(rows[0]?.provider_name, 'Ghost', 'the name still says who ran it');
+    assert.equal(rows[0]?.provider_egress, 'remote');
   });
 });
 

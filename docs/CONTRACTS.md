@@ -2440,24 +2440,64 @@ opt-in, not something discovered by being interrupted mid-sentence.
 looks like prose passes straight through. Nothing may be built on this as though
 it were a guarantee.
 
-### Only a positively-identified remote provider is gated
+### "Local" is verified against the URL, not taken from the type's word for it
 
-`classifyProviderType` maps `local` and `colibri` to `local`, `remote` and
-`opencodex` to `remote`, and everything absent to `unknown`. The gate fires on
-`remote` only.
+The gate accepts a *subject* — the provider's type **and** the base URL it will be
+called at — and `egressClassFor` decides from both. `classifyProviderType` still
+exists, but only for rows: it maps `local`/`colibri` to `local` and
+`remote`/`opencodex` to `remote`, and it cannot see a URL, which is exactly the
+half of the question that was missing.
 
-Both surprising cases are surprising in a way that matters. **`opencodex` is
-remote**: it is a local *proxy* that routes to upstream vendors, so a payload
-handed to it leaves the machine (proven from `002_opencodex_provider_type.sql`
-and its adapter, which speaks the OpenAI Responses API to a gateway).
-**`colibri` is local**: it sounds like a hosted service but serves a model on
-this machine. A frontend inferring egress from the type string would get both
-backwards, which is why `GET /api/providers/active` serves `egress` rather than
-letting the client compute it.
+**A type that claims locality is checked.** `normalizeBaseUrl` accepts any http(s)
+host, so nothing stopped a Colibrì box — or an Ollama server — on another machine
+from being registered, enabled and used. Until this was fixed, all four surfaces
+that answer "did these bytes leave" said no:
+
+  - `GET /api/providers/active` served `egress: "local"`, the value the UI renders
+    as "stays on this machine"
+  - the credential scan was skipped, because `isEgress(type)` was false, so a
+    prompt carrying a key went out unremarked
+  - `zdrStatusFor` answered `local_no_egress` — "retention by a third party is not
+    a question that arises" — which is a value that *satisfies* a `require` policy
+  - the exposure summary stamped the row `local`, understating egress permanently
+
+One provider, one URL, four false statements. The rule now: **only a URL that
+parses to a loopback host is this machine.** `localhost`, anything under
+`.localhost` (RFC 6761), `::1`, and the whole 127/8 block. Deliberately no DNS — a
+name that merely resolves to loopback (`127.0.0.1.nip.io`) is still a name handed
+to a resolver, and the answer can change underfoot.
+
+**A declared remote is never downgraded, and an unverifiable claim is not believed
+either.** `opencodex` at 127.0.0.1 stays `remote` — it is a local proxy that
+forwards to upstream vendors, and a `remote` provider may be anything at all;
+calling either one local would skip the scan. A local-typed provider with an
+absent or unparseable URL is `remote` too: an unreadable address is not evidence
+of locality. Understating egress is the one direction this module refuses to fail
+in. A type this build does not recognise stays `unknown`, whatever its URL —
+not knowing what a provider *is* cannot be improved by looking at its address.
 
 `unknown` is not gated, because warning about a provider we cannot classify would
 train the user to dismiss the prompt. But `unknown` is never reported *as* local
 either — see the exposure bucket below.
+
+### The class is stamped, so history cannot be restated
+
+`usage_log.provider_egress` (migration `019`) records the class **at write time**,
+for the same reason `013` records the type: a provider can be re-pointed or
+deleted, and the summary has to be a record of what happened rather than a
+re-derivation from whatever `providers` says today.
+
+Rows written before `019` have no stamp and fall back to the type mapping they
+were written under. That is a **permanent, recorded understatement** for any
+pre-`019` local-typed provider that pointed off this machine: the URL was never
+stored, so there is nothing to re-decide it with, and a backfill would only
+restate the old judgement in SQL. It is named here rather than hidden, and the
+class it was lived under is what those rows keep.
+
+No backfill, and no second copy of the mapping in SQL. `classifyProviderType`
+stays the single definition of the type half; `rowEgressClass` is the one place
+the stamped value is preferred over it, and a stamped value this build does not
+recognise falls back rather than inventing a bucket.
 
 ### The gate runs before the user turn is persisted
 
@@ -2486,9 +2526,9 @@ gate does not re-run — by then the request is already in flight and there is n
 user present to acknowledge anything.
 
 This is a known limit, not an oversight. What compensates is the usage row: both
-`recordUsage` calls stamp the provider type that **actually served** the turn, so
-the exposure summary reflects where the bytes really went even in the case the
-gate could not intervene. A summary built from the *intended* provider would
+`recordUsage` calls stamp the **egress class** of the provider that actually
+served the turn, so the exposure summary reflects where the bytes really went even
+in the case the gate could not intervene. A summary built from the *intended* provider would
 quietly under-report exactly the situation the user most wants to know about.
 
 **Narrowed, not closed, by 1.26.** Zero data retention set to `require` removes
@@ -2662,8 +2702,9 @@ plaintext round-trip would be a credential leak waiting for one paste.
 
 `openAiAdapter` serves both the remote `remote` type and the local `colibri` type, so
 keying the flag off the adapter would send a retention header to a local runtime that
-has no retention policy. `zdrFlagFor` asks `classifyProviderType` instead, which keeps
-one definition of what leaves the machine.
+has no retention policy. `zdrFlagFor` asks `egressClassFor` instead — as does
+`zdrStatusFor`, which must not answer `local_no_egress` for a local-typed provider
+pointing somewhere else — which keeps one definition of what leaves the machine.
 
 Merge order is also load-bearing: the flag is spread **before** `Authorization`,
 `Content-Type` and `Accept`, and before `model`/`messages`/`stream` in the body, so a

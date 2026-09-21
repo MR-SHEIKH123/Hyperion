@@ -280,11 +280,13 @@ message go, and is it being checked?" in one call:
 ```
 
 `egress` is `local` | `remote` | `unknown`, computed from the provider's `type`
-by `classifyProviderType` (§20.6). It is served rather than derived client-side
-because the mapping is not guessable from the name — **`opencodex` is `remote`**
-(it routes to upstream vendors) and **`colibri` is `local`** (it serves a model on
-this machine). A frontend inferring it from the type string would get both
-backwards.
+**and its base URL** by `egressClassFor` (§20.6). It is served rather than derived
+client-side because the answer is not guessable from the name — **`opencodex` is
+`remote`** (it routes to upstream vendors) and **`colibri` is `local` only when
+its URL really is this machine**. A `local` or `colibri` provider pointed at
+another host is `remote`, because that is where its bytes go; a declared `remote`
+provider is never downgraded to `local`, even at a loopback address. A frontend
+inferring any of this from the type string would get it backwards.
 
 With nothing enabled this is a **200** with `provider: null` and
 `egress: "unknown"`, not a 404: "nothing is configured" is the answer to the
@@ -860,10 +862,20 @@ ExposureSummary { range: { from, to }, totals: UsageBucket,
 see *why* a row landed under `remote` — `["opencodex", "remote"]` rather than an
 unexplained total.
 
-The class comes from a `provider_type` column **stamped on the usage row at write
-time** (migration `013`), not from a join against `providers`. Deleting a provider
-therefore does not erase the record of what it sent, and re-pointing one cannot
-rewrite history retroactively.
+The class comes from a **`provider_egress` column stamped on the usage row at
+write time** (migration `019`), not from a join against `providers`. Deleting a
+provider therefore does not erase the record of what it sent, and re-pointing one
+cannot rewrite history retroactively.
+
+`019` exists because `provider_type` alone was not enough: `local` and `colibri`
+*claim* locality, and a base URL is accepted for any http(s) host, so a provider
+on another machine used to be counted as never having left. The class is now
+derived from the type and the URL (`egressClassFor`), and rows written before the
+migration fall back to the type mapping they were written under. That fallback is
+a **permanent, recorded understatement** for any pre-`019` local-typed provider
+that pointed off this machine — the URL was never stored, so there is nothing to
+re-decide it with, and guessing would be worse than the honest gap. (Migration
+`013` stamped `provider_type` for the same anti-retroactivity reason.)
 
 **`hasUnclassified` is reported rather than hidden.** The column is nullable —
 `recordUsage` swallows its own failures, so a `NOT NULL` constraint would silently
@@ -2065,10 +2077,17 @@ it has to be opted into rather than discovered by being interrupted.
 fields. It cannot recognise a secret that looks like ordinary text, and nothing
 should be built on the assumption that it does.
 
-**Only remote sends are checked.** A `local` or `colibri` provider is a model on
-this machine, so there is no exposure to warn about, and warning anyway would
-train the user to dismiss the prompt. `unknown` is not checked either — the gate
-only fires on a provider it can positively identify as remote.
+**Only remote sends are checked**, and "remote" is decided from the provider's
+type *and* its base URL. A `local` or `colibri` provider is a model on this
+machine — but only if that is where its URL points, which is why the URL is part
+of the question: a Colibrì or Ollama on another host is remote, and its payload
+is scanned. Warning about a payload that never left would train the user to
+dismiss the prompt, and so would warning about `unknown`; the gate fires on
+`remote` and nothing else.
+
+A declared `remote`/`opencodex` provider is never downgraded to `local`, even at
+`127.0.0.1`: `opencodex` is a local proxy that forwards to upstream vendors, and
+understating egress is the one direction this feature must not fail in.
 
 #### The refusal
 
@@ -2132,7 +2151,7 @@ load-bearing and there is a test for it.
 One residual gap, stated rather than hidden: the scan classifies the provider the
 turn is *about to* be sent to. A mid-run failover can move the turn to a provider
 of a different egress class, and the gate does not re-run. The usage row records
-the type that actually served the turn (§9.1), so the exposure summary stays
+the class that actually served the turn (§9.1), so the exposure summary stays
 accurate even where the gate could not intervene.
 
 ---

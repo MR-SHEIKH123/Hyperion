@@ -183,24 +183,27 @@ describe('the outbound gate', () => {
   const dirty = [{ role: 'user' as const, content: `use ${FAKE_KEY} please` }];
 
   test('does nothing at all while the check is switched off', () => {
-    const report = assertOutboundSafe({ messages: dirty, providerType: 'remote', enabled: false });
+    const report = assertOutboundSafe({ messages: dirty, provider: { type: 'remote' }, enabled: false });
     assert.equal(report, null);
   });
 
   test('does not warn about a payload that never leaves the machine', () => {
+    // Both types claim locality, and both are believed only because the URL
+    // really is this machine — see `test/egressclass.test.ts` for the other half,
+    // where the same two types point somewhere else and are refused.
     assert.equal(
-      assertOutboundSafe({ messages: dirty, providerType: 'local', enabled: true }),
+      assertOutboundSafe({ messages: dirty, provider: { type: 'local', baseUrl: 'http://127.0.0.1:11434/v1' }, enabled: true }),
       null,
     );
     assert.equal(
-      assertOutboundSafe({ messages: dirty, providerType: 'colibri', enabled: true }),
+      assertOutboundSafe({ messages: dirty, provider: { type: 'colibri', baseUrl: 'http://localhost:8000/v1' }, enabled: true }),
       null,
     );
   });
 
   test('refuses a remote send and says which rule matched', () => {
     try {
-      assertOutboundSafe({ messages: dirty, providerType: 'remote', enabled: true });
+      assertOutboundSafe({ messages: dirty, provider: { type: 'remote' }, enabled: true });
       assert.fail('expected the gate to refuse');
     } catch (error) {
       assert.ok(error instanceof AppError);
@@ -215,7 +218,7 @@ describe('the outbound gate', () => {
 
   test('the refusal never quotes the text it objected to', () => {
     try {
-      assertOutboundSafe({ messages: dirty, providerType: 'remote', enabled: true });
+      assertOutboundSafe({ messages: dirty, provider: { type: 'remote' }, enabled: true });
       assert.fail('expected the gate to refuse');
     } catch (error) {
       assert.ok(error instanceof AppError);
@@ -229,7 +232,7 @@ describe('the outbound gate', () => {
   test('an acknowledged send goes through, and still reports what was found', () => {
     const report = assertOutboundSafe({
       messages: dirty,
-      providerType: 'remote',
+      provider: { type: 'remote' },
       acknowledged: true,
       enabled: true,
     });
@@ -241,7 +244,7 @@ describe('the outbound gate', () => {
   test('a clean remote payload returns an unflagged report, not null', () => {
     const report = assertOutboundSafe({
       messages: [{ role: 'user', content: 'What time is it in Dhaka?' }],
-      providerType: 'remote',
+      provider: { type: 'remote' },
       enabled: true,
     });
     assert.ok(report);
@@ -278,11 +281,15 @@ describe('the redaction-check setting', () => {
 // --- exposure accounting ---------------------------------------------------
 
 describe('attributing spend to where it went', () => {
-  function log(providerType: 'remote' | 'local' | 'colibri' | 'opencodex' | null, tokens: number) {
+  function log(
+    providerType: 'remote' | 'local' | 'colibri' | 'opencodex' | null,
+    tokens: number,
+    providerId: string | null = null,
+  ) {
     recordUsage({
       tool: 'chat',
       modelId: MODEL,
-      providerId: null,
+      providerId,
       providerType,
       tokensIn: tokens,
       tokensOut: tokens,
@@ -291,9 +298,18 @@ describe('attributing spend to where it went', () => {
   }
 
   test('remote and local traffic are counted separately', () => {
+    // The local rows need a provider row behind them now: the class is stamped
+    // from the provider's URL, and a `local` type with no URL is not treated as
+    // local on its word alone (see `test/egressclass.test.ts`).
+    const here = createProvider({
+      name: 'ollama-here',
+      type: 'local',
+      baseUrl: 'http://127.0.0.1:11434/v1',
+      apiKey: null,
+    });
     log('remote', 10);
     log('opencodex', 5);
-    log('local', 100);
+    log('local', 100, here.id);
 
     const summary = summarizeExposure();
     const remote = summary.byClass.find((bucket) => bucket.key === 'remote');
@@ -307,6 +323,19 @@ describe('attributing spend to where it went', () => {
     // why a row landed there.
     assert.deepEqual(remote?.providerTypes, ['opencodex', 'remote']);
     assert.equal(summary.hasUnclassified, false);
+  });
+
+  test('a locality claim with no provider behind it is recorded as egress, not as local', () => {
+    // Fail closed. The type says local, but the URL it would have been verified
+    // against is not there — and the summary is the one place where "probably
+    // fine" is not a defensible answer. The row is counted as egress and named,
+    // so a user seeing it can tell it apart from traffic they meant to send.
+    log('local', 12);
+
+    const summary = summarizeExposure();
+    const remote = summary.byClass.find((bucket) => bucket.key === 'remote');
+    assert.equal(remote?.requests, 1);
+    assert.equal(summary.byClass.find((bucket) => bucket.key === 'local'), undefined);
   });
 
   test('a row with no provider type gets its own bucket and is never folded away', () => {

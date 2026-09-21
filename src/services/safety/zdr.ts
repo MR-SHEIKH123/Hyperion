@@ -39,7 +39,7 @@
  * stays exactly one definition of what leaves the machine.
  */
 
-import { classifyProviderType } from './outbound.ts';
+import { egressClassFor } from './outbound.ts';
 
 import type { ProviderRecord, ZdrRequirement, ZdrStatus } from '../../types/core.ts';
 
@@ -50,7 +50,15 @@ const SATISFYING: readonly ZdrStatus[] = ['local_no_egress', 'zdr_confirmed', 'z
  * Only the ZDR-relevant shape of a provider, so callers that hold a partial
  * record — a test fixture, a row mid-construction — can still be classified.
  */
-export type ZdrSubject = Pick<ProviderRecord, 'type' | 'zdr'>;
+/**
+ * What a retention decision needs to know about a provider: what it is, what it
+ * will be called at, and what the user has recorded about its retention.
+ *
+ * The URL is here for the same reason it is in `EgressSubject`: a provider that
+ * declares itself local is only local if that is where the bytes go, and
+ * "nothing left the machine" is the answer that satisfies a `require` policy.
+ */
+export type ZdrSubject = Pick<ProviderRecord, 'type' | 'zdr' | 'baseUrl'>;
 
 /**
  * True when the provider's opt-in flag is complete enough to send.
@@ -90,7 +98,7 @@ function zdrSatisfied(provider: ZdrSubject): boolean {
  * not a cache of what applies.
  */
 export function zdrStatusFor(provider: ZdrSubject): ZdrStatus {
-  const egress = classifyProviderType(provider.type);
+  const egress = egressClassFor(provider);
 
   // Nothing left the machine, so retention by a third party is not a question
   // that arises — regardless of what has been recorded about the provider.
@@ -212,7 +220,7 @@ export interface ZdrFlagApplication {
  * anything else has nothing to send.
  */
 export function zdrFlagFor(provider: ZdrSubject): ZdrFlagApplication | null {
-  if (classifyProviderType(provider.type) !== 'remote') return null;
+  if (egressClassFor(provider) !== 'remote') return null;
   if (provider.zdr.support !== 'supported_opt_in') return null;
 
   const flag = provider.zdr.requestFlag;

@@ -29,7 +29,7 @@ import {
 } from '../providers/registry.ts';
 import { colibriAdvisory, probeColibri, requireSlowAcknowledgement } from '../providers/colibri.ts';
 import { redactionCheckEnabled, zdrRequirement } from '../db/settings.ts';
-import { classifyProviderType } from '../services/safety/outbound.ts';
+import { egressClassFor } from '../services/safety/outbound.ts';
 import { zdrStatusFor } from '../services/safety/zdr.ts';
 import { isProviderType, PROVIDER_TYPES, ZDR_FLAG_LOCATIONS, ZDR_SUPPORTS } from '../types/core.ts';
 import { AppError } from '../util/errors.ts';
@@ -155,7 +155,7 @@ providersRouter.get(
     const active = getActiveProvider();
     res.json({
       provider: active ? toPublic(active) : null,
-      egress: classifyProviderType(active?.type ?? null),
+      egress: egressClassFor(active),
       redactionCheckEnabled: redactionCheckEnabled(),
       zdr: {
         // Null rather than a status when nothing is enabled: there is no request
