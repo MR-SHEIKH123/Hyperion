@@ -23,13 +23,19 @@ behavior in the browser.
   `GET /api/providers/active` adds `{redacted, authority, scheme, hasCredentials,
   offMachine}` — the point-of-action privacy line renders it, and the egress class
   already accounts for it (`local` + an off-machine proxy is `remote`).
-- ~~Still no Puter provider type.~~ **Closed 2026-09-21 (1.38).** `puter` is a provider
-  type (`providerTypeSchema` accepts it) whose difference is the *credential*: an expiring
-  session `auth_token` rather than a vendor key, so an expired one is a configuration fact
-  and pauses the provider for the hour rather than being retried on every request.
-  `GET /api/providers/puter/advisory` states the credential kind, the default base URL and
-  what an expiry does — a settings screen needs to hard-code none of it. There is still no
-  settings form that creates one.
+- ~~Still no Puter provider type.~~ **Closed 2026-09-21 (1.38), audited against Puter's
+  own docs the same day.** `puter` is a provider type (`providerTypeSchema` accepts it) whose
+  difference is the *credential*: a minted, revocable access token rather than a vendor key
+  (expiry is optional — the create dialog defaults to never), so a rejected one is a
+  configuration fact and pauses the provider for the hour rather than being retried on every
+  request. Two things the first pass missed and a settings screen must therefore be told:
+  the OpenAI-compatible endpoint **requires a paid Puter plan** (a free account gets
+  `402 subscription_required`), and the model list comes from Puter's own catalogue
+  (`/puterai/chat/models/details`, which carries each model's context window), not from
+  `{base}/models`. `GET /api/providers/puter/advisory` now states the credential kind, the
+  default base URL and catalogue URL, `requiresPaidPlan` and what a rejection does — a
+  settings screen needs to hard-code none of it. There is still no settings form that creates
+  one, and nothing renders the advisory.
 - No global search endpoint; later shell search must report federated partial coverage.
 
 ## Later

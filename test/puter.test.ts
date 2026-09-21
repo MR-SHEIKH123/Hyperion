@@ -29,10 +29,12 @@ import type { Server } from 'node:http';
 // Imported after helpers.ts has set the environment.
 const { createProvider, toPublic, enableProvider } = await import('../src/providers/repository.ts');
 const { egressClassFor, isEgress } = await import('../src/services/safety/outbound.ts');
-const { adapterFor } = await import('../src/providers/adapters.ts');
+const { adapterFor, openAiAdapter, puterAdapter } = await import('../src/providers/adapters.ts');
 const { stream } = await import('../src/providers/router.ts');
 const { cooldownFor, resetAllCooldowns } = await import('../src/providers/cooldowns.ts');
-const { puterAdvisory, PUTER_DEFAULT_BASE_URL } = await import('../src/providers/puter.ts');
+const { puterAdvisory, puterCatalogueUrls, PUTER_CATALOGUE_URL, PUTER_DEFAULT_BASE_URL } =
+  await import('../src/providers/puter.ts');
+const { getModels } = await import('../src/providers/registry.ts');
 const { resetAllHealth } = await import('../src/providers/health.ts');
 const { tryDecrypt } = await import('../src/security/keystore.ts');
 const { normalizeBaseUrl } = await import('../src/providers/repository.ts');
@@ -43,6 +45,15 @@ let server: Server;
 
 /** A Puter-shaped token: not an `sk-` key, and short-lived by nature. */
 const TOKEN = 'eyJhbGciOi-token-do-not-log-me-9f3a';
+
+/**
+ * A base URL with Puter's path shape, aimed at the mock server.
+ *
+ * The catalogue URL is derived from the base URL, so a test that wants the
+ * catalogue path has to look like Puter. Everything else about the mock is the
+ * same socket.
+ */
+const puterBaseUrl = (): string => `${mock.baseUrl.replace(/\/v1$/, '')}/puterai/openai/v1`;
 
 before(async () => {
   mock = await startMockProvider();
@@ -67,25 +78,139 @@ after(async () => {
   await cleanupHome();
 });
 
-test('the advisory says where the token comes from, and that the type is remote', () => {
+test('the advisory states the plan requirement and the catalogue, not just the credential', () => {
   const advisory = puterAdvisory();
   assert.equal(advisory.defaultBaseUrl, PUTER_DEFAULT_BASE_URL);
   assert.equal(advisory.credential, 'auth_token');
   assert.equal(advisory.egress, 'remote');
-  // The note has to answer "what happens when it stops working", because that is
-  // the question no other provider type raises.
-  assert.match(advisory.note, /expires/i);
-  assert.match(advisory.note, /paste a fresh/);
+  // Machine-readable, because a form that warned only *after* the first failed
+  // request would be describing the plan requirement in prose nobody read yet.
+  assert.equal(advisory.requiresPaidPlan, true);
+  assert.equal(advisory.catalogueUrl, PUTER_CATALOGUE_URL);
+  // The note answers "what happens when it stops working" — the question no other
+  // provider type raises — without asserting the thing Puter does not do: expiry
+  // is a choice in the create dialog, not a property of every token.
+  assert.match(advisory.note, /revoked/);
+  assert.match(advisory.note, /Never, 7, 30 or 90 days/);
+  assert.match(advisory.note, /requires a\s+paid Puter plan|requires a paid Puter plan/i);
+  assert.match(advisory.note, /subscription_required/);
   assert.match(advisory.note, /never\s+returned by any endpoint/);
+  // And it says what the token cannot do, which is the reassuring half: a minted
+  // access token is refused by Puter's account-management endpoints.
+  assert.match(advisory.note, /2FA/);
+});
+
+test('the catalogue URL is derived from the base URL, or absent when it does not apply', () => {
+  // Derived rather than fixed, so a self-hosted Puter or a path-prefixed
+  // deployment is read at its own origin.
+  assert.deepEqual(puterCatalogueUrls(PUTER_DEFAULT_BASE_URL), {
+    details: 'https://api.puter.com/puterai/chat/models/details',
+    summary: 'https://api.puter.com/puterai/chat/models',
+  });
+  assert.deepEqual(puterCatalogueUrls('https://api.puter.com/puterai/openai/v1/')?.details, PUTER_CATALOGUE_URL);
+  assert.deepEqual(puterCatalogueUrls('http://127.0.0.1:8080/puterai/openai/v1')?.summary, 'http://127.0.0.1:8080/puterai/chat/models');
+
+  // A compatibility proxy has no such shape. It serves an OpenAI surface, so the
+  // ordinary listing is the correct one — not a catalogue path invented onto it.
+  assert.equal(puterCatalogueUrls('http://127.0.0.1:11434/v1'), null);
+  assert.equal(puterCatalogueUrls('https://openrouter.ai/api/v1'), null);
+});
+
+test('models come from Puter\'s catalogue, with the context window it publishes', async () => {
+  mock.behave({
+    models: ['should-not-be-used'],
+    catalogue: [
+      { id: 'claude-sonnet-5', name: 'Claude Sonnet 5', context: 200_000 },
+      { id: 'gpt-5.4-nano', name: 'GPT-5.4 Nano', context: 400_000 },
+      { id: 'moonshotai/kimi-k2.6' },
+    ],
+  });
+  const provider = createProvider({
+    name: 'Puter',
+    type: 'puter',
+    baseUrl: puterBaseUrl(),
+    apiKey: TOKEN,
+    enabled: true,
+  });
+
+  const models = await getModels(provider, { force: true });
+  assert.deepEqual(
+    models.map((model) => model.id),
+    ['claude-sonnet-5', 'gpt-5.4-nano', 'moonshotai/kimi-k2.6'],
+    'the catalogue is the model list, not the OpenAI-shaped /models route',
+  );
+  // `context`, which is Puter's spelling, becomes the context window every other
+  // gateway calls `context_length`. This is what keeps 1.28's ceiling a
+  // measurement for a Puter model rather than the assumed default.
+  assert.equal(models[0]?.contextLength, 200_000);
+  assert.equal(models[0]?.label, 'Claude Sonnet 5');
+  assert.equal(models[0]?.ownedBy, 'mock', 'the vendor behind the model is reported');
+  assert.equal(models[2]?.contextLength, undefined, 'a model with no published window stays unknown');
+
+  // And the cache is what the ceiling reads, so the window survives the request.
+  assert.deepEqual(provider.models, null, 'the record in hand is pre-refresh');
+});
+
+test('a failing rich catalogue falls back to the documented summary endpoint', async () => {
+  mock.behave({
+    catalogue: [{ id: 'gpt-5.4-nano' }, { id: 'claude-sonnet-5' }],
+    catalogueFailStatus: 500,
+  });
+  const provider = createProvider({
+    name: 'Puter',
+    type: 'puter',
+    baseUrl: puterBaseUrl(),
+    apiKey: TOKEN,
+    enabled: true,
+  });
+
+  // The details endpoint answers 500; the summary one is then tried. The summary
+  // route returns `{ models: [ids] }`, so the ids arrive without labels or
+  // windows — which is exactly what the fallback can promise.
+  const models = await getModels(provider, { force: true });
+  assert.deepEqual(
+    models.map((model) => model.id),
+    ['gpt-5.4-nano', 'claude-sonnet-5'],
+  );
+  assert.equal(models[0]?.contextLength, undefined);
+});
+
+test('a base URL that is not Puter\'s shape keeps the ordinary OpenAI listing', async () => {
+  mock.behave({ models: ['proxy-model'] });
+  // A provider pointed at a compatibility proxy: same credential, ordinary
+  // protocol, and no catalogue path invented onto a URL that does not have one.
+  const provider = createProvider({
+    name: 'Puter via proxy',
+    type: 'puter',
+    baseUrl: mock.baseUrl,
+    apiKey: TOKEN,
+    enabled: true,
+  });
+
+  const models = await getModels(provider, { force: true });
+  assert.deepEqual(
+    models.map((model) => model.id),
+    ['proxy-model'],
+  );
+  assert.ok(mock.modelCalls > 0, 'the proxy\'s /models route was the one called');
 });
 
 test('the advisory is served, so a settings screen need not hard-code the URL', async () => {
   const body = (await (await fetch(`${base}/api/providers/puter/advisory`)).json()) as {
     defaultBaseUrl: string;
     credential: string;
+    catalogueUrl: string;
+    requiresPaidPlan: boolean;
+    note: string;
   };
   assert.equal(body.defaultBaseUrl, PUTER_DEFAULT_BASE_URL);
   assert.equal(body.credential, 'auth_token');
+  // Asserted over the wire, not just on the function: the plan requirement and the
+  // catalogue are what a form has to be able to say, and a field that never
+  // survives serialization would be missing exactly where it is needed.
+  assert.equal(body.catalogueUrl, PUTER_CATALOGUE_URL);
+  assert.equal(body.requiresPaidPlan, true);
+  assert.match(body.note, /paid Puter plan/);
 });
 
 test('a bare Puter host is stored as typed, never rewritten into a wrong API', () => {
@@ -149,7 +274,11 @@ test('a puter provider streams through the stock OpenAI path, token included', a
   });
   enableProvider(provider.id);
 
-  assert.equal(adapterFor(provider).kind, 'openai');
+  // The *protocol* is the stock one, and that is now asserted as object identity
+  // rather than by naming a switch: `stream` is the very function the OpenAI
+  // adapter uses, and only model listing differs.
+  assert.equal(adapterFor(provider).kind, 'puter');
+  assert.equal(puterAdapter.stream, openAiAdapter.stream);
 
   const tokens: string[] = [];
   for await (const event of stream({ modelId: 'mock-model', messages: [{ role: 'user', content: 'hi' }] })) {
@@ -162,6 +291,94 @@ test('a puter provider streams through the stock OpenAI path, token included', a
   // the wire, because a credential that never leaves the process looks identical
   // to one that is sent when all you read is the response.
   assert.equal(mock.lastAuthorization, `Bearer ${TOKEN}`);
+});
+
+test('a rejected token is named as a token, not as an API key', async () => {
+  mock.behave({ models: ['mock-model'], failStatus: 401 });
+  const provider = createProvider({
+    name: 'Puter',
+    type: 'puter',
+    baseUrl: mock.baseUrl,
+    apiKey: TOKEN,
+    enabled: true,
+  });
+
+  await assert.rejects(
+    async () => {
+      for await (const _ of stream({ modelId: 'mock-model', messages: [] })) {
+        // no output expected
+      }
+    },
+    (error: unknown) => {
+      const message = (error as Error).message;
+      assert.match(message, /auth token/);
+      assert.match(message, /expired or been revoked/);
+      assert.doesNotMatch(message, /API key/, 'a Puter user has no API key to go looking for');
+      return true;
+    },
+  );
+});
+
+test('a free-plan 402 says which 402 it is, and does not invite a retry', async () => {
+  // Puter answers 402 for two unrelated conditions. The code in the body is the
+  // difference between "upgrade your plan" and "add credit", and it reaches the
+  // user as a message instead of a bare status.
+  mock.behave({
+    models: ['mock-model'],
+    failStatus: 402,
+    failBody: JSON.stringify({ error: { code: 'subscription_required', message: 'paid plan required' } }),
+  });
+  const provider = createProvider({
+    name: 'Free plan',
+    type: 'puter',
+    baseUrl: mock.baseUrl,
+    apiKey: TOKEN,
+    enabled: true,
+  });
+
+  await assert.rejects(
+    async () => {
+      for await (const _ of stream({ modelId: 'mock-model', messages: [] })) {
+        // no output expected
+      }
+    },
+    (error: unknown) => {
+      assert.match((error as Error).message, /paid plan/);
+      assert.equal((error as { details?: Record<string, unknown> }).details?.['providerCode'], 'subscription_required');
+      // Non-retryable: nothing about the next request changes the plan.
+      assert.equal((error as { retryable?: boolean }).retryable, false);
+      // And the provider is cooled down under 1.36's payment class, so a free
+      // account is not hammering an endpoint that will refuse it every time.
+      assert.equal(cooldownFor(provider.id)?.failureClass, 'payment');
+      return true;
+    },
+  );
+
+  // The same status with the other code is a different sentence.
+  mock.behave({
+    models: ['mock-model'],
+    failStatus: 402,
+    failBody: JSON.stringify({ error: { code: 'insufficient_funds' } }),
+  });
+  const second = createProvider({
+    name: 'Spent',
+    type: 'puter',
+    baseUrl: mock.baseUrl,
+    apiKey: TOKEN,
+    enabled: true,
+  });
+  await assert.rejects(
+    async () => {
+      for await (const _ of stream({ modelId: 'mock-model', messages: [] })) {
+        // no output expected
+      }
+    },
+    (error: unknown) => {
+      assert.match((error as Error).message, /usage credit is spent/);
+      return true;
+    },
+  );
+  assert.equal(cooldownFor(second.id)?.failureClass, 'payment');
 });
 
 test('an expired token is paused as an authentication failure, not retried', async () => {

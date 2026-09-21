@@ -385,44 +385,71 @@ Two deliberate limits on that gate:
 ### 3.4 Puter
 
 Puter is not a different *protocol* — it serves an OpenAI-compatible
-`/v1/chat/completions`, so it streams through the same adapter as `remote` with
-no branch of its own. It is a different **credential**: there is no vendor API
-key. You sign in to Puter, take the session `auth_token`, and paste that, and
-that token expires.
+`/puterai/openai/v1/chat/completions`, so streaming goes through the same code as
+`remote`: `puterAdapter.stream` **is** `openAiAdapter.stream`. Three things are not
+interchangeable, and they are the entire content of the type.
+
+**1. The credential is a token, not a vendor API key.** It is minted from the Puter
+dashboard ("Create token"), it is named, it is shown once, and it can be revoked at
+any time under Settings → Security → Manage sessions. Expiry is **opt-in** — the
+create dialog offers Never, 7, 30 or 90 days — so a token does not "just expire".
+A rejected one comes back `401`, which the failover cooldowns (§4.3) classify as
+`auth` and hold for an hour, and the message says *auth token … expired or been
+revoked* rather than "API key", because a Puter user has no key to go looking for.
+
+**2. The model catalogue is Puter's own endpoint.** Every other
+OpenAI-compatible provider here answers `GET {base}/models`;
+`https://api.puter.com/puterai/openai/v1/models` is not Puter's catalogue. Puter
+publishes it, unauthenticated, at `GET /puterai/chat/models/details`, with
+`/puterai/chat/models` documented as the summary form. `puterAdapter.listModels`
+reads the rich endpoint first, then the summary one, then the OpenAI-shaped listing
+as a last resort, and reports the *first* failure if all three fail. The payload is
+worth the special case: it carries **`context`** — the model's context window —
+which becomes `contextLength`, so §4.x/1.28's context ceiling judges a Puter model
+against its real window instead of the assumed 8 192 default. The catalogue URL is
+*derived from the configured `baseUrl`*: a provider pointed at a compatibility
+proxy has no Puter path shape, gets `null`, and keeps the ordinary listing.
+
+**3. The compatible endpoint requires a paid Puter plan.** The same models are
+available to every account through Puter's own SDK (`puter.ai.*`), but
+`/puterai/openai/v1/*` answers a free account `402 subscription_required`. An
+exhausted monthly usage credit answers `402 insufficient_funds`; requests over the
+window answer `429 too_many_requests` (30 per 10 s and 3 concurrent on a free plan,
+200 and 20 on a paid one). A 402 is **non-retryable** — nothing about the next
+request changes the plan or the balance — and it is cooled down under 1.36's
+`payment` class for 30 minutes. The two 402s are told apart by the provider's own
+`error.code`, which is lifted into `details.providerCode` when it matches a strict
+lowercase-identifier pattern (a code cannot carry a key or a prompt, so this stays
+inside the disclosure rule) and turned into the sentence that says which condition
+it is.
 
 **GET /api/providers/puter/advisory** — no body. Returns:
 
 ```ts
 {
   type: 'puter';
-  defaultBaseUrl: string;   // 'https://api.puter.com/puterai/openai/v1'
+  defaultBaseUrl: string;       // 'https://api.puter.com/puterai/openai/v1'
   credential: 'auth_token';
   egress: 'remote';
-  note: string;             // multi-line prose, safe to render verbatim
+  catalogueUrl: string;         // 'https://api.puter.com/puterai/chat/models/details'
+  requiresPaidPlan: true;       // the OpenAI surface is a paid-plan feature
+  note: string;                 // multi-line prose, safe to render verbatim
 }
 ```
 
 `defaultBaseUrl` is a suggestion for pre-filling a form, not an assumption:
 `baseUrl` is still required on create, exactly as for every other type. The
-advisory exists so a settings screen can say what to paste and what happens next
-without hard-coding either fact.
+advisory exists so a settings screen can say what to paste, where the model list
+comes from, and what happens next — including the plan requirement, which is a
+property of the choice rather than of the first request that fails.
 
-**The three consequences of a token credential**, each of which is asserted in
-`test/puter.test.ts` rather than left as prose:
-
-- **It is stored like a secret and hinted like one.** Encrypted at rest, and
-  `apiKeyHint` is the last four characters — with no `sk-` assumption, because a
-  Puter token has no prefix. Every read path still refuses to return it.
-- **It is sent as a bearer token**, in the `Authorization` header where a vendor
-  key would go. Nothing downstream of `authHeaders()` can tell the two apart,
-  which is the point.
-- **Its expiry is an authentication failure, not an outage.** A rejected token
-  comes back `401`, which the failover cooldowns (§4.3) classify as `auth` and
-  hold for an hour. That is the intended behaviour: re-sending a dead token on
-  every request would burn a minute of the user's patience per message, and the
-  fix is a person pasting a fresh token, not a retry. The advisory's note says
-  so, since a user who does not know the token expires will read the 60-minute
-  pause as a broken provider.
+**The token is stored like a secret and hinted like one.** Encrypted at rest, and
+`apiKeyHint` is the last four characters — with no `sk-` assumption, because a
+Puter token has no prefix. Every read path still refuses to return it, and it is
+sent as a bearer token in the `Authorization` header where a vendor key would go.
+A minted access token can use the whole Puter API but is refused by Puter's
+account-management endpoints (password, email, 2FA, session-cookie sync, minting
+further tokens), so pasting one here cannot be escalated into account control.
 
 **Egress is `remote` by type**, never by URL (§20.6): the service is hosted, so
 a Puter provider tunnelled through a proxy or reached at a loopback relay is

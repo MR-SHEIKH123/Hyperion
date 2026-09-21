@@ -22,6 +22,7 @@ import { zdrFlagFor } from '../services/safety/zdr.ts';
 import { dispatcherFor } from './transport.ts';
 import { DEFAULT_PROVIDER_ZDR } from '../types/core.ts';
 import type { ProxyAgent } from 'undici';
+import { puterCatalogueUrls } from './puter.ts';
 import type {
   ChatMessage,
   CompletionRequest,
@@ -196,26 +197,98 @@ function parseRetryAfter(value: string | null): number | null {
   return Math.max(0, Math.round((at - Date.now()) / 1000));
 }
 
-async function failFromResponse(response: Response, context: string): Promise<never> {
+/**
+ * The provider's own error code, when it is a short lowercase identifier.
+ *
+ * Gateways answer 402/429 with a machine-readable code — Puter sends
+ * `subscription_required`, `insufficient_funds`, `too_many_requests` — and that
+ * code is the difference between "your plan does not include this endpoint" and
+ * "your credit is spent", which are the same HTTP status and very different
+ * things to tell a person. It is extracted from the body, so it is exposed only
+ * when it matches a strict pattern: a lowercase identifier cannot carry a key, a
+ * prompt, or any other content, and anything that does not match stays private.
+ */
+const PROVIDER_CODE = /^[a-z][a-z0-9_]{0,63}$/;
+
+function providerCodeFrom(body: string): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body) as unknown;
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== 'object') return null;
+  const record = parsed as Record<string, unknown>;
+  const error = record['error'];
+  const nested =
+    error !== null && typeof error === 'object' ? (error as Record<string, unknown>)['code'] : undefined;
+  const candidate = typeof nested === 'string' ? nested : record['code'];
+  return typeof candidate === 'string' && PROVIDER_CODE.test(candidate) ? candidate : null;
+}
+
+/**
+ * The words for a 402, which is not one condition.
+ *
+ * `payment` is the cooldown class for both, and that is right — do not keep
+ * hammering — but the two causes need different sentences: an exhausted balance
+ * is solved by adding credit, and a plan that does not include the endpoint is
+ * solved by upgrading or by using the vendor's own SDK. Puter is the provider
+ * where this distinction is reachable (it is documented to send both).
+ */
+function paymentMessage(context: string, providerType: string, code: string | null): string {
+  if (providerType === 'puter') {
+    if (code === 'subscription_required') {
+      return `${context}: the Puter plan does not include the OpenAI-compatible endpoint (Puter requires a paid plan for /puterai/openai/v1)`;
+    }
+    if (code === 'insufficient_funds') {
+      return `${context}: the Puter account's monthly usage credit is spent`;
+    }
+    return `${context}: Puter refused the request for a billing or plan reason${code === null ? '' : ` (${code})`}`;
+  }
+  return `${context}: the provider refused the request for a billing reason${code === null ? '' : ` (${code})`}`;
+}
+
+async function failFromResponse(
+  response: Response,
+  context: string,
+  provider?: Pick<ProviderRecord, 'type'>,
+): Promise<never> {
   const body = await response.text().catch(() => '');
   const detail = redactSecrets(body.slice(0, 500));
+  const providerType = provider?.type ?? 'unknown';
 
   // Status alone is safe to expose and is what the frontend actually branches on.
   // `Retry-After` joins it because it is a duration, not content: a 429's header
   // is what tells the cooldown how long the provider wants to be left alone, and
   // it is the only thing in the response that a rate limit cannot be respected
-  // without. Everything else about the body stays private.
+  // without. The provider's own code joins them for the reason above.
   const retryAfterSeconds = parseRetryAfter(response.headers.get('retry-after'));
+  const code = providerCodeFrom(body);
   const details = {
     status: response.status,
     ...(retryAfterSeconds === null ? {} : { retryAfterSeconds }),
+    ...(code === null ? {} : { providerCode: code }),
   };
   const privateDetails = { body: detail };
 
   // 401/403 are configuration problems: retrying cannot help, and they must NOT
   // count toward the health threshold or a wrong key would evict a live provider.
   if (response.status === 401 || response.status === 403) {
-    throw new AppError('provider_auth_failed', `${context}: provider rejected the API key`, {
+    // The noun matters. "rejected the API key" against a Puter provider sends the
+    // user looking for a key that does not exist; the thing to replace is a token,
+    // and the two ways it goes stale are worth naming in the same breath.
+    const credential =
+      providerType === 'puter' ? 'auth token (it may have expired or been revoked)' : 'API key';
+    throw new AppError('provider_auth_failed', `${context}: provider rejected the ${credential}`, {
+      details,
+      privateDetails,
+      retryable: false,
+    });
+  }
+  if (response.status === 402) {
+    // Non-retryable for the same reason as 401: nothing about the next request
+    // changes the plan or the balance.
+    throw new AppError('provider_error', paymentMessage(context, providerType, code), {
       details,
       privateDetails,
       retryable: false,
@@ -335,7 +408,7 @@ export const openAiAdapter: ProviderAdapter = {
       15_000,
       signal,
     );
-    if (!response.ok) await failFromResponse(response, 'Listing models');
+    if (!response.ok) await failFromResponse(response, 'Listing models', provider);
 
     const payload = (await response.json().catch(() => null)) as
       | { data?: unknown[]; models?: unknown[] }
@@ -410,7 +483,7 @@ export const openAiAdapter: ProviderAdapter = {
       request.signal,
     );
 
-    if (!response.ok) await failFromResponse(response, 'Streaming completion');
+    if (!response.ok) await failFromResponse(response, 'Streaming completion', provider);
 
     let finishReason: string | undefined;
     let sawUsage = false;
@@ -571,6 +644,119 @@ function reasoningBodyField(
   return { reasoning_effort: request.reasoningEffort };
 }
 
+// --- Puter (OpenAI-compatible surface, Puter's own catalogue) ----------------
+
+/**
+ * Puter, whose chat protocol is stock and whose model catalogue is not.
+ *
+ * `stream` is `openAiAdapter.stream` — assigned, not reimplemented, so "the
+ * protocol is the same one" is a fact about object identity rather than a comment.
+ * What differs is `listModels`: every other OpenAI-compatible provider answers
+ * `GET {base}/models`, and `https://api.puter.com/puterai/openai/v1/models` is not
+ * Puter's catalogue. Puter publishes it unauthenticated at
+ * `/puterai/chat/models/details` (documented, and what the dashboard's own model
+ * list reads), with `/puterai/chat/models` as the fallback.
+ *
+ * That payload is worth the special case for a reason beyond correctness: it
+ * carries **`context`**, the model's context window. Reading it means 1.28's
+ * context ceiling judges a Puter model against its real window
+ * (`source: 'model'`) instead of the assumed 8 192 default — the difference
+ * between "this conversation is nearly full" being a measurement and a guess.
+ *
+ * The catalogue URL is *derived from the configured base URL* rather than fixed: a
+ * provider pointed at a compatibility proxy (`opencode-puter-auth serve --openai`
+ * is one) does not have Puter's path shape, and there the stock `GET {base}/models`
+ * listing is the correct thing, because a proxy offering an OpenAI surface serves
+ * one.
+ */
+export const puterAdapter: ProviderAdapter = {
+  kind: 'puter',
+
+  stream: openAiAdapter.stream,
+
+  async listModels(provider, signal) {
+    const catalogue = puterCatalogueUrls(provider.baseUrl);
+    if (catalogue === null) return openAiAdapter.listModels(provider, signal);
+
+    // The richer endpoint first, the documented summary one second, and the
+    // OpenAI-shaped listing last (a proxy on the same origin may serve that and
+    // not the catalogue). The *first* failure is reported when everything fails:
+    // it is the endpoint that was supposed to work.
+    let firstFailure: unknown = null;
+    for (const endpoint of [catalogue.details, catalogue.summary]) {
+      try {
+        return await puterCatalogue(provider, endpoint, signal);
+      } catch (error) {
+        firstFailure ??= error;
+      }
+    }
+    try {
+      return await openAiAdapter.listModels(provider, signal);
+    } catch {
+      throw firstFailure instanceof Error
+        ? firstFailure
+        : new AppError('provider_error', "Puter's model catalogue could not be read");
+    }
+  },
+};
+
+/**
+ * Read one catalogue endpoint.
+ *
+ * The shape is a bare array in the documentation; `{ models: [...] }` is accepted
+ * too, because a self-hosted Puter deployment may wrap it. Anything else is
+ * refused rather than coerced — an unrecognised payload that parsed into an empty
+ * list would empty the model picker while looking like a provider with no models.
+ */
+async function puterCatalogue(
+  provider: ProviderRecord,
+  endpoint: string,
+  signal?: AbortSignal,
+): Promise<ModelInfo[]> {
+  const response = await httpFetch(
+    provider,
+    endpoint,
+    { headers: { ...authHeaders(provider), Accept: 'application/json' } },
+    15_000,
+    signal,
+  );
+  if (!response.ok) await failFromResponse(response, 'Listing models', provider);
+
+  const payload = (await response.json().catch(() => null)) as unknown;
+  const list = Array.isArray(payload)
+    ? payload
+    : payload !== null && typeof payload === 'object' && Array.isArray((payload as { models?: unknown }).models)
+      ? (payload as { models: unknown[] }).models
+      : null;
+  if (list === null) {
+    throw new AppError('provider_error', 'Model list response was not in a recognized format', {
+      details: { endpoint },
+    });
+  }
+
+  return list
+    .map((entry): ModelInfo | null => {
+      // The summary endpoint answers bare ids where the details one answers
+      // objects, so both shapes are read — an id with no metadata is still a
+      // usable model, and dropping it would empty the picker on the fallback path.
+      if (typeof entry === 'string') return entry === '' ? null : { id: entry };
+      if (entry === null || typeof entry !== 'object') return null;
+      const row = entry as Record<string, unknown>;
+      const id = typeof row.id === 'string' ? row.id : null;
+      if (id === null || id === '') return null;
+      return {
+        id,
+        ...(typeof row.name === 'string' && row.name !== id ? { label: row.name } : {}),
+        // Puter's own name for the vendor behind the model ("claude", "openai").
+        ...(typeof row.provider === 'string' ? { ownedBy: row.provider } : {}),
+        // `context`, where every other gateway here says `context_length`. This is
+        // the field the 1.28 ceiling reads.
+        ...(typeof row.context === 'number' && row.context > 0 ? { contextLength: row.context } : {}),
+      };
+    })
+    .filter((model): model is ModelInfo => model !== null);
+}
+
 // --- Ollama ----------------------------------------------------------------
 
 /**
@@ -592,7 +778,7 @@ export const ollamaAdapter: ProviderAdapter = {
       10_000,
       signal,
     );
-    if (!response.ok) await failFromResponse(response, 'Listing local models');
+    if (!response.ok) await failFromResponse(response, 'Listing local models', provider);
 
     const payload = (await response.json().catch(() => null)) as
       | { models?: { name?: string; model?: string; details?: { parameter_size?: string } }[] }
@@ -635,7 +821,7 @@ export const ollamaAdapter: ProviderAdapter = {
       request.signal,
     );
 
-    if (!response.ok) await failFromResponse(response, 'Streaming local completion');
+    if (!response.ok) await failFromResponse(response, 'Streaming local completion', provider);
 
     const body = response.body;
     if (!body) throw new AppError('provider_error', 'Ollama returned an empty stream body');
@@ -782,7 +968,7 @@ export const openCodexAdapter: ProviderAdapter = {
       request.signal,
     );
 
-    if (!response.ok) await failFromResponse(response, 'Streaming completion');
+    if (!response.ok) await failFromResponse(response, 'Streaming completion', provider);
 
     let finishReason: string | undefined;
     let sawUsage = false;
@@ -890,13 +1076,16 @@ export function adapterFor(provider: ProviderRecord): ProviderAdapter {
     // OpenAI-shaped GET /v1/models, so the stock adapter is correct as-is. It
     // needs no credential unless COLI_API_KEY is set, and `authHeaders()`
     // already omits Authorization entirely when there is no stored key.
-    // Puter (1.38) is the same protocol with a different credential: the token
-    // travels as a bearer token exactly where an API key would, so the adapter
-    // needs no branch — only the storage and disclosure do.
+    // Colibri serves an OpenAI-shaped `/v1/models`, so the stock adapter is the
+    // whole story.
     case 'colibri':
-    case 'puter':
     case 'remote':
       return openAiAdapter;
+    // Puter (1.38) streams the stock protocol with its token as a bearer
+    // credential, but its model catalogue is Puter's own endpoint rather than
+    // `{base}/models` — see `puterAdapter`.
+    case 'puter':
+      return puterAdapter;
   }
 }
 

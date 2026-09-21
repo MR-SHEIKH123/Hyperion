@@ -130,7 +130,14 @@
       "method": "POST",
       "expectedPath": "/api/providers",
       "status": "missing",
-      "reason": "Puter is not an accepted provider type."
+      "reason": "The frontend has no provider-creation form: `POST /api/providers` is not called. `providerTypeSchema` accepts `puter` (1.38), so the type itself is no longer the gap — a settings screen is."
+    },
+    {
+      "id": "providers.puter-advisory",
+      "method": "GET",
+      "expectedPath": "/api/providers/puter/advisory",
+      "status": "missing",
+      "reason": "Nothing renders it yet. The route exists (1.38) and carries the credential kind, the catalogue URL, `requiresPaidPlan` and the note, so a settings form can warn before a token is pasted rather than after the first 402."
     },
     {
       "id": "projects.registry",

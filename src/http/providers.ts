@@ -100,14 +100,15 @@ providersRouter.post(
 );
 
 /**
- * The caveat a client must show before enabling a Colibrì provider, plus the
- * suggested base URL for the create form. Read-only: registering and enabling
- * remain explicit, separate acts.
- */
-/**
- * What a Puter provider is configured with, and where the credential comes from
- * (1.38). Advertised rather than left to documentation because the credential is
- * an expiring session token, which is unlike every other provider here.
+ * What a Puter provider is configured with, where the credential comes from, and
+ * where its model list is read from (1.38).
+ *
+ * Advertised rather than left to documentation because three things about this
+ * provider are unlike every other one here: the credential is a minted access
+ * token rather than a vendor key, the model catalogue is not `{base}/models`, and
+ * the OpenAI-compatible endpoint is a paid-plan feature. A form can state all
+ * three before the token is pasted — `requiresPaidPlan` is the one that saves a
+ * free-plan user from discovering it through a 402 on their first message.
  */
 providersRouter.get(
   '/puter/advisory',
@@ -116,6 +117,11 @@ providersRouter.get(
   }),
 );
 
+/**
+ * The caveat a client must show before enabling a Colibrì provider, plus the
+ * suggested base URL for the create form. Read-only: registering and enabling
+ * remain explicit, separate acts.
+ */
 providersRouter.get(
   '/colibri/advisory',
   wrap((_req, res) => {
