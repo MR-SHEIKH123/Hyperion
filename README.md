@@ -96,4 +96,4 @@ scope.
 Branches and PRs into `main`; nothing pushes to `main` directly. House rules:
 docs land in the same commit as the behavior they describe; every bug fix
 ships with a test that fails without it; migrations are immutable (the next
-one is `020`); tests boot real servers rather than stubbing them.
+one is `028`); tests boot real servers rather than stubbing them.
