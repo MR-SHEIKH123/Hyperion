@@ -73,7 +73,8 @@ function numberField(data: Record<string, unknown>, key: string): number | null 
  * falls back to the channel name alone when a payload does not carry them.
  */
 export function describe(event: AgentSseEvent): string {
-  if (event.type === 'error') return `error: ${event.data.error.code} — ${event.data.error.message}`;
+  // The run's error shape, as `sendError` writes it — not the HTTP envelope.
+  if (event.type === 'error') return `error: ${event.data.code} — ${event.data.message}`;
   const data = event.data as Record<string, unknown>;
   const text = (key: string): string | null => stringField(data, key);
   const after = (key: string, separator = ': '): string => (text(key) === null ? '' : `${separator}${text(key) ?? ''}`);

@@ -294,9 +294,11 @@ describe('the continuation log', () => {
   });
 
   it('renders an error frame with its code and message', () => {
+    // The shape `sendError` puts on the wire (docs/API.md §1.23) — the run's error,
+    // not the HTTP envelope. `api/sse/events.test.ts` decodes this exact payload.
     const event = {
       type: 'error',
-      data: { error: { code: 'provider_unavailable', message: 'no provider could be reached', retryable: true } },
+      data: { runId: null, code: 'provider_unavailable', message: 'no provider could be reached', retryable: true },
     } as unknown as AgentSseEvent;
 
     expect(logEntries([event])).toEqual([

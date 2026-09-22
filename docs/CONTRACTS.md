@@ -5802,12 +5802,57 @@ Three rules make the second one evidence rather than ceremony:
    exercised — and a schema in none of those three fails the run, so a new wire module
    has to be given a fixture or a stated reason rather than quietly skipped.
 
-Its limits are in the script and not left to be found later: the seven `chatSse*`
-payloads need a live model stream, and the attention kinds are printed rather than
-required, because producing all of them needs fixtures for sources the script has
-none of. Neither direction of mismatch is symmetric in cost — a schema missing a
-field the backend sends fails loudly on first use, while an enum *narrower* than the
-backend is the quiet one, which is why the value-level assertions exist.
+The seven `chatSse*` payloads are driven too, rather than excused: a loopback
+provider streams a real completion (`open`, `token`, `usage`, `done`), a real
+failover pauses and resumes the run, and a real refusal — the redaction gate, enabled
+for one request — produces the run's `error` frame. The frames are parsed by the
+frontend's actual decoders, not only by its schemas, and that is what caught the
+defect below.
+
+Its limits are in the script and not left to be found later: the attention kinds and
+the agent channels are printed rather than required, because producing all of them
+needs fixtures the script has none of (a failed scheduled run, a disconnected MCP
+server, a parked approval, a compaction). Neither direction of mismatch is symmetric
+in cost — a schema missing a field the backend sends fails loudly on first use, while
+an enum *narrower* than the backend is the quiet one, which is why the value-level
+assertions exist.
+
+### The defect it found: a frame shape, and the terminal event
+
+Widening the check to real streams paid for itself immediately. On the task routes
+(`POST /api/{tool}/run-task`, `…/continue`) a failed run is reported as
+
+```
+event: error
+data: {"runId":null,"code":"scope_violation","message":"…","retryable":false}
+```
+
+because `sendError` (`src/orchestrator/sse.ts`) is the only writer of that event, and
+it writes the run's error — the same shape the chat stream carries. The frontend's
+agent decoder (`frontend/src/api/sse/events.ts`) read the same frame with
+`errorEnvelopeSchema`, which expects `{error:{code,message,retryable,details?}}`. Every
+real frame therefore decoded as `invalid_payload` and was dropped.
+
+That would be a lost log line anywhere else. Here it was worse, because `error` is the
+**only terminal event name** the agent protocol has: the session watches for it, and a
+run that failed never terminated the way the session expected — it fell through to
+reconciliation, which reports the persisted state and nothing about *why*. So the
+`code` and `message` a user needs ("path escapes the projects scope") never reached
+the surface, and `agentFrames.describe` — the function that renders the red line in
+the run log — was reading `event.data.error.code` off a payload that never has an
+`error` key. It type-checked because the *type* said envelope; it was only reachable
+from a hand-built fixture in a test.
+
+The fix is one schema in one place (`chatSseErrorSchema`, already validated against
+the chat stream's own `error` frame), plus the consumer, plus two decoder tests that
+now assert both halves of the rule: the flat frame decodes, and the envelope — which
+belongs to a pre-stream refusal — does not. `docs/API.md` §12 now records the frame
+and its example.
+
+It is the same failure mode as `wire/projects.ts`: both halves of the frontend agreed
+with each other and disagreed with the backend, and nothing in either suite ever
+looked at the wire. The difference was the blast radius — a module with no caller
+waiting to be written versus a terminal event that stops being terminal.
 
 It runs as a script rather than as a test in either suite, and that is a constraint
 rather than a preference: the frontend's `tsc` cannot include backend sources (they

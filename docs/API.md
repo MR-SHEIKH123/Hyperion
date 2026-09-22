@@ -1491,6 +1491,27 @@ NULL); that is also why such a run stays continuable, since `POST …/continue` 
 which conversation to replay as `run.chatId ?? taskId`. Cowork and Design have no
 surface of their own yet, so their `run-task` routes still have no client.
 
+**The `error` frame on these routes is the run's error, not the envelope.**
+A failure after the stream opens is written by `sendError` (§1.3), so it carries
+`{runId, code, message, retryable}` — the same frame the chat stream sends, because
+it is the same function. The HTTP envelope of §1.2 is what a *pre-stream* refusal
+looks like (a 400 for a bad `taskId`, a 404 for an unknown tool); once the status
+line has gone out there is no envelope to send. Observed on this route
+*(2026-09-22, by streaming a Code run whose `cwd` escapes the project scope)*:
+
+```
+event: error
+data: {"runId":null,"code":"scope_violation","message":"Path escapes the \"projects\" scope: ../../outside-the-project. Access is restricted to /tmp/hyperion-wire-9y6TQY/project.","retryable":false}
+```
+
+`error` is also the **only terminal event name** this protocol has: every other
+outcome rides inside an `agent` frame, including a task that stopped without
+finishing (`{channel:'result', ok:false, error:{code,message}}`) and a user-requested
+cancel (`{channel:'stopped'}`). A client therefore watches `error` for the failure
+case and reconciles through `GET /api/{tool}/tasks/:taskId/state` for everything
+else. The frontend's agent decoder read this frame with the *envelope* schema until
+2026-09-22, which rejected every real one — see `docs/CONTRACTS.md`.
+
 Agent progress rides a single `agent` event whose data is an open
 `Record<string, unknown>` — the module owns the channel schema. On completion the
 route emits `event: agent` with `{ channel: 'result', tool, chatId, ...TaskResult }`

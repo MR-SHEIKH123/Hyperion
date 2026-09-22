@@ -22,13 +22,23 @@
  *     run with no steps all parse, so they prove nothing. Every collection that
  *     can hold a row holds one here, and the checks assert the collection was
  *     non-empty so an empty answer cannot pass as a match;
- *   - **the frontend's schemas, not a copy of them** — the modules are bundled
- *     with esbuild (the frontend resolves extensionless imports; Node does not)
- *     and the real `safeParse` runs. A hand-written expectation here would drift
- *     from the frontend exactly as the schemas drift from the backend;
+ *   - **the frontend's schemas and decoders, not copies of them** — the modules are
+ *     bundled with esbuild (the frontend resolves extensionless imports; Node does
+ *     not) and the real `safeParse` runs. Stream frames go through the real
+ *     `decodeChatEvent`/`decodeAgentEvent` as well, because a schema can be right
+ *     while the decoder that feeds it picks a different one for that event name —
+ *     which is exactly how the agent protocol's `error` frame came to be rejected
+ *     (2026-09-22). A hand-written expectation here would drift from the frontend
+ *     exactly as the schemas drift from the backend;
  *   - **coverage reported, not implied** — every exported response schema that no
  *     check exercised is printed at the end with the reason, so "nothing failed"
  *     can never be read as "everything was checked".
+ *
+ * It drives streams as well as request/response routes, which is what makes the
+ * seven `chatSse*` payloads checkable at all: a real loopback provider streams a
+ * completion, a real failover produces `paused` and `resumed`, and a real refusal
+ * produces the run's `error` frame — on the chat route *and* on a task route, whose
+ * protocol decodes it with the same schema.
  *
  * A frontend module with no caller is the case this exists for: nothing else in
  * the build will ever look at its schema until a surface uses it.
@@ -122,6 +132,105 @@ async function check(name, method, route, schemaName, { payload, expectStatus, r
 }
 
 /**
+ * Read a streamed response into frames, the way a client's SSE parser does.
+ *
+ * Split on the blank line that terminates a frame, keep the event name, and join
+ * the `data:` lines back together — multi-line data is legal and a frame that was
+ * split by the transport must not be reported as malformed JSON.
+ */
+async function readFrames(response) {
+  const text = await response.text();
+  const frames = [];
+  for (const block of text.split('\n\n')) {
+    if (block.trim() === '') continue;
+    const event = /^event: (.*)$/m.exec(block)?.[1];
+    if (event === undefined) continue;
+    const data = block
+      .split('\n')
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice(5).replace(/^ /, ''))
+      .join('\n');
+    frames.push({ event, data });
+  }
+  return frames;
+}
+
+/**
+ * Parse **every** frame of one event name with the frontend's schema for it.
+ *
+ * Every frame and not just the first: a schema can hold for the frame that opens
+ * a stream and reject the one that ends it — a `usage` frame whose optional field
+ * is present only at the end, a `token` frame carrying an empty string, a
+ * `paused` frame from the failover path with a different reason. Counting the
+ * frames is part of the check too: an absent frame proves nothing about the
+ * schema that would have validated it, so a stream that quietly stopped emitting
+ * one would report a pass here while the surface it feeds shows nothing.
+ */
+function checkFrames(name, frames, eventName, schemaName, { schemas, decode, atLeast = 1 } = {}) {
+  const schema = schemas[schemaName];
+  if (schema === undefined) {
+    results.push({ name, ok: false, detail: `the frontend exports no schema named ${schemaName}` });
+    return;
+  }
+  used.add(schemaName);
+  const matching = frames.filter((frame) => frame.event === eventName);
+  if (matching.length < atLeast) {
+    results.push({
+      name,
+      ok: false,
+      detail: `the stream produced ${matching.length} \`${eventName}\` frame(s) (wanted at least ${atLeast}); saw: ${[...new Set(frames.map((frame) => frame.event))].join(', ') || 'nothing'}`,
+    });
+    return;
+  }
+  for (const frame of matching) {
+    let payload;
+    try {
+      payload = JSON.parse(frame.data);
+    } catch {
+      results.push({ name, ok: false, detail: `a real \`${eventName}\` frame was not JSON: ${frame.data.slice(0, 200)}` });
+      return;
+    }
+    const parsed = schema.safeParse(payload);
+    if (!parsed.success) {
+      results.push({
+        name,
+        ok: false,
+        detail: `schema rejected a real \`${eventName}\` frame: ${JSON.stringify(parsed.error.issues).slice(0, 1200)}`,
+        schemaName,
+      });
+      return;
+    }
+    // …and by the decoder the app actually runs. A schema can be right while the
+    // decoder that feeds it picks a different one for this event name — which is
+    // precisely the bug this pair of checks exists to catch.
+    if (decode !== undefined) {
+      const decoded = decode(frame);
+      if (!decoded.ok) {
+        results.push({
+          name,
+          ok: false,
+          detail: `the frontend's own decoder rejected a real \`${eventName}\` frame: ${decoded.reason} ${JSON.stringify(decoded.issues ?? {}).slice(0, 900)}`,
+          schemaName,
+        });
+        return;
+      }
+    }
+  }
+  results.push({ name, ok: true, schemaName });
+}
+
+/** Open one chat stream and collect its frames. */
+async function openChatStream(payload) {
+  const response = await fetch(`${base}/api/chat/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const frames = await readFrames(response);
+  return { status: response.status, frames };
+}
+
+/**
  * Value-level coverage, which is the half a response-level check cannot see.
  *
  * `requireNonEmpty` proves a collection had a row in it. It does not prove the
@@ -144,13 +253,22 @@ function requireValues(label, observed, expected) {
   });
 }
 
-/** The two halves of the frontend's wire modules, merged by export name. */
+/**
+ * The frontend's schemas, plus the decoders that use them.
+ *
+ * Both are bundled and imported for real: a check that reimplemented the decoding
+ * would agree with whichever shape the *check* assumed, which is how a mismatch
+ * survives a green suite. `decoders` is the same module the running app uses.
+ */
 async function loadSchemas(outdir) {
   const wireDir = path.join(root, 'src', 'contracts', 'wire');
   const entries = readdirSync(wireDir).filter((file) => file.endsWith('.ts') && !file.endsWith('.test.ts'));
+  // The SSE decoders: named events for chat, channels plus a run `error` frame for
+  // agent runs. Bundled because they are the code path under test, not a convenience.
+  entries.push(path.join(root, 'src', 'api', 'sse', 'events.ts'));
 
   await esbuild.build({
-    entryPoints: entries.map((file) => path.join(wireDir, file)),
+    entryPoints: entries.map((file) => (path.isAbsolute(file) ? file : path.join(wireDir, file))),
     outdir,
     bundle: true,
     format: 'esm',
@@ -158,17 +276,37 @@ async function loadSchemas(outdir) {
     logLevel: 'silent',
   });
 
+  // esbuild mirrors the source layout under `outdir` (`contracts/wire/…`,
+  // `api/sse/…`), so the walk is recursive rather than a flat listdir.
+  const bundled = [];
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith('.js')) bundled.push(full);
+    }
+  };
+  walk(outdir);
+
   const schemas = {};
-  for (const file of readdirSync(outdir)) {
-    const module = await import(pathToFileURL(path.join(outdir, file)).href);
+  const decoders = {};
+  for (const file of bundled) {
+    const module = await import(pathToFileURL(file).href);
     for (const [key, value] of Object.entries(module)) {
+      if (key === 'decodeChatEvent' || key === 'decodeAgentEvent') {
+        decoders[key] = value;
+        continue;
+      }
       if (!key.endsWith('Schema')) continue;
       if (typeof value?.safeParse !== 'function') continue;
       if (schemas[key] !== undefined) throw new Error(`two wire modules export ${key}`);
       schemas[key] = value;
     }
   }
-  return schemas;
+  if (decoders.decodeChatEvent === undefined || decoders.decodeAgentEvent === undefined) {
+    throw new Error('the frontend exported no SSE decoders — the bundle is wrong, not the wire');
+  }
+  return { schemas, decoders };
 }
 
 /**
@@ -198,28 +336,21 @@ const NESTED = new Set([
   'taskStepSchema', 'taskStepSummarySchema', 'taskToolSchema', 'taskUsageSchema',
 ]);
 
-/** The reason a stream payload cannot be exercised here, said once. */
-const STREAM = 'a stream payload — exercising it needs a live model stream; it mirrors the `SseEvent` union in src/types/core.ts and is covered by the frontend decoder tests';
-
 /**
- * Schemas this script cannot exercise, each with the reason it cannot. Two kinds:
- * a stream payload, which needs a model to emit one, and an input vocabulary,
- * which no response body carries.
+ * Schemas this script cannot exercise, each with the reason it cannot.
+ *
+ * One entry, and it is an input vocabulary rather than a response: the stream
+ * payloads that used to be listed here are now driven for real (see the stream
+ * section), which is the only way the agent protocol's `error` frame could be
+ * caught being decoded with the wrong schema.
  */
 const NOT_EXERCISED = {
-  chatSseOpenSchema: STREAM,
-  chatSseTokenSchema: STREAM,
-  chatSseUsageSchema: STREAM,
-  chatSsePausedSchema: STREAM,
-  chatSseResumedSchema: STREAM,
-  chatSseErrorSchema: STREAM,
-  chatSseDoneSchema: STREAM,
   approvalDecisionSchema: 'an input vocabulary `allow_once|allow_session|deny` — it validates what a client sends, and no response body carries it (the route it is sent to is checked through `approvalResultSchema`)',
 };
 
 async function main() {
   const bundling = mkdtempSync(path.join(tmpdir(), 'hyperion-wire-bundle-'));
-  const schemas = await loadSchemas(bundling);
+  const { schemas, decoders } = await loadSchemas(bundling);
 
   const { openDatabase, setDb, closeDb } = await import('../../src/db/adapter.ts');
   const { runMigrations } = await import('../../src/db/migrate.ts');
@@ -232,11 +363,45 @@ async function main() {
   // A loopback provider that answers an OpenAI-shaped model list, because the
   // provider routes are otherwise a 502 — and a 502 proves nothing about a
   // response schema.
+  //
+  // It also *streams* completions, which is what turns the seven stream payloads
+  // from "cannot be exercised" into checks: `POST /api/chat/stream` is driven for
+  // real below and every frame is parsed with the frontend's own decoders. Two
+  // model ids exist only to fail — one the router can fail over from, one it
+  // cannot — so `paused`, `resumed` and `error` are produced by the paths that
+  // produce them rather than by a fixture that asserts the shape I expect.
   const http = await import('node:http');
+  const MODEL_IDS = ['wire-model', 'wire-unstable', 'wire-dead'];
   const provider = http.createServer((req, res) => {
     if ((req.url ?? '').endsWith('/models')) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ data: [{ id: 'wire-model', object: 'model', owned_by: 'wire' }] }));
+      res.end(JSON.stringify({ data: MODEL_IDS.map((id) => ({ id, object: 'model', owned_by: 'wire' })) }));
+      return;
+    }
+    if ((req.url ?? '').endsWith('/chat/completions')) {
+      let raw = '';
+      req.on('data', (chunk) => { raw += chunk; });
+      req.on('end', () => {
+        let requested = '';
+        try { requested = JSON.parse(raw).model; } catch { /* an unparseable body is a client bug, not a stream */ }
+        if (requested === 'wire-unstable' || requested === 'wire-dead') {
+          // A 500, twice: the router's health threshold is two consecutive
+          // failures, so one is retried on the same provider and two move on.
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: 'wire provider is unhappy', type: 'server_error' } }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
+        const frame = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
+        frame({ choices: [{ delta: { content: 'Wire ' } }] });
+        frame({ choices: [{ delta: { content: 'stream' } }] });
+        frame({
+          choices: [{ delta: {}, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 11, completion_tokens: 2, total_tokens: 13 },
+        });
+        res.write('data: [DONE]\n\n');
+        res.end();
+      });
       return;
     }
     res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -244,6 +409,48 @@ async function main() {
   });
   await new Promise((resolve) => provider.listen(0, '127.0.0.1', resolve));
   const providerBase = `http://127.0.0.1:${provider.address().port}/v1`;
+
+  // A second provider that answers where the first fails, so the failover path
+  // has somewhere to fail *over* to. Failing both for `wire-dead` is what makes
+  // the third stream a genuine dead end rather than a fixture.
+  const alt = http.createServer((req, res) => {
+    if ((req.url ?? '').endsWith('/models')) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ data: MODEL_IDS.map((id) => ({ id, object: 'model', owned_by: 'wire-alt' })) }));
+      return;
+    }
+    if ((req.url ?? '').endsWith('/chat/completions')) {
+      let raw = '';
+      req.on('data', (chunk) => { raw += chunk; });
+      req.on('end', () => {
+        let requested = '';
+        try { requested = JSON.parse(raw).model; } catch { /* as above */ }
+        if (requested === 'wire-dead') {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: 'wire backup is unhappy too', type: 'server_error' } }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'backup ' } }] })}\n\n`);
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'took over' } }] })}\n\n`);
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 9, completion_tokens: 3 } })}\n\n`);
+        res.write('data: [DONE]\n\n');
+        res.end();
+      });
+      return;
+    }
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end('{}');
+  });
+  await new Promise((resolve) => alt.listen(0, '127.0.0.1', resolve));
+  const altBase = `http://127.0.0.1:${alt.address().port}/v1`;
+
+  // The real boot registers the in-process agent modules (`src/index.ts` does the
+  // same call). Skipping it made every task route answer `agent_not_registered`,
+  // which is a fact about the check rather than about the app — and it is the task
+  // routes whose error frame this script now drives.
+  const { registerProductionModules } = await import('../../src/services/agent/composition.ts');
+  registerProductionModules();
 
   const { createApp } = await import('../../src/http/app.ts');
   const server = createApp().listen(0, '127.0.0.1');
@@ -262,6 +469,7 @@ async function main() {
   const { recordRunKnowledge } = await import('../../src/db/runKnowledge.ts');
   const { startSubagentRun, finishSubagentRun } = await import('../../src/db/subagents.ts');
   const { getRoot } = await import('../../src/security/fsScope.ts');
+  const { REDACTION_CHECK_KEY } = await import('../../src/db/settings.ts');
 
   const providerRow = createProvider({
     name: 'Wire provider',
@@ -419,6 +627,147 @@ async function main() {
   await r('storage.discardWorktree', 'POST', '/api/storage/worktrees/wire-orphan/discard', 'discardWorktreeResponseSchema', { payload: { force: true } });
   await r('chat.delete', 'DELETE', `/api/chat/${chat.id}`, 'deletedResponseSchema');
 
+  // --- stream payloads ------------------------------------------------------
+  // The seven `chatSse*` schemas validate frames on a live stream, so they are
+  // exercised by opening streams rather than by asserting their shape. Three of
+  // them need paths a happy stream never takes, and the mock provider serves all
+  // three: a model it streams, a model it fails so the router can fail over from
+  // it, and a model it fails with nowhere left to go.
+  const { createChat: createStreamChat } = await import('../../src/db/chats.ts');
+  const { createProvider: createStreamProvider, enableProvider: enableStreamProvider } =
+    await import('../../src/providers/repository.ts');
+
+  const streamChat = createStreamChat({ tool: 'chat', title: 'Wire stream' });
+  const streamAltChat = createStreamChat({ tool: 'chat', title: 'Wire stream failover' });
+  const streamDeadChat = createStreamChat({ tool: 'chat', title: 'Wire stream dead end' });
+  const okProvider = createStreamProvider({
+    name: 'Wire stream provider',
+    type: 'remote',
+    baseUrl: providerBase,
+    apiKey: 'wire-key',
+    maxContextTokens: 8192,
+  });
+  const altProvider = createStreamProvider({
+    name: 'Wire stream backup',
+    type: 'remote',
+    baseUrl: altBase,
+    apiKey: 'wire-key',
+    maxContextTokens: 8192,
+  });
+  enableStreamProvider(okProvider.id);
+  enableStreamProvider(altProvider.id);
+
+  // 1. A normal turn: open, token, usage, done.
+  const happy = await openChatStream({
+    chatId: streamChat.id,
+    tool: 'chat',
+    modelId: 'wire-model',
+    prompt: 'Say something short.',
+    providerId: okProvider.id,
+  });
+  if (happy.status !== 200) {
+    results.push({ name: 'chat.sse stream opened', ok: false, detail: `HTTP ${happy.status}` });
+  }
+  checkFrames('chat.sseOpen', happy.frames, 'open', 'chatSseOpenSchema', { schemas, decode: decoders.decodeChatEvent });
+  checkFrames('chat.sseToken', happy.frames, 'token', 'chatSseTokenSchema', { schemas, decode: decoders.decodeChatEvent });
+  checkFrames('chat.sseUsage', happy.frames, 'usage', 'chatSseUsageSchema', { schemas, decode: decoders.decodeChatEvent });
+  checkFrames('chat.sseDone', happy.frames, 'done', 'chatSseDoneSchema', { schemas, decode: decoders.decodeChatEvent });
+
+  // 2. A failing provider with a working alternative behind it: the run pauses
+  //    transiently (the switch, which the UI must show), then resumes on the
+  //    backup. This is the only path that emits `resumed`.
+  const failover = await openChatStream({
+    chatId: streamAltChat.id,
+    tool: 'chat',
+    modelId: 'wire-unstable',
+    prompt: 'This one fails over.',
+    providerId: okProvider.id,
+  });
+  checkFrames('chat.ssePaused', failover.frames, 'paused', 'chatSsePausedSchema', { schemas, decode: decoders.decodeChatEvent });
+  checkFrames('chat.sseResumed', failover.frames, 'resumed', 'chatSseResumedSchema', { schemas, decode: decoders.decodeChatEvent });
+
+  // 3. A failing provider with nothing behind it: the honest dead end, which is
+  //    the only path that emits `error`.
+  await openChatStream({
+    chatId: streamDeadChat.id,
+    tool: 'chat',
+    modelId: 'wire-dead',
+    prompt: 'This one has nowhere to go.',
+    providerId: okProvider.id,
+  });
+  // A dead end with no error frame is what the *pause* path does: the run pauses on a
+  // 200 and the stream ends normally (src/orchestrator/chat.ts returns after emitting
+  // `paused`). The `error` frame is for a failure raised while the stream is open, and
+  // the redaction gate is one: it refuses before the provider is called, which is after
+  // the status line has gone out. Enabled here for one request, then off again, because
+  // a gate the fixture leaves on would change what the next check measures.
+  const { setSetting } = await import('../../src/db/settings.ts');
+  setSetting(REDACTION_CHECK_KEY, 'true');
+  const refused = await openChatStream({
+    chatId: streamDeadChat.id,
+    tool: 'chat',
+    modelId: 'wire-model',
+    prompt: 'here is my key: sk-proj-abcdefghijklmnopqrstuvwxyz0123456789',
+    providerId: okProvider.id,
+  });
+  checkFrames('chat.sseError', refused.frames, 'error', 'chatSseErrorSchema', {
+    schemas,
+    decode: decoders.decodeChatEvent,
+  });
+
+  // The agent protocol's `error` frame comes from the same emitter, and until
+  // 2026-09-22 the frontend decoded it with the HTTP envelope schema instead — so
+  // every failed task run was dropped as `invalid_payload`, and since `error` is the
+  // only terminal event name this protocol has, the failure arrived as a
+  // reconciliation with no code and no message. Driven here for real: a cowork run
+  // that cannot be routed to any provider fails inside the run, where the route
+  // answers with `sendError`.
+  // A blocked *send* is the one agent failure this protocol reports as a frame rather
+  // than a park: the run is interactive, so `parkOnBlockedSend` rethrows instead of
+  // parking (src/services/agent/loop.ts), which is what reaches the route's
+  // `sendError`. Driven with the same redaction gate the chat check above uses —
+  // enabled once, for these two requests.
+  // 4. A normal task run, for the channel census below: the agent protocol carries
+  //    everything inside one `agent` event with a `channel` discriminator, and the
+  //    channel vocabulary is the other half of this boundary.
+  const agentRun = await fetch(`${base}/api/cowork/run-task`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chatId: streamDeadChat.id,
+      modelId: 'wire-model',
+      prompt: 'Say something short.',
+      mode: 'ask',
+    }),
+  });
+  const agentRunFrames = await readFrames(agentRun);
+
+  // 5. And a task run that fails, which is where the protocol's `error` frame comes
+  //    from. (See the note above `checkFrames` for why this one matters.) A Code run
+  //    is provisioned a worktree rooted in the open project, and a path that escapes
+  //    that root is refused while provisioning — after `openStream` and after the run
+  //    row exists, so the refusal is reported as a frame rather than as a pre-stream
+  //    JSON body.
+  const agentFailure = await fetch(`${base}/api/code/run-task`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chatId: streamDeadChat.id,
+      taskId: 'wire-code-escape',
+      modelId: 'wire-model',
+      prompt: 'This run cannot start.',
+      mode: 'ask',
+      cwd: '../../outside-the-project',
+    }),
+  });
+  const agentFrames = await readFrames(agentFailure);
+  checkFrames('agent.sseError', agentFrames, 'error', 'chatSseErrorSchema', {
+    schemas,
+    decode: decoders.decodeAgentEvent,
+  });
+  // Off again: a gate left on would change what any later check measures.
+  setSetting(REDACTION_CHECK_KEY, 'false');
+
   // --- value coverage -------------------------------------------------------
   const readJson = async (route) => (await fetch(`${base}${route}`)).json();
   const pausedRuns = await readJson('/api/chat/runs/paused');
@@ -438,6 +787,17 @@ async function main() {
   // disconnected MCP server), and a check that cannot be satisfied is not a check.
   const queue = await readJson('/api/attention');
   console.log(`\nAttention kinds observed: ${[...new Set(queue.items.map((item) => item.kind))].sort().join(', ') || 'none'}`);
+  // Reported rather than required, for the same reason as the attention kinds: the
+  // channels a check produces are the ones its fixtures reach — `started`, `partial`,
+  // `provider`, `switched` and `result` here — while the rest need a parked approval,
+  // a subagent or a compaction, which are different fixtures and not different bugs.
+  const channelsSeen = new Set(
+    [...agentRunFrames, ...agentFrames]
+      .filter((frame) => frame.event === 'agent')
+      .map((frame) => { try { return JSON.parse(frame.data).channel; } catch { return null; } })
+      .filter((channel) => typeof channel === 'string'),
+  );
+  console.log(`Agent channels observed: ${[...channelsSeen].sort().join(', ') || 'none'}`);
 
   // --- report ---------------------------------------------------------------
   const failed = results.filter((entry) => !entry.ok);
@@ -470,6 +830,7 @@ async function main() {
 
   await new Promise((resolve) => server.close(resolve));
   await new Promise((resolve) => provider.close(resolve));
+  await new Promise((resolve) => alt.close(resolve));
   closeDb();
   rmSync(bundling, { recursive: true, force: true });
 

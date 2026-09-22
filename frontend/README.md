@@ -31,9 +31,13 @@ npm run build
 ```
 
 `npm run wire` boots the backend in-process and parses every response the frontend
-has a schema for, so a schema that disagrees with the backend fails here instead of
-in whichever surface is built on it first. It found the case it exists for: a
-required `updatedAt` the backend has never sent. Details in `contracts/README.md`.
+has a schema for, **and** streams it drives for real (chat turns, a provider failover,
+a run that fails), through the frontend's own schemas and its own SSE decoders. A
+schema or a decoder that disagrees with the backend fails here instead of in whichever
+surface is built on it first. It has found two of that class: a required `updatedAt`
+the backend has never sent, and the agent protocol's `error` frame being decoded with
+the HTTP envelope schema — which swallowed the terminal event of every failed task
+run. Details in `contracts/README.md` and `docs/CONTRACTS.md`.
 
 ## Architecture
 

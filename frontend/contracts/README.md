@@ -108,10 +108,18 @@ expectation written by hand:
 | value-level coverage, asserted | an enum *narrowed* to one option still parses a one-value fixture. Every `PauseReason`, message role, message status and task-run state is asserted to have appeared in a real response. Two mutants died on this: re-adding the `updatedAt` requirement, and dropping one `PauseReason` |
 | coverage reported, not implied | every exported schema is either cited by a check, listed as validated inside one, or listed with a stated reason it cannot be exercised (stream payloads need a live model). A schema in none of those three fails the run |
 
-Its limits are stated in the script rather than left to be discovered: the seven
-`chatSse*` payloads need a model to emit a stream, and the eleven attention kinds
-are *reported* rather than required, because producing all of them needs fixtures
-for sources the script has none of.
+The seven `chatSse*` payloads are driven for real rather than excused: a loopback
+provider streams a completion, a failover produces `paused` and `resumed`, and a
+refusal produces the run's `error` frame — and a task route's `error` frame is driven
+too, through the frontend's own agent decoder. That last pair is what found the second
+defect of this class (see `docs/CONTRACTS.md`): the agent decoder was reading the run's
+error frame with the HTTP envelope schema, so every failed task run was dropped as
+`invalid_payload` — and since `error` is the only terminal event name the agent
+protocol has, the failure reached the surface as a bare reconciliation.
+
+Its limits are stated in the script rather than left to be discovered: the eleven
+attention kinds and the thirteen agent channels are *reported* rather than required,
+because producing all of them needs fixtures for sources the script has none of.
 
 It is deliberately a script rather than a test in either suite. The frontend's
 `tsc` cannot include backend sources (they import with `.ts` extensions, which its
