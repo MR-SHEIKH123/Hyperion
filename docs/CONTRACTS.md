@@ -4718,7 +4718,7 @@ even a caller that tried could not store bytes. Both are pinned by tests, includ
 the case that matters most: a rejected write leaves the rest of the browser's
 storage untouched.
 
-Three rules the pieces share:
+The rules the pieces share:
 
 1. **A draft is text the user typed, and nothing else.** Losing an unsent prompt to
    a reload is the failure this exists to prevent, so the text is kept — debounced,
@@ -4750,6 +4750,16 @@ Three rules the pieces share:
    the project record across unchanged, since the store replaces the record
    wholesale — a spread that dropped a field would silently erase another feature's
    memory.
+5. **The last tool is a visit, not a side effect of resizing.** `lastTool` is what the
+   shell's entry route reads, so it has to mean *the tool the user was in* — it is
+   written when a frame occupant mounts, through the same carried-fields write, and
+   skipped when the record already names that tool (React's strict mode mounts twice,
+   and a route transition remounts). Restoring it is deliberately narrow: only the
+   **index** route consults it, so a typed or linked URL is never rewritten, and only a
+   tool with a real surface is restored — Chat and Code today. A record naming a
+   placeholder (`settings`, `design`) falls back to Chat and is **kept**, because the
+   user was in that tool and the value starts working the day its surface lands.
+   Reading the memory does not rewrite it: the entry route is a read of one field.
 
 Finally, a refused write is not an application failure. A browser in private mode,
 a full quota or a blocked origin throws on `setItem`; the store catches it, keeps
@@ -4758,7 +4768,8 @@ remembers where you were should not be able to break where you are. What it must
 not do is pretend: nothing is retried and nothing is reported as saved.
 
 `frontend/src/state/persistence/` holds the store, the schema and the three hooks
-(`usePersistedDraft`, `useScrollAnchor`, `useWorkspaceLayout`);
+(`usePersistedDraft`, `useScrollAnchor`, `useWorkspaceLayout`), and
+`frontend/src/shell/EntryRedirect.tsx` is the one reader of `lastTool`;
 `frontend/src/tools/chat/drafts.ts` owns the draft keys, so the key space is one
 place rather than a convention spread over call sites.
 

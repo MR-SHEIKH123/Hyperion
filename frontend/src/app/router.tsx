@@ -2,6 +2,7 @@ import { lazy, Suspense, type ReactNode } from 'react';
 import { createBrowserRouter, Navigate, RouterProvider, type RouteObject } from 'react-router-dom';
 
 import { AppShell } from '../shell/AppShell';
+import { EntryRedirect } from '../shell/EntryRedirect';
 
 /**
  * Operational shell (Milestone B): one layout, eight tool routes. Chat is the
@@ -34,7 +35,10 @@ const developmentRoutes: RouteObject[] = import.meta.env.DEV
   : [];
 
 const shellChildren: RouteObject[] = [
-  { index: true, element: <Navigate to="/chat" replace /> },
+  // The bare entry restores the last tool the user was in (1.39 A5) and falls back to
+  // Chat; the wildcard below stays a fixed answer, because an unknown URL is not a
+  // memory to restore.
+  { index: true, element: <EntryRedirect /> },
   { path: 'attention', ...lazyRoute(<AttentionCenter />) },
   { path: 'chat/*', ...lazyRoute(<ChatTool />) },
   { path: 'code/*', ...lazyRoute(<CodeTool />) },

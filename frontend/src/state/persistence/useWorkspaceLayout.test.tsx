@@ -30,6 +30,15 @@ class MemoryStorage implements StorageLike {
   }
 }
 
+/** The same store, counting writes: "no write" is a behaviour, not an absence. */
+class CountingStorage extends MemoryStorage {
+  writes = 0;
+  override setItem(key: string, value: string): void {
+    this.writes += 1;
+    super.setItem(key, value);
+  }
+}
+
 const layout = (store: PersistenceStore, tool: AgentWorkspaceTool = 'code') =>
   store.snapshot().projects['active']?.panelLayouts[tool];
 
@@ -117,12 +126,36 @@ describe('workspace layout memory', () => {
     expect(layout(store)).toEqual({ sizes: { left: 312, right: 400 }, collapsed: ['inspector'] });
   });
 
-  it('writes nothing at all when the layout never changed', () => {
+  it('records the visit without inventing a layout', () => {
     const { store, hook } = setup();
     hook.unmount();
-    // An empty project record would be a write per mount for no information, and
-    // the store is not on the navigation path.
-    expect(store.snapshot().projects['active']).toBeUndefined();
+    // Mounting *is* information: it is the tool the user was in, which is what the
+    // shell restores on entry (`EntryRedirect`). What must not appear is geometry —
+    // nothing was moved, so there is no layout to remember, and a record that carried
+    // defaults would make the frame open at a size the user never chose.
+    expect(store.snapshot().projects['active']).toEqual({
+      openViewIds: {},
+      selectedViewIds: {},
+      selectedModelIds: {},
+      lastViewedVersions: {},
+      panelLayouts: {},
+      lastTool: 'code',
+    });
+    expect(layout(store)).toBeUndefined();
+  });
+
+  it('does not rewrite the record when it already names this tool', () => {
+    // A remount (React's strict mode mounts twice, and a route transition remounts)
+    // must not churn the store to say what it already said.
+    const storage = new CountingStorage();
+    const store = new PersistenceStore(storage);
+    const wrapper = ({ children }: PropsWithChildren) => <PersistenceProvider store={store}>{children}</PersistenceProvider>;
+    renderHook(() => useWorkspaceLayout('code'), { wrapper });
+    expect(storage.writes).toBeGreaterThan(0);
+    const writesAfterFirstVisit = storage.writes;
+    const second = renderHook(() => useWorkspaceLayout('code'), { wrapper });
+    second.unmount();
+    expect(storage.writes).toBe(writesAfterFirstVisit);
   });
 
   it('carries every other field of the project record across a write', () => {

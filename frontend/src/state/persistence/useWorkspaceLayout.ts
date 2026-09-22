@@ -18,6 +18,15 @@
  * folding three panels in a row should not rewrite the whole persisted state three
  * times. The pending write is flushed on unmount, so navigating away is not a way
  * to lose the last change.
+ *
+ * **A visit is recorded too, and it is not a layout change.** `lastTool` used to be
+ * written only by a resize or a fold, which made it *the last tool whose layout the
+ * user happened to touch* — a different fact from the last tool the user was in, and
+ * the one the shell reads when it decides where to land. So mounting records the
+ * visit, through the same carried-fields write: the store replaces a project record
+ * wholesale, and a second write path is exactly where a neighbour's memory gets
+ * erased. The write is skipped when the value is already this tool, so a remount
+ * (React's strict mode mounts twice) does not rewrite state to say what it said.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 
@@ -57,22 +66,39 @@ export function useWorkspaceLayout(tool: AgentWorkspaceTool): WorkspaceLayoutMem
   const latest = useRef<WorkspaceLayoutState | null>(null);
   const timer = useRef<number | null>(null);
 
-  const write = useCallback(() => {
-    const layout = latest.current;
-    if (layout === null) return;
-    const previous = store.snapshot().projects['active'];
-    store.setProject('active', {
-      // Everything the layout does not own is carried across unchanged: the store
-      // replaces a project record wholesale, so a spread that dropped a field
-      // would silently erase another feature's memory.
-      openViewIds: previous?.openViewIds ?? {},
-      selectedViewIds: previous?.selectedViewIds ?? {},
-      selectedModelIds: previous?.selectedModelIds ?? {},
-      lastViewedVersions: previous?.lastViewedVersions ?? {},
-      panelLayouts: { ...(previous?.panelLayouts ?? {}), [tool]: layoutToStore(layout) },
-      lastTool: tool,
-    });
-  }, [store, tool]);
+  /**
+   * Write the project record with one field changed and everything else carried.
+   *
+   * `patch` is what this hook owns: the tool's own layout, or nothing when the write
+   * is only a visit. Everything the layout does not own is carried across unchanged,
+   * because the store replaces a project record wholesale — so a spread that dropped
+   * a field would silently erase another feature's memory.
+   */
+  const write = useCallback(
+    (patch: { layout?: WorkspaceLayoutState } = {}) => {
+      const previous = store.snapshot().projects['active'];
+      const panelLayouts =
+        patch.layout === undefined
+          ? { ...(previous?.panelLayouts ?? {}) }
+          : { ...(previous?.panelLayouts ?? {}), [tool]: layoutToStore(patch.layout) };
+      store.setProject('active', {
+        openViewIds: previous?.openViewIds ?? {},
+        selectedViewIds: previous?.selectedViewIds ?? {},
+        selectedModelIds: previous?.selectedModelIds ?? {},
+        lastViewedVersions: previous?.lastViewedVersions ?? {},
+        panelLayouts,
+        lastTool: tool,
+      });
+    },
+    [store, tool],
+  );
+
+  // The visit. This is the value the shell reads on entry (see `EntryRedirect`), so it
+  // has to mean "the tool the user was in" rather than "the tool they resized".
+  useEffect(() => {
+    if (store.snapshot().projects['active']?.lastTool === tool) return;
+    write();
+  }, [store, tool, write]);
 
   const onLayoutChange = useCallback(
     (layout: WorkspaceLayoutState) => {
@@ -80,7 +106,8 @@ export function useWorkspaceLayout(tool: AgentWorkspaceTool): WorkspaceLayoutMem
       if (timer.current !== null) window.clearTimeout(timer.current);
       timer.current = window.setTimeout(() => {
         timer.current = null;
-        write();
+        const pending = latest.current;
+        if (pending !== null) write({ layout: pending });
       }, LAYOUT_DEBOUNCE_MS);
     },
     [write],
@@ -91,7 +118,7 @@ export function useWorkspaceLayout(tool: AgentWorkspaceTool): WorkspaceLayoutMem
       if (timer.current === null) return;
       window.clearTimeout(timer.current);
       timer.current = null;
-      write();
+      if (latest.current !== null) write({ layout: latest.current });
     },
     [write],
   );

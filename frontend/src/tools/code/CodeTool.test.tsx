@@ -280,6 +280,17 @@ describe('the Code surface', () => {
     expect(fetch).not.toHaveBeenCalledWith('/api/code/run-task', expect.anything());
   });
 
+  it('records the visit, so the shell can reopen here instead of at Chat', async () => {
+    stubFetch();
+    const { store } = renderTool(['/code']);
+    await screen.findByRole('list', { name: 'Running code tasks' });
+
+    // The value the shell's entry route reads (1.39 A5). It used to be written only by
+    // a resize or a fold, which made it "the last tool whose layout was touched" — so a
+    // user who merely opened Code would be sent back to Chat on their next visit.
+    expect(store.snapshot().projects['active']?.lastTool).toBe('code');
+  });
+
   it('remembers the panel layout it was resized to, and reopens at that width', async () => {
     stubFetch();
     const storage = new MemoryStorage();
