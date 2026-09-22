@@ -191,6 +191,19 @@ export function requireTool(value: unknown, field = 'tool'): ToolName {
  * `noUncheckedIndexedAccess` keeps that union intact at every use site. This
  * collapses it once, so routes can read `pathParam(req, 'id')` without a cast.
  */
+/**
+ * A request header, with an empty value read as absent.
+ *
+ * Headers are how a credential travels (S17's session token), and an empty string
+ * is what a client that "sent the header" without a value produces — treating it as
+ * a value would make `''` something a comparison has to reject rather than
+ * something the caller never supplied.
+ */
+export function headerString(req: Request, name: string): string | undefined {
+  const value = req.get(name);
+  return value === undefined || value === '' ? undefined : value;
+}
+
 export function pathParam(req: Request, name: string): string {
   const raw: unknown = (req.params as Record<string, unknown>)[name];
   if (typeof raw !== 'string' || raw.trim() === '') {

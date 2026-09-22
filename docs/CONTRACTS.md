@@ -5496,3 +5496,215 @@ so the guard is testable without a real worktree and a real git repository — t
 that needs both (a continuation that parks, supersedes, and *then* fails) is exactly
 the one that cannot be produced over HTTP here, and it is the case the guard exists
 for.
+
+## An approval is a ticket, and it is spent once *(S1, added 2026-09-22)*
+
+An approval and the execution it authorises happen at different times, under
+different run ids, in a process that may have restarted in between. `1.27` made the
+*call* durable — `pending_approvals` stores the tool name and the verbatim argument
+string so the continuation replays the question the user actually read — but nothing
+checked that the call about to run **was** that call. The replay is a model turn: it
+re-emits a tool call from a stored transcript under a freshly rebuilt system prompt
+and a freshly read permission stack, and every one of those is an input that can
+differ from the park.
+
+Migration `026` adds that check. `approval_tickets` binds one approved call to the
+execution that carries it out:
+
+| Bound | Read at mint time from | Refusal when it differs |
+| --- | --- | --- |
+| tool name, permission key | the verdict that produced the `ask` | `mismatch` |
+| the argument string, verbatim | the call as the model emitted it | — (see below) |
+| canonical workspace | the agent's `ticketBinding.workspace` | `mismatch` |
+| task id | the run's task | — (see below) |
+| run id | the run that asked | `run_replaced` |
+| parent task id | a delegated child's parent | `mismatch` |
+| permission-config revision | the resolver's own layer stack | `mismatch` |
+
+Three of those need their reasoning stated, because each is a decision rather than a
+lookup.
+
+**The lookup is the question, not the tool.** A ticket is found by
+`(task_id, tool_name, arguments)` — the same key `recordApproval` dedupes on. So a
+command the user never saw does not find a ticket at all: the settlement is
+`absent`, which is not a refusal but the ordinary first-time case, and the run parks
+for a fresh decision about the call actually in front of it. That is how "different
+arguments is refused even with a valid-looking prior approval" is implemented, and it
+is why `arguments` can never appear in a `mismatch`: by construction the stored and
+live strings are equal by the time the comparison runs. Authorising a *different*
+call because a similar one was approved is the failure this table exists to prevent,
+and refusing one because it re-serialised the same JSON differently is a failure of a
+different kind — so the comparison is on the string, not on a parsed shape.
+
+**Run identity means lineage.** A continuation is a new run id by design
+(`http/continuation.ts` writes a second `task_runs` row so the park's step history
+survives), so a ticket minted for the parked run is settled by a run that records it
+as `continued_from` — the column migration `026` adds, rather than a parse of
+`supersede()`'s `pause_reason` string, which is a sentence for a user and one prose
+edit away from refusing every continuation.
+
+**The revision is the stack's own hash, not a counter.** `permissionRevision()` in
+`services/agent/permissions.ts` hashes the *resolved* layers — each layer's name and
+rules, in evaluation order, plus the known tool set — and `createPermissionResolver`
+attaches it to the resolver it returns. A counter in `settings` would need every
+writer of every permission source to remember to bump it, and a project file is
+edited in an editor rather than through this process; a revision nobody bumps is
+worse than none, because it reads as a check. Deriving it from the resolver means it
+cannot disagree with the rules the engine will actually consult. It is deliberately
+strict: any change to the resolved stack invalidates every live ticket, even when
+*this* call's verdict is unchanged, because the user approved a call under a
+configuration and the configuration moved.
+
+**The gate refuses, and the run parks again.** `settleTicket` answers
+`granted | refused | absent`; `dispatchToolCall` runs the tool only on `granted`, and
+the loop parks on both `refused` and `absent`. A refusal is *not* fed back as an
+ordinary refusal the model can retry around: an approval exists and does not cover
+this call, so nobody has agreed to what is about to happen, and continuing would
+quietly drop the requirement that a human agreed. The loop records a fresh
+`pending_approvals` row for the live call and emits `approval_required` with
+`reason: 'approval_invalid'`, so a client can tell a stale approval from a first ask.
+`allow_session` settles to `standing` and is spent by the first matching execution;
+later calls are authorised by the session *rule*, which the engine re-reads every
+call, and the ticket remains as the record that the approved call ran.
+
+**Nothing is exempted for a caller that cannot bind.** `ticketBinding` is supplied by
+the agent, because only the agent knows where its tools point; a run that supplies
+none gets no ticket minted and none settled — exactly the pre-`S1` behaviour. That is
+the honest fallback rather than a comparison against a value the run invented, and it
+is why the three agents pass it (`code` names the worktree root and, for a delegated
+child, the parent task; `cowork` and `design` name their containment root).
+
+`test/approvaltickets.test.ts` — **23 cases**: each bound field refused on its own
+with the field named in the refusal, the spent/denied/expired/never-decided states,
+lineage acceptance, dedupe on the question, the void-by-task rule, and the loop-level
+cases that park a real run, approve it, replay it as a continuation, and assert both
+that the approved call runs and that each changed field re-parks instead.
+
+## A running command has an owner *(S3, added 2026-09-22)*
+
+A single-shot `executeCommand` used to be a process nobody owned: spawned inside the
+executor's promise, its pid handed to `killProcessTree` and forgotten, its output
+existing only as the string the promise resolved with. `services/terminal/registry.ts`
+registers every execution the terminal starts, for its lifetime, with what it is and
+who may touch it.
+
+| Field | Value |
+| --- | --- |
+| `id` | `proc_<uuid>`, minted by the registry — never accepted from a caller |
+| ownership token | 32 CSPRNG bytes, hex, minted with the id and returned once |
+| `pid` | the OS pid, or null when the spawn produced none |
+| `taskId`, `runId`, `sessionId` | who asked; null where there is no task, run or human session |
+| `workspace` | the canonical cwd the command runs in |
+| `command` | verbatim, as the caller asked for it |
+| `startedAt`, `finishedAt` | the entry's own clocks, not the caller's |
+| `state` | `running → completed \| failed \| aborted`, one way |
+| output | bounded buffers, stdout and stderr separately |
+
+**Every read, status and abort requires the token**, compared with
+`tokensMatch` (`security/tokens.ts`) — a length-mismatch is answered without
+comparing, and equal lengths go through `timingSafeEqual`, so the comparison cannot
+be measured byte by byte. `list()` strips the token, which is precisely the situation
+the token exists for: somebody holding an id and nothing else. A wrong token and a
+nonexistent id get the same `not_found` and the same sentence, because "this id
+exists but is not yours" is the one fact a caller without the token should not learn.
+
+**Terminal states are one-way, and `aborted` covers both ways an execution is
+terminated rather than finished.** The close event that follows a kill says nothing
+new, so `finish` after `abort` is a no-op; a timeout records `aborted` with
+`timedOut: true` and exit code `124` rather than `failed`, so a killed process is
+never reported as one that decided to exit badly. Aborting an entry that already
+finished returns `false` rather than raising: the caller asked for it to be over and
+it is, and failing on that race would be a spurious error.
+
+**The output lives in the entry.** The executor's own `OutputBuffer` moved into the
+registry and the executor reads it back through the token it was handed at
+registration — one truth about what a running command has printed, and the buffers a
+status read will see are the buffers the terminal is filling. The 256 KiB per-stream
+bound and its truncation marker are unchanged.
+
+**Finished entries are retained, bounded, oldest first; running ones are never
+evicted.** A registry that never forgets is a leak, and one that forgets immediately
+cannot answer "what ran, and what happened to it?".
+
+**No HTTP surface.** S3 asked for the pattern on what exists, not for a daemon or a
+management API, so there is no route that lists or aborts processes: the registry is
+wired into every single-shot execution, `abort` has one production caller (the
+`AbortSignal` path, which is what a cancelled command or a shut-down server uses), and
+`read`/`status` are exercised by the tests and available to whoever builds the next
+supervisor surface. A session id travels with an entry when a human session launched
+it (S17), which is how the same record answers "what was typed by a person".
+
+`test/processregistry.test.ts` — **18 cases**: minting, the token gate on every
+operation including `append`, identical answers for a foreign token and an absent id,
+one-way lifecycle, both streams bounded independently, list-without-tokens,
+copy-on-read, the retention bound, and a second suite that runs real child processes
+through the terminal module and checks pid, task, run, workspace, command, timestamps,
+the three terminal states and the "nothing ran, nothing tracked" cases.
+
+## The human bypass is a session, not a flag *(S17, added 2026-09-22)*
+
+A person typing a command into a terminal they opened is the authority for that
+command: confirming what you just typed is a prompt with one answer, so the
+permission engine's `ask`/`deny` evaluation does not govern a human's direct input.
+What that exemption needs is evidence, and a flag the client sends is not evidence —
+it is the exemption itself. So the evidence is a session the server opened, and the
+exemption is granted only to a request that can authenticate it.
+
+**The session.** `POST /api/terminal/sessions` mints an id (`tsess_<uuid>`) and a
+32-byte token, both server-side, and returns the token exactly once;
+`POST /api/terminal/sessions/:sessionId/close` ends it and **destroys the token**
+rather than marking a row, so a closed session cannot be reopened by presenting the
+same string; `GET /api/terminal/sessions` lists the live sessions and never a token.
+Authentication is `tokensMatch` on every command that claims the exemption, and a
+successful authentication is what renews the session — a session that is being used
+is alive, and one that is not expires after 15 idle minutes. There is also an
+absolute eight-hour cap, because a stolen token that is in use is otherwise renewable
+forever. Sessions are in memory deliberately: a terminal session is the presence of a
+person at a keyboard in this process's lifetime, and persisting it would let a restart
+resume a "live" session nobody is in front of.
+
+**The route.** `POST /api/code/execute-command` reads the id and the token from
+`x-hyperion-session` and `x-hyperion-session-token` — headers, where a credential
+belongs, and never a body field. No value in the body can grant a bypass: `human`,
+`bypass`, `sessionId` and `sessionToken` in the request body are ignored, which is
+pinned by a test.
+
+- **Authenticated** → the command is exempt from the permission engine. It is
+  *not* exempt from anything else: the capability gate (`assertCommandAllowed`,
+  including the network-egress rule), containment (`containAgentCwd`, tightened to
+  the session's task when there is one), the output bound, and the audit line below
+  all still apply, and the response says `bypass: 'human_session'` so a caller — and a
+  test — can tell an exempted command from an evaluated one.
+- **Not authenticated** → the command goes through normal permission evaluation:
+  `services/terminal/authority.ts` evaluates it as the `bash` tool over the `act`
+  baseline plus the project's own rules (`.hyperion/permissions.json`), so a rule the
+  user wrote for shell access governs shell access. `deny` is a `403
+  permission_denied` naming the layer; `ask` is a `409 approval_required` naming the
+  rule, because there is no run to park for a route-level command, and the remedies
+  are to change the rule or to run it from a live session. This is the only direction
+  the change moves: a command that was refused before is still refused, and one that
+  ran before still runs when nothing narrows it.
+
+**The audit line** is written before the command runs — the authorisation is the
+interesting fact, not the outcome — with the session id, the task, the cwd, and the
+command passed through `redactSecrets` and clipped, because this line outlives the
+session and a credential typed as an argument must not be what a reader finds there.
+The execution itself is recorded in the process registry with its `sessionId`, which
+is the durable half of the same trail.
+
+**Two honest limits, recorded rather than papered over.** There is **no rate limiter
+in this build** to still apply — nothing in the backend limits command frequency, so
+the bypass neither adds nor removes one (the output bound does apply, and is tested).
+And the browser terminal this is for **does not exist**: no frontend module calls
+these three routes, which is why they are `deferred-frontend` in the route snapshot
+and recorded as a gap. They are here because a token that no server mints is not a
+mechanism, and the command route is where the exemption is claimed today.
+
+`test/terminalsessions.test.ts` — **16 cases**, over real HTTP against a real project
+with real rules: minting and one-time token disclosure, close-by-owner-only, identical
+answers for an unknown id and a wrong token, the exempted command running under a
+project `deny` while the same command without a session is refused with the layer
+named, `ask` refusing with `approval_required`, idle expiry inside the absolute cap
+and the cap itself, a token from another session, a body field claiming a bypass,
+containment outside the scope, task ownership against a real worktree, the capability
+gate switching a bypassed command off, and the output bound.

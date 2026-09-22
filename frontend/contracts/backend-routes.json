@@ -19,147 +19,147 @@
     {
       "method": "POST",
       "path": "/api/code/run-task",
-      "source": "src/http/agents.ts:496",
+      "source": "src/http/agents.ts:510",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "POST",
       "path": "/api/cowork/run-task",
-      "source": "src/http/agents.ts:497",
+      "source": "src/http/agents.ts:511",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "POST",
       "path": "/api/design/run-task",
-      "source": "src/http/agents.ts:498",
+      "source": "src/http/agents.ts:512",
       "exposure": "frontend",
       "capability": "design.core"
     },
     {
       "method": "GET",
       "path": "/api/code/tasks",
-      "source": "src/http/agents.ts:508",
+      "source": "src/http/agents.ts:522",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "GET",
       "path": "/api/code/tasks/:taskId/state",
-      "source": "src/http/agents.ts:598",
+      "source": "src/http/agents.ts:612",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "GET",
       "path": "/api/cowork/tasks/:taskId/state",
-      "source": "src/http/agents.ts:599",
+      "source": "src/http/agents.ts:613",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "GET",
       "path": "/api/cowork/tasks/:taskId/provenance",
-      "source": "src/http/agents.ts:586",
+      "source": "src/http/agents.ts:600",
       "exposure": "frontend",
       "capability": "cowork.read"
     },
     {
       "method": "GET",
       "path": "/api/design/tasks/:taskId/state",
-      "source": "src/http/agents.ts:600",
+      "source": "src/http/agents.ts:614",
       "exposure": "frontend",
       "capability": "design.core"
     },
     {
       "method": "GET",
       "path": "/api/code/tasks/:taskId/recovery",
-      "source": "src/http/agents.ts:618",
+      "source": "src/http/agents.ts:632",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "GET",
       "path": "/api/cowork/tasks/:taskId/recovery",
-      "source": "src/http/agents.ts:619",
+      "source": "src/http/agents.ts:633",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "GET",
       "path": "/api/design/tasks/:taskId/recovery",
-      "source": "src/http/agents.ts:620",
+      "source": "src/http/agents.ts:634",
       "exposure": "frontend",
       "capability": "design.core"
     },
     {
       "method": "POST",
       "path": "/api/code/tasks/:taskId/cancel",
-      "source": "src/http/agents.ts:674",
+      "source": "src/http/agents.ts:688",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "POST",
       "path": "/api/cowork/tasks/:taskId/cancel",
-      "source": "src/http/agents.ts:675",
+      "source": "src/http/agents.ts:689",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "POST",
       "path": "/api/design/tasks/:taskId/cancel",
-      "source": "src/http/agents.ts:676",
+      "source": "src/http/agents.ts:690",
       "exposure": "frontend",
       "capability": "design.core"
     },
     {
       "method": "GET",
       "path": "/api/code/tasks/:taskId/export",
-      "source": "src/http/agents.ts:689",
+      "source": "src/http/agents.ts:703",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "GET",
       "path": "/api/code/rules",
-      "source": "src/http/agents.ts:719",
+      "source": "src/http/agents.ts:733",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "GET",
       "path": "/api/code/agents",
-      "source": "src/http/agents.ts:731",
+      "source": "src/http/agents.ts:745",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "GET",
       "path": "/api/code/commands",
-      "source": "src/http/agents.ts:737",
+      "source": "src/http/agents.ts:751",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "GET",
       "path": "/api/code/permissions",
-      "source": "src/http/agents.ts:756",
+      "source": "src/http/agents.ts:770",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "POST",
       "path": "/api/code/execute-command",
-      "source": "src/http/agents.ts:789",
+      "source": "src/http/agents.ts:821",
       "exposure": "deferred-frontend",
       "capability": "code.execute-command"
     },
     {
       "method": "GET",
       "path": "/api/agents/status",
-      "source": "src/http/agents.ts:805",
+      "source": "src/http/agents.ts:881",
       "exposure": "frontend",
       "capability": "agents.status"
     },
@@ -1219,6 +1219,27 @@
       "source": "src/http/storage.ts:172",
       "exposure": "frontend",
       "capability": "storage.manage"
+    },
+    {
+      "method": "POST",
+      "path": "/api/terminal/sessions",
+      "source": "src/http/terminal.ts:41",
+      "exposure": "deferred-frontend",
+      "capability": "terminal.sessions"
+    },
+    {
+      "method": "POST",
+      "path": "/api/terminal/sessions/:sessionId/close",
+      "source": "src/http/terminal.ts:69",
+      "exposure": "deferred-frontend",
+      "capability": "terminal.sessions"
+    },
+    {
+      "method": "GET",
+      "path": "/api/terminal/sessions",
+      "source": "src/http/terminal.ts:86",
+      "exposure": "deferred-frontend",
+      "capability": "terminal.sessions"
     },
     {
       "method": "GET",

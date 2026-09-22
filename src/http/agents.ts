@@ -59,7 +59,11 @@ import {
   matchProjectRules,
 } from '../services/code/projectContext.ts';
 import { permissionLayers, resolveProfile } from '../services/agent/profiles.ts';
+import { describeVerdict } from '../services/agent/permissions.ts';
 import { sessionPermissionRules } from '../db/approvals.ts';
+import { terminalSessions } from '../services/terminal/sessions.ts';
+import { terminalCommandVerdict } from '../services/terminal/authority.ts';
+import { SESSION_HEADER, SESSION_TOKEN_HEADER } from './terminal.ts';
 import {
   getWorktree,
   heldWorktrees,
@@ -83,6 +87,7 @@ import { recoveryReport } from '../services/agent/recovery.ts';
 import { AppError, toAppError } from '../util/errors.ts';
 
 import { createLogger } from '../util/logger.ts';
+import { redactSecrets } from '../util/redact.ts';
 import { attachDownloadHeaders } from './download.ts';
 import { wrap } from './errors.ts';
 import {
@@ -91,6 +96,7 @@ import {
   asString,
   asOptionalString,
   body,
+  headerString,
   pathParam,
   queryString,
   queryStrings,
@@ -104,6 +110,14 @@ import type { Worktree } from '../services/code/worktree.ts';
 export const agentsRouter: Router = Router();
 
 const log = createLogger('agents:http');
+
+/** How much of a bypassed command the audit line carries. */
+const AUDIT_COMMAND_MAX = 400;
+
+/** Truncate for a log field. Never for anything the command runs with. */
+function clip(text: string, maximum: number): string {
+  return text.length <= maximum ? text : `${text.slice(0, maximum)}…`;
+}
 const AGENT_MODES: readonly AgentMode[] = ['ask', 'plan', 'act'];
 
 function assertNotBusy(): void {
@@ -785,7 +799,25 @@ agentsRouter.get('/code/permissions', wrap(async (req, res) => {
   });
 }));
 
-/** Terminal execution, owned by the terminal module. Plain JSON, not SSE. */
+/**
+ * Terminal execution, owned by the terminal module. Plain JSON, not SSE.
+ *
+ * Two kinds of caller arrive here (S17), and the difference is what the server can
+ * prove about them.
+ *
+ * A caller presenting the id and token of a **live interactive session** is a
+ * person: the token was minted by this process when they opened the session, it is
+ * compared in constant time, and it dies when the session is closed or goes idle.
+ * Their command is exempt from the permission engine's `ask`/`deny` evaluation —
+ * asking somebody to confirm the command they just typed is a prompt with one
+ * answer — and nothing else is exempted: the capability gate, the containment
+ * boundary, the output bound and the audit line below all still apply.
+ *
+ * Any other caller is an automated execution like any other, and is evaluated by
+ * the permission engine over the project's own rules. The claim is never the
+ * authority: a header that says "human" is not a bypass, and there is no field on
+ * this route that switches one on.
+ */
 agentsRouter.post(
   '/code/execute-command',
   wrap(async (req, res) => {
@@ -795,10 +827,54 @@ agentsRouter.post(
     const timeoutMs = asPositiveInteger(payload.timeoutMs, 'timeoutMs');
 
     requireTerminal();
+
+    const human = terminalSessions.authenticate({
+      sessionId: headerString(req, SESSION_HEADER),
+      token: headerString(req, SESSION_TOKEN_HEADER),
+    });
+    if (!human.ok) {
+      const verdict = await terminalCommandVerdict({ command, project: projectQuery(req) });
+      if (verdict.action === 'ask') {
+        throw new AppError('approval_required', `The terminal command needs approval (${describeVerdict(verdict)}).`, {
+          details: { permissionKey: verdict.key, matchedLayer: verdict.layer, matchedPattern: verdict.pattern },
+        });
+      }
+      if (verdict.action === 'deny') {
+        throw new AppError('permission_denied', `The terminal command is refused by ${describeVerdict(verdict)}.`, {
+          details: { permissionKey: verdict.key, matchedLayer: verdict.layer, matchedPattern: verdict.pattern },
+        });
+      }
+    }
+
+    const session = human.ok ? human.session : undefined;
+    if (session !== undefined) {
+      // Audit before the command runs, because the interesting fact is the
+      // authorisation, not the outcome: a command that fails still ran with an
+      // exemption. Redacted for the same reason every other log is: this line
+      // outlives the session, and a credential typed as an argument must not be
+      // what a reader finds here.
+      log.info('terminal command accepted under a live interactive session', {
+        sessionId: session.id,
+        taskId: session.taskId,
+        cwd,
+        command: clip(redactSecrets(command), AUDIT_COMMAND_MAX),
+      });
+    }
+
     const result = await runCommand(cwd, command, {
       ...(timeoutMs === undefined ? {} : { timeoutMs }),
+      ...(session === undefined ? {} : { sessionId: session.id }),
+      // Task ownership: a session opened against a task contains its commands to
+      // that task's worktree, the same boundary an agent's shell call gets (S17).
+      ...(session?.taskId == null ? {} : { taskId: session.taskId }),
     });
-    res.json({ result });
+
+    res.json({
+      result,
+      // Stated, not implied: a client must be able to tell an exempted command from
+      // an evaluated one, and so must a test.
+      ...(human.ok ? { bypass: 'human_session' as const, sessionId: human.session?.id } : {}),
+    });
   }),
 );
 

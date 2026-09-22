@@ -135,6 +135,15 @@ behavior in the browser.
 - ~~No Chat fork endpoint~~ **Closed 2026-09-21 (1.27)**: `POST /api/chat/:id/fork` branches a
   conversation without touching it. A dedicated Chat state endpoint is still missing
   (`chat.state` above): runs and paused runs are the only chat-state reads.
+- No browser terminal, so the interactive-session routes have no client. `S17` gave
+  `POST /api/code/execute-command` a real exemption for a person typing — a session the
+  server mints (`POST /api/terminal/sessions`), validated in constant time and expired on
+  close or timeout — and everything without one is now evaluated by the permission engine
+  as the `bash` tool over the project's own rules. The three `/api/terminal/sessions`
+  routes are therefore `deferred-frontend` in the route snapshot: no screen opens or
+  closes a session yet, and no screen sends the two headers. They exist because a token
+  no server mints is not a mechanism, and the minting half is what makes the exemption
+  structural rather than a flag a client could set.
 - No Code file-tree, file-read, task-diff, or walkthrough retrieval contracts. (`GET /api/code/tasks`
   reports the live lane — running slots and held worktrees — which is what a task rail needs for
   *active* work; a per-project *history* of code tasks is still absent, and `GET /api/code/tasks/:id/export`

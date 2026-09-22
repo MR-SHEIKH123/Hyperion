@@ -2069,6 +2069,79 @@ a prompt that expired reads as **expired** and points at continuing the task, an
 prompt somebody already answered reads as already answered. Announcing an allowance
 that was not granted is the one wording a prompt with a deadline must never produce.
 
+### 12.6c Direct terminal execution and the human session  *(new in S17)*
+
+`POST /api/code/execute-command` is the one route with no agent session behind it: a
+caller posts a command and a cwd and gets `{ result }`. Two kinds of caller arrive
+there, and the difference is what the server can prove about them.
+
+**The exemption.** A request presenting the id and token of a *live interactive
+session* is a person typing. Its command is not evaluated by the permission engine —
+`ask`/`deny` is what governs agents, and confirming the command you just typed is a
+prompt with one answer — and the response says so:
+
+```json
+{ "result": { "stdout": "…", "stderr": "", "exitCode": 0, "timedOut": false },
+  "bypass": "human_session", "sessionId": "tsess_…" }
+```
+
+The claim travels in headers, never in the body:
+
+| Header | Meaning |
+| --- | --- |
+| `x-hyperion-session` | the session id the server minted |
+| `x-hyperion-session-token` | the token it was minted with (32 bytes, hex; shown once) |
+
+No body field can grant the exemption. `human`, `bypass`, `sessionId` or
+`sessionToken` in the JSON body are ignored, which is the difference between a
+credential and a flag.
+
+**Everything else.** A request without a valid session is an automated execution and
+is evaluated by the permission engine as the `bash` tool over the `act` baseline plus
+the project's rules (`?project=` selects the project, as in §12.3):
+
+| Verdict | Response |
+| --- | --- |
+| `allow` | the command runs, and the response carries no `bypass` field |
+| `ask` | **409** `approval_required`, naming the layer and rule |
+| `deny` | **403** `permission_denied`, naming the layer and rule |
+
+`ask` is a refusal rather than a park because a route-level command has no task and no
+conversation to continue; the remedies are to change the rule or to run the command
+from a live session.
+
+**The sessions** are mounted at `/api/terminal` and are plain JSON.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| POST | `/api/terminal/sessions` | open one; body may carry `{ taskId?, client? }` |
+| POST | `/api/terminal/sessions/:sessionId/close` | end one; the token header is required |
+| GET | `/api/terminal/sessions` | every live session, newest first, **never a token** |
+
+`POST /sessions` answers **201** with the token once:
+
+```json
+{ "session": { "id": "tsess_…", "taskId": null, "client": "browser",
+               "openedAt": 1790000000000, "lastSeenAt": 1790000000000,
+               "expiresAt": 1790000900000, "hardExpiresAt": 1790028800000,
+               "endedAt": null, "endedReason": null },
+  "token": "…64 hex characters…", "expiresAt": 1790000900000 }
+```
+
+Closing with a wrong token or an unknown id answers **404** with the same sentence for
+both, so the route cannot be used to discover which ids exist. A session expires after
+**15 idle minutes** — renewed only by an authenticated command, which is the "right
+now" half of the claim — and absolutely after **8 hours**; `endedReason` says which of
+`closed`, `idle` or `expired` ended it.
+
+**What the exemption does not cover.** The capability gate (including network egress),
+the containment boundary (tightened to the session's task when it names one), the
+256 KiB per-stream output bound, and the audit line all apply to an exempted command
+exactly as to any other. There is **no rate limiter in this build**, so the exemption
+neither adds nor removes one. The browser terminal these routes exist for is not built
+yet — no frontend module calls them — which is why they are `deferred-frontend` in the
+route snapshot and recorded in `frontend/contracts/gaps.md`.
+
 ### 12.7 The Design agent  *(new — the Design slice)*
 
 Design registers at boot alongside Cowork and Code, so `/api/design/run-task`

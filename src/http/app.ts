@@ -32,6 +32,7 @@ import { attentionRouter } from './attention.ts';
 import { settingsRouter } from './settings.ts';
 import { skillsRouter } from './skills.ts';
 import { storageRouter } from './storage.ts';
+import { terminalRouter } from './terminal.ts';
 import { usageRouter } from './usage.ts';
 
 import type { Express } from 'express';
@@ -57,6 +58,7 @@ export function createApp(): Express {
   app.use('/api/skills', skillsRouter);
   app.use('/api/plugins', pluginsRouter);
   app.use('/api/storage', storageRouter);
+  app.use('/api/terminal', terminalRouter);
   app.use('/api/usage', usageRouter);
   app.use('/api/backup', backupRouter);
   app.use('/api/settings', settingsRouter);
