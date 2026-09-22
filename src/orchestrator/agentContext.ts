@@ -258,6 +258,10 @@ export function createAgentContext(input: AgentContextInput): AgentContext {
       timeoutMs: options?.timeoutMs,
       signal: stopSignal,
       ...(codeTaskId === undefined ? {} : { taskId: codeTaskId }),
+      // The run that asked, so the process registry can attribute a running
+      // command to the run whose output it will appear in (S3). A headless run has
+      // no id, and the entry then binds the task alone.
+      ...(runId === undefined ? {} : { runId }),
     });
 
   const artifactServices = {

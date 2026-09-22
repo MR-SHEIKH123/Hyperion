@@ -816,7 +816,16 @@ export interface TerminalModule {
   executeCommand(
     cwd: string,
     command: string,
-    options?: { timeoutMs?: number; signal?: AbortSignal },
+    options?: {
+      timeoutMs?: number;
+      signal?: AbortSignal;
+      /** The task that asked, when there is one. Bound into the process entry (S3). */
+      taskId?: string;
+      /** The run that asked. Absent for a route-level or headless execution. */
+      runId?: string;
+      /** The live interactive session whose human asked, when one did (S17). */
+      sessionId?: string;
+    },
   ): Promise<CommandResult>;
 }
 

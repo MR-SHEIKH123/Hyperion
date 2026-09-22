@@ -109,7 +109,13 @@ export function requireTerminal(): TerminalModule {
 export async function executeCommand(
   cwd: string,
   command: string,
-  options?: { timeoutMs?: number; signal?: AbortSignal; taskId?: string },
+  options?: {
+    timeoutMs?: number;
+    signal?: AbortSignal;
+    taskId?: string;
+    runId?: string;
+    sessionId?: string;
+  },
 ): Promise<CommandResult> {
   const { assertCommandAllowed } = await import('../services/limits/capabilities.ts');
   assertCommandAllowed(command);
