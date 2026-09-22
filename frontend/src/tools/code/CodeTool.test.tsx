@@ -255,6 +255,31 @@ describe('the Code surface', () => {
     expect(mock.mock.calls.some((call) => describeRequest(call[0]).endsWith('/recovery'))).toBe(false);
   });
 
+  it('hands an interrupted run to the composer when resume is asked for', async () => {
+    stubFetch({
+      task: json({
+        run: { ...taskState.run, state: 'interrupted', pauseReason: null, completedAt: NOW - 1_000 },
+        usage: taskState.usage,
+      }),
+    });
+    renderTool(['/code?task=task-1']);
+
+    // Resume is a re-run of the *same* task id, so the only fact that crosses from
+    // the recovery panel to the composer is that id — the panel does not start
+    // anything itself, and the composer still needs an instruction the user writes.
+    const panel = await screen.findByRole('heading', { name: 'What the run left' });
+    await userEvent.click(within(panel.closest('section') as HTMLElement).getByRole('button', { name: 'Resume in the composer' }));
+    expect(screen.getByLabelText('Task id')).toHaveValue('task-1');
+    expect(screen.getByRole('button', { name: 'Start task' })).toBeDisabled();
+    // And the handoff is visible: the composer region takes focus, because a filled
+    // field the user has to go looking for is only half a gesture. (The composer is not
+    // foldable today, so `focusPanel` focuses rather than expands here — it is the same
+    // call either way, and the fold case is the frame's own test.)
+    expect(document.getElementById('region-composer')).toHaveFocus();
+
+    expect(fetch).not.toHaveBeenCalledWith('/api/code/run-task', expect.anything());
+  });
+
   it('remembers the panel layout it was resized to, and reopens at that width', async () => {
     stubFetch();
     const storage = new MemoryStorage();

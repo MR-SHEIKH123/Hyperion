@@ -45,37 +45,63 @@ export interface ContinueTaskInput {
    * the gated call is re-emitted and the user is asked again with fresh arguments.
    */
   approvalId?: string;
-  decision?: 'allow_once' | 'allow_session' | 'deny';
+  /**
+   * The two allow decisions — and deliberately not `deny`.
+   *
+   * `POST /continue` accepts a denial, and answers it with **JSON on the same 200**
+   * rather than a stream, because a denial finishes the run and there is no agent to
+   * watch (`finishDenied`). A caller of this function is a stream watcher, so passing
+   * a denial through it could only ever produce a protocol error for a success;
+   * denials belong to `POST /approve`, which is idempotent and answers `applied` and
+   * `state` for exactly that case (`api/attention.ts`, and the parked-task panel
+   * shows it that way).
+   */
+  decision?: 'allow_once' | 'allow_session';
 }
 
-export interface ContinueReconciliation {
+/**
+ * What the persisted run says, read after a stream that ended without a result.
+ *
+ * Shared by every caller that watches an agent run, which is why the name is not
+ * `Continue…`: starting a run reconciles the same way, for the same reason.
+ */
+export interface RunReconciliation {
   state: string;
   pauseReason: string | null;
   /** The run the re-read found, which is a different run id from the parked one. */
   runId: string;
 }
 
-export interface ContinueCallbacks {
+export interface RunStreamCallbacks {
   onEvent: (event: AgentSseEvent) => void;
   onEnd: (reason: StreamEnd) => void;
   /** The persisted truth after a stream that ended without a terminal frame. */
-  onReconciled?: (reconciliation: ContinueReconciliation) => void;
+  onReconciled?: (reconciliation: RunReconciliation) => void;
   /** Decoded frames that failed validation, kept separate so drift is diagnosable. */
   onInvalidFrame?: (eventName: string, reason: string) => void;
 }
 
-export function continueTask(
-  input: ContinueTaskInput,
-  callbacks: ContinueCallbacks,
+/**
+ * One agent run's stream, whichever route started it.
+ *
+ * The two routes that drive a task — `/continue` and `/run-task` — answer with the
+ * same protocol: a JSON refusal before the stream opens, then `agent` frames until the
+ * run ends, with no terminal event name a session can watch for. So they share this
+ * call rather than a copy of it, and they share the reconciliation below: the run's
+ * *persisted* state is read back from `GET /api/{tool}/tasks/:taskId/state`, which
+ * both routes keep up to date and which is the only answer that survives a dropped
+ * socket.
+ */
+function runAgentStream(
+  input: { request: string; body: Record<string, unknown>; tool: TaskTool; taskId: string },
+  callbacks: RunStreamCallbacks,
   signal?: AbortSignal,
 ): Promise<void> {
-  const body: Record<string, string> = {};
-  if (input.approvalId !== undefined) body.approvalId = input.approvalId;
-  if (input.decision !== undefined) body.decision = input.decision;
-
   return runStreamSession({
-    request: `/api/${input.tool}/tasks/${encodeURIComponent(input.taskId)}/continue`,
-    init: { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+    request: input.request,
+    init: { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input.body) },
+    // `error` is the only terminal *event name* the protocol uses; a `result` frame
+    // rides inside `agent`, so a normal ending reconciles rather than terminating.
     terminalEvents: new Set(['error']),
     onFrame: (frame) => {
       const decoded = decodeAgentEvent(frame);
@@ -96,4 +122,78 @@ export function continueTask(
     },
     ...(signal === undefined ? {} : { signal }),
   });
+}
+
+export function continueTask(
+  input: ContinueTaskInput,
+  callbacks: RunStreamCallbacks,
+  signal?: AbortSignal,
+): Promise<void> {
+  const body: Record<string, string> = {};
+  if (input.approvalId !== undefined) body.approvalId = input.approvalId;
+  if (input.decision !== undefined) body.decision = input.decision;
+
+  return runAgentStream(
+    { request: `/api/${input.tool}/tasks/${encodeURIComponent(input.taskId)}/continue`, body, tool: input.tool, taskId: input.taskId },
+    callbacks,
+    signal,
+  );
+}
+
+/**
+ * Starting a Code task — `POST /api/code/run-task` (docs/API.md §12).
+ *
+ * The body is `TaskInput` plus the task id, which for Code is **required** and is the
+ * run's identity for its whole life: it is the key for the worktree, the lane slot and
+ * `GET /api/code/tasks`. The route validates the id before the stream opens — a letter
+ * or digit first, then letters, digits, `.`, `-` or `_`, at most 100 characters, and
+ * never `..` (`safeTaskId` in `src/services/code/worktree.ts`) — because it becomes a
+ * directory name and a git ref; anything else is a `bad_request` rather than something
+ * quietly rewritten. `taskIdValid` in `tools/code/useTaskStart.ts` mirrors that rule so
+ * the composer refuses a typo in place.
+ *
+ * Two facts a caller has to be told rather than discover:
+ *
+ *   - **`chatId` is a correlation handle, not necessarily a conversation.** The route
+ *     requires the field, and stores it only when a chat with that id exists
+ *     (`linkedChatId`: `chat_id` is a real foreign key, and a run about to start must
+ *     not lose its state row over a convenience link). A surface starting a task with
+ *     no conversation behind it passes its own handle, exactly as the scheduler does
+ *     for an unattended run (`sched_<task>_<runId>`); the run row keeps `NULL` and the
+ *     task remains continuable, because `continuationInput` falls back to the task id.
+ *   - **The lane is a real refusal.** With `concurrency_mode: reject` a full Code lane
+ *     answers 409 `busy` *before* the stream, with `details: { running, limit, queued }`;
+ *     under `queue` the stream opens and sits silent until `started` arrives, which the
+ *     progress view states rather than looking hung.
+ */
+export interface StartCodeTaskInput {
+  taskId: string;
+  /** A chat id when the task belongs to one; otherwise a surface-scoped handle. */
+  chatId: string;
+  modelId: string;
+  prompt: string;
+  mode?: 'ask' | 'plan' | 'act';
+}
+
+export function startCodeTask(
+  input: StartCodeTaskInput,
+  callbacks: RunStreamCallbacks,
+  signal?: AbortSignal,
+): Promise<void> {
+  return runAgentStream(
+    {
+      request: '/api/code/run-task',
+      body: {
+        taskId: input.taskId,
+        chatId: input.chatId,
+        modelId: input.modelId,
+        prompt: input.prompt,
+        ...(input.mode === undefined ? {} : { mode: input.mode }),
+      },
+      tool: 'code',
+      taskId: input.taskId,
+    },
+    callbacks,
+    signal,
+  );
 }

@@ -277,16 +277,35 @@ describe('the recovery panel', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(/nothing about its contents is known/);
   });
 
-  it('names resume as available but not actioned from this surface', async () => {
+  it('reports resume and its route when no host can start a run', async () => {
     stubFetch();
     renderPanel();
 
     const heading = await screen.findByRole('heading', { name: 'Resume' });
     expect(heading).toBeInTheDocument();
     expect(screen.getByText(/starting the task again with the same id/)).toBeInTheDocument();
-    expect(screen.getByText(/not built yet/)).toBeInTheDocument();
+    expect(screen.getByText(/This surface cannot\s+start a run/)).toBeInTheDocument();
     // The honest half: no button that looks like it would start the run.
     expect(screen.queryByRole('button', { name: /Resume|Start/ })).toBeNull();
+  });
+
+  it('hands the task id to a host that can start the re-run', async () => {
+    stubFetch();
+    const onResume = vi.fn<(taskId: string) => void>();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <RecoveryPanel tool="code" taskId="task-1" onResume={onResume} />
+      </QueryClientProvider>,
+    );
+
+    // Resuming is a re-run with the *same* id — that is what re-attaches the leftover
+    // checkout — so the id is what crosses the boundary, not a fresh one.
+    await userEvent.click(await screen.findByRole('button', { name: 'Resume in the composer' }));
+    expect(onResume).toHaveBeenCalledWith('task-1');
+    // And the panel says what the re-run needs that a continuation would not: an
+    // instruction, because an interrupted run has no stored conversation to replay.
+    expect(screen.getByText(/it needs an instruction/)).toBeInTheDocument();
   });
 
   it('reports a refused discard instead of swallowing it', async () => {

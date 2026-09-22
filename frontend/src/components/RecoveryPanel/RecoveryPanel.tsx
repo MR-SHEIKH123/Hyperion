@@ -29,18 +29,38 @@ type TaskTool = z.infer<typeof taskToolSchema>;
  * wired: the step list is a real read of `task_steps`, bounded to the tail with the
  * totals over every step and `omitted` stating the difference. *Discard* is fully
  * wired: it is one JSON call, and the confirm step mirrors the backend's own rule,
- * which refuses a checkout holding work unless the caller asks twice. *Resume* is
- * reported but **not** actioned, and the panel says so in words rather than showing
- * a dead button — resuming is a re-run (`POST /api/{tool}/run-task` with the same
- * task id), and this surface does not start runs yet; that is the same gap the
- * composer region states, and the same one the `tasks.recovery` contract carries as
- * `partial`.
+ * which refuses a checkout holding work unless the caller asks twice. *Resume* is a
+ * re-run (`POST /api/{tool}/run-task` with the same task id), so it only became a
+ * gesture once a surface could start runs: with an `onResume` host the panel hands the
+ * task id to the Code composer, and without one — Cowork and Design have no surface
+ * yet, and neither does any other host — it keeps reporting the verb, its route and
+ * why it cannot be pressed. The `tasks.recovery` contract stays `partial` for the
+ * second reason and no longer for the first.
  *
  * **Nothing here is inferred from a missing value.** A checkout whose risk check
  * could not run is not "provably empty", an absent `stop` is "nothing was recorded
  * about why", and a bounded step list never reads as a complete one.
  */
-export function RecoveryPanel({ tool, taskId }: { tool: TaskTool; taskId: string }) {
+export function RecoveryPanel({
+  tool,
+  taskId,
+  onResume,
+}: {
+  tool: TaskTool;
+  taskId: string;
+  /**
+   * A host that can start a run, which is what makes resume a gesture instead of a
+   * sentence.
+   *
+   * Resuming an interrupted run *is* a re-run through `POST /api/{tool}/run-task` with
+   * the same task id (the route whose provisioning re-attaches the leftover checkout),
+   * so the verb only becomes actionable once a surface can start runs — the Code
+   * composer. The host is given the task id and decides where the composer lives;
+   * without one, the panel keeps reporting the verb and its route rather than showing a
+   * button that would do nothing.
+   */
+  onResume?: (taskId: string) => void;
+}) {
   const client = useQueryClient();
   const [confirming, setConfirming] = useState(false);
 
@@ -177,15 +197,37 @@ export function RecoveryPanel({ tool, taskId }: { tool: TaskTool; taskId: string
 
       <h4 className={styles.subheading}>Resume</h4>
       {actions.resume.possible ? (
-        <p className={styles.plain}>
-          Resuming here means <strong>starting the task again with the same id</strong>, which
-          re-attaches the checkout above. It is a re-run rather than a continuation: the continuation
-          routes only move a parked run, and this one was killed mid-flight. Starting a run from this
-          surface is not built yet (see the composer note), so the request is{' '}
-          <code className={styles.stepTool}>POST /api/{tool}/run-task</code> with{' '}
-          <code className={styles.stepTool}>taskId {taskId}</code> — the API, the scheduler or Cowork
-          can make it today.
-        </p>
+        onResume === undefined ? (
+          <p className={styles.plain}>
+            Resuming here means <strong>starting the task again with the same id</strong>, which
+            re-attaches the checkout above. It is a re-run rather than a continuation: the continuation
+            routes only move a parked run, and this one was killed mid-flight. This surface cannot start
+            a run, so the request is{' '}
+            <code className={styles.stepTool}>POST /api/{tool}/run-task</code> with{' '}
+            <code className={styles.stepTool}>taskId {taskId}</code> — the API, the scheduler or Cowork
+            can make it today.
+          </p>
+        ) : (
+          <>
+            <p className={styles.plain}>
+              Resuming means <strong>starting the task again with the same id</strong>, which re-attaches
+              the checkout above. It is a re-run rather than a continuation — the continuation routes
+              only move a parked run, and this one was killed mid-flight — and it needs an instruction,
+              because the agent rebuilds its prompt each turn and this run has no stored conversation to
+              replay.
+            </p>
+            <div className={styles.buttons}>
+              <Button
+                variant="primary"
+                onClick={() => {
+                  onResume(taskId);
+                }}
+              >
+                Resume in the composer
+              </Button>
+            </div>
+          </>
+        )
       ) : (
         <p className={styles.plain}>{actions.resume.reason ?? 'A re-run is not available.'}</p>
       )}

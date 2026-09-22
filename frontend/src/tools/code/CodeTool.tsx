@@ -1,10 +1,13 @@
-import { useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 
 import { getCodeLane, getTaskState } from '../../api/tasks';
 import { RecoveryPanel } from '../../components/RecoveryPanel/RecoveryPanel';
 import { ParkedTask } from './ParkedTask';
+import { StartTask } from './StartTask';
+import { RunProgress } from './RunProgress';
+import { useTaskStart } from './useTaskStart';
 import { CodeLaneRail, TaskSpend } from './CodeSurface';
 import { getArtifactVersions } from '../../api/provenance';
 import { TaskStateBanner } from '../../components/TaskStateBanner/TaskStateBanner';
@@ -15,7 +18,7 @@ import { AgentWorkspace } from '../../workspaces/AgentWorkspace';
 import { useWorkspaceLayout } from '../../state/persistence/useWorkspaceLayout';
 import styles from './CodeSurface.module.css';
 
-import type { AgentWorkspaceDefinition } from '../../workspaces/AgentWorkspace.types';
+import type { AgentWorkspaceDefinition, AgentWorkspaceHandle } from '../../workspaces/AgentWorkspace.types';
 
 import type { taskStateResponseSchema } from '../../contracts/wire/tasks';
 import type { z } from 'zod';
@@ -56,6 +59,15 @@ export default function CodeTool() {
   // tool. The frame owns the translation; this surface only hands over what it
   // last left behind (see `useWorkspaceLayout`).
   const layout = useWorkspaceLayout('code');
+  // Owned here, not inside the composer: the composer renders the controls, and the
+  // progress region renders the frames of the run those controls started. One hook
+  // instance is what makes them provably the same run.
+  const start = useTaskStart();
+  // The frame's own handle, for one thing: the recovery panel's resume gesture fills
+  // the composer with the interrupted task's id, and a handoff the user cannot see is
+  // not a handoff. `focusPanel` expands the region if it was folded away, which is
+  // exactly the case this exists for.
+  const frame = useRef<AgentWorkspaceHandle>(null);
 
   const lane = useQuery({ queryKey: ['code', 'lane'], queryFn: ({ signal }) => getCodeLane(signal), retry: false, refetchInterval: 10_000 });
   const task = useQuery({
@@ -96,7 +108,14 @@ export default function CodeTool() {
           // The one state where a read is not enough: an interrupted run has a
           // decision attached to it, and the frame's main region is where the
           // surface answers its own banner (1.31).
-          <RecoveryPanel tool="code" taskId={taskId} />
+          <RecoveryPanel
+            tool="code"
+            taskId={taskId}
+            onResume={(resumeTaskId) => {
+              start.setTaskId(resumeTaskId);
+              frame.current?.focusPanel('composer');
+            }}
+          />
         ) : null}
         {state?.kind === 'approval_required' || state?.kind === 'ready_for_review' ? (
           // The parked states, and the only place a parked task can be continued:
@@ -114,12 +133,15 @@ export default function CodeTool() {
         <TaskSpend taskId={taskId} usage={task.data?.usage} isPending={task.isPending} isError={task.isError} />
       </>
     ),
+    // The progress region is where a run this surface started streams. A task started
+    // elsewhere is shown by its persisted state in the main region, and this says so
+    // rather than looking like a stream that never arrived.
     progressStream: (
-      <p className={styles.idle}>
-        Step-by-step progress arrives on the task&rsquo;s SSE stream while it runs. This surface shows
-        the persisted state instead, so a reload or a dropped connection shows the truth rather than
-        an empty stream.
-      </p>
+      <RunProgress
+        state={start.state}
+        taskId={start.isStreaming || start.state.phase === 'ended' ? start.taskId : null}
+        onDismiss={start.state.phase === 'ended' ? start.dismiss : undefined}
+      />
     ),
     versionTimeline:
       file === null ? (
@@ -136,11 +158,18 @@ export default function CodeTool() {
       ) : (
         <VersionTimeline versions={versions.data.versions} />
       ),
+    // Starting a task is the composer's job, and `onStarted` is what makes the surface
+    // follow the run it just began: the id goes into `?task=`, so the main region and
+    // the banner show the task whose frames are arriving.
     composer: (
-      <p className={styles.idle}>
-        Starting a Code task from here is not built yet — tasks are started from the API, the
-        scheduler or Cowork today. The lane above is live, so a task started elsewhere appears here.
-      </p>
+      <StartTask
+        stream={start}
+        onStarted={(startedTaskId) => {
+          const next = new URLSearchParams(params);
+          next.set('task', startedTaskId);
+          setParams(next, { replace: true });
+        }}
+      />
     ),
     inspector: (
       <div className={styles.inspector}>
@@ -168,6 +197,7 @@ export default function CodeTool() {
 
   return (
     <AgentWorkspace
+      ref={frame}
       definition={definition}
       {...(layout.initialLayout === undefined ? {} : { initialLayout: layout.initialLayout })}
       onLayoutChange={layout.onLayoutChange}

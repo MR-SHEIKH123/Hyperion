@@ -3,7 +3,8 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { ParkedTask, logEntries } from './ParkedTask';
+import { ParkedTask } from './ParkedTask';
+import { logEntries } from './agentFrames';
 
 import type { AgentSseEvent } from '../../api/sse/events';
 

@@ -1463,15 +1463,33 @@ modules registered at boot — `cowork`, `code`, `design` and the terminal, via
 | GET | `/api/code/commands` | plain JSON *(new in 1.13)* |
 | GET | `/api/agents/status` | `{ agents, terminal, registered: { code, cowork, design } }` |
 
-`run-task` body (`TaskInput`): `tool`, `chatId`, `modelId`, `prompt`, `cwd?`,
-`attachments?`, `options?`. Input parsing, agent lookup and the busy check all
-happen **before** the SSE headers, so a 501 or 400 is a normal JSON error.
+`run-task` body (`TaskInput`): `tool`, `chatId`, `modelId`, `prompt`, `mode?`,
+`cwd?`, `attachments?`, `options?`. Input parsing, agent lookup and the busy check
+all happen **before** the SSE headers, so a 501 or 400 is a normal JSON error.
+`mode` is the agent mode — `ask`, `plan` or `act` — and defaults to `act`; it is the
+same value the agent-context routes take as `?mode=`, and §12's `started` event
+reports the worktree mode separately.
 
 **`/api/code/run-task` additionally requires `taskId`** (string, required). It
 names the run for its whole life: it is the key for the worktree, the lane slot
-and `GET /api/code/tasks`. Allowed characters are letters, digits, `.`, `-` and
-`_`, up to 100 — it becomes a directory name and a git ref, so anything else is a
-`bad_request` rather than something quietly rewritten.
+and `GET /api/code/tasks`. It must start with a letter or a digit, continue
+with letters, digits, `.`, `-` and `_`, be at most 100 characters and contain no `..`
+— it becomes a directory name and a git ref, so anything else is a `bad_request`
+rather than something quietly rewritten. The rule is `safeTaskId` in
+`src/services/code/worktree.ts`, and the composer checks the same three conditions
+before it posts so a typo is refused in place.
+
+**Who calls it (2026-09-22).** The Code surface posts the Code route. The *Task
+composer* (`frontend/src/tools/code/StartTask.tsx`, over `startCodeTask` in
+`frontend/src/api/agentStream.ts`) renders the instruction, the task id, the mode and
+the model picker, and the *Task progress* region renders the stream that answers it —
+one hook instance, so the frames provably belong to the run the form started. Two body
+fields are deliberately not offered: `cwd` and `attachments`. A run started there has
+no conversation behind it, so the composer passes `chatId: code_<taskId>`, the
+scheduler's own convention for a run whose chat does not exist (`linkedChatId` stores
+NULL); that is also why such a run stays continuable, since `POST …/continue` resolves
+which conversation to replay as `run.chatId ?? taskId`. Cowork and Design have no
+surface of their own yet, so their `run-task` routes still have no client.
 
 Agent progress rides a single `agent` event whose data is an open
 `Record<string, unknown>` — the module owns the channel schema. On completion the
@@ -1808,10 +1826,14 @@ state a caller meant to ask about can have moved on between the list and the cli
 The Code surface renders this read in its main region whenever the selected task's run
 is interrupted (`frontend/src/components/RecoveryPanel`): the step tail with the totals
 over all of it, the leftover checkout with what a discard would lose, and a two-step
-discard that mirrors the backend's own `force` rule. **Resume is reported, not
-actioned** — the panel names the availability, the reason and the route, because this
-surface does not start runs yet, and `tasks.recovery` carries that as `partial` in
-`frontend/contracts/frontend-contracts.json` rather than as a disabled button.
+discard that mirrors the backend's own `force` rule. **Resume is a handoff**: the panel
+takes `onResume`, and the Code surface's host fills the composer with the interrupted
+task's id and focuses that region, because a re-run is a `run-task` with the same id and
+that is exactly what the composer now posts (§12). The panel never starts a run itself,
+and a host that cannot start one still gets the verb, its reason and the route in words
+rather than a button that would do nothing — which is why `tasks.recovery` carries
+`partial` in `frontend/contracts/frontend-contracts.json`: resume is actioned from Code
+now, and Cowork and Design still have no surface to mount the panel in.
 
 ### 12.5 Stopping a task  *(new in 1.24)*
 

@@ -50,13 +50,15 @@ behavior in the browser.
   totals over all of it, the leftover checkout and what discarding it would lose, and
   whether a resume or a discard is available and why not; the Code surface now renders it
   (`components/RecoveryPanel`, mounted in the main region when the selected task's run is
-  interrupted) so a restart's leftovers are a screen rather than a badge. Two halves are
-  deliberately still open, and `tasks.recovery` stays `partial` for exactly those: the panel
-  **reports** resume with its reason and the route that performs it instead of offering a
-  button, because resuming an interrupted run is a **re-run** (`POST /api/{tool}/run-task`
-  with the same task id, whose provisioning re-attaches the leftover checkout) and no
-  surface can start a run yet; and Cowork and Design have no surfaces of their own, so only
-  Code mounts the panel. Of the rest of 1.31, the unattended-run notification and the
+  interrupted) so a restart's leftovers are a screen rather than a badge. **Resume became a
+  gesture on 2026-09-22**: resuming an interrupted run is a **re-run**
+  (`POST /api/{tool}/run-task` with the same task id, whose provisioning re-attaches the
+  leftover checkout), the Code composer now posts that route, and the panel hands the task
+  id to it (`onResume`) with the composer taking focus — one call, so the id is filled and
+  the region the id was filled in is the one the user is looking at. `tasks.recovery` stays
+  `partial` for the half that is left: Cowork and Design have no surfaces of their own, so
+  only Code mounts the panel, and a host without a run-starter still gets the verb, its
+  reason and the route in words instead of a dead button. Of the rest of 1.31, the unattended-run notification and the
   interactive-wait timeout both landed on 2026-09-21 (a prompt now expires after
   `approval_wait_ttl_hours`, default 72, and the Attention Center says so instead of
   announcing an allowance that was never applied); the **Design environment** remains, and it
@@ -100,9 +102,20 @@ behavior in the browser.
   Center's sentence now names the button it is telling the user to press. The route stays
   a `route-mismatch` row (the spec named `/resume`) — and it is worth noting what that
   cost: the client-half rule only requires a client of `implemented` rows, so this gap was
-  invisible to the gate and was found by hand. The related gap that remains is the one
-  under `tasks.recovery`: resuming an **interrupted** run is a re-run
-  (`POST /api/{tool}/run-task`), and no surface can start a run yet.
+  invisible to the gate and was found by hand. Resuming an **interrupted** run is a re-run
+  (`POST /api/{tool}/run-task`), which the Code composer has posted since 2026-09-22 and
+  which the recovery panel's resume verb hands to it; the gap that remains is the
+  `run-task` gap below.
+- **`run-task` had no ledger row, and the manifest said `frontend` anyway (found 2026-09-22).**
+  `POST /api/{tool}/run-task` is `exposure: "frontend"` in
+  `frontend/contracts/backend-routes.json` — a claim written when the manifest was first
+  generated — while `frontend-contracts.json` has no row for any of the three routes, so
+  the client-half rule had nothing to check and the claim could not have been wrong out
+  loud. Code posts it now (the Task composer, §12), which makes the Code half of that
+  manifest claim true; Cowork and Design still have no client, and adding ledger rows is a
+  review decision about the specification's inventory rather than a fix to make quietly.
+  Until then, the honest reading of `exposure: frontend` is *the frontend is meant to call
+  this*, not *the frontend does*.
 - **No client posts `POST /api/settings/reload-config` (1.28).** The route re-reads and
   validates the on-disk permissions and profiles on demand, caching nothing, and is covered by
   three route cases; nothing calls it, because there is no Settings surface at all (the same
