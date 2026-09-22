@@ -966,10 +966,10 @@ directly, 4 cases in 1 suite); the frontend's `+10` / `+1` is `ParkedTask.test.t
 taken with the whole suite, not by adding files to a previous run.
 
 **And once more on 2026-09-22, for the run-start surface: 1176 tests / 209 suites
-(backend, unchanged) and 246 tests / 40 files (frontend).** The frontend's `+12` / `+1`
-is measured rather than inferred: `StartTask.test.tsx` is a new file with 10 cases, and
+(backend, unchanged) and 247 tests / 40 files (frontend).** The frontend's `+13` / `+1`
+is measured rather than inferred: `StartTask.test.tsx` is a new file with 11 cases, and
 two existing files gained one each (`CodeTool.test.tsx` 10 → 11 for the resume handoff,
-`RecoveryPanel.test.tsx` 10 → 11 for the same reason) — 234 + 12 = 246. The backend
+`RecoveryPanel.test.tsx` 10 → 11 for the same reason) — 234 + 13 = 247. The backend
 total is the previous run's and is quoted as unchanged *because the increment's diff
 contains no `src/` or `test/` file*; the whole suite was re-run on this tree all the
 same and reported 1176 / 209 / 0.

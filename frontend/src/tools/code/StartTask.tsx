@@ -139,7 +139,14 @@ export function StartTask({ stream, onStarted }: { stream: StartStream; onStarte
 
       <p className={styles.notes}>
         {model.error !== null
-          ? `The model list could not be read: ${model.error}`
+          ? // The 404 this usually is, is `no_active_provider` — the model list is
+            // read per active provider, so an empty install fails *here* rather than
+            // returning an empty list, and "could not be read" would send the user
+            // looking for a broken provider instead of a missing one. The hook's own
+            // string is kept for every other failure.
+            model.activeProviderId === null && model.ready
+            ? 'No provider is enabled, so there is nothing to run on. Add one and enable it, then the model list appears here.'
+            : `The model list could not be read: ${model.error}`
           : model.ready && model.models.length === 0
             ? 'No active provider offers a model, so there is nothing to run on. Configure a provider and its model list first.'
             : 'The task runs in its own git worktree under worktrees/<task id>.'}{' '}

@@ -223,6 +223,21 @@ describe('starting a Code task from the surface', () => {
     expect(screen.getByRole('button', { name: 'Start task' })).toBeDisabled();
   });
 
+  it('names a missing provider rather than a broken model list', async () => {
+    // What an install with no providers actually answers: 404 `no_active_provider`
+    // for the model list, and a null provider on the active read.
+    stubFetch({
+      models: () =>
+        json({ error: { code: 'no_active_provider', message: 'No provider is enabled.', retryable: false } }, 404),
+      active: () => json({ provider: null, egress: 'local', redactionCheckEnabled: false, egressProxy: null, zdr: { status: null, requirement: 'off' } }),
+    });
+    renderSurface();
+
+    expect(await screen.findByText(/No provider is enabled, so there is nothing to run on/)).toBeInTheDocument();
+    expect(screen.queryByText(/could not be read/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Start task' })).toBeDisabled();
+  });
+
   it('re-reads the run when the stream closes without a result, and says what it found', async () => {
     stubFetch({
       // A stream that ends after the park frame: a task that stopped to ask a
