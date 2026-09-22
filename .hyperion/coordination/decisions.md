@@ -950,6 +950,27 @@ The route answers `{project, active, tasks, counts, unattributedActive}`. `unatt
 
 Numbers: migration `027` (`project_id` + `idx_task_runs_project`); `GET /api/projects/:id/tasks` (route snapshot **184**, was 183); `test/projecttasks.test.ts` **13 cases** and `test/migration027.test.ts` **3** — the latter builds a pre-`027` database from the migration files on disk, keeps a legacy row with `project_id` NULL, and proves `ON DELETE SET NULL` with foreign keys on, which is how the app runs them.
 
+## The `updatedAt` nobody could see, and the check that finds the next one (2026-09-22)
+
+The item before this one recorded a defect on its way past: `frontend/src/contracts/wire/projects.ts` required an `updatedAt` the backend has never sent — `listProjects()` returns `id, name, path, managed, createdAt, lastOpenedAt` — so every project response would have parsed as `invalid_response` the first time anything called that module. **Nothing called it**, which is why it survived a green `tsc`, a green frontend suite and a green `npm run contracts`: the static snapshot checks the route side of the boundary (does the path exist; is the row's status true) and never the shape.
+
+That is a class, not an incident, so this pass went looking for the rest of it. `frontend/scripts/check-wire.mjs` (`npm run wire`) boots the real app against a throwaway `HYPERION_HOME`, seeds deep fixtures, and parses every response it can with the frontend's own schemas — the real modules, bundled with esbuild because the frontend resolves extensionless imports and Node does not.
+
+**Result of the sweep: no other disagreement in the tree.** 51 checks over 35 response schemas, all matching, including the four project routes, the chat and message shapes, both provider reads against a loopback provider that really answers, the task-state vocabulary, the recovery report with its steps, provenance, the attention queue, the error envelope on two codes, and the one destructive storage route (`discardWorktree`, forced past a stated risk).
+
+Four rules make it evidence rather than ceremony, and each one earned itself here:
+
+1. **A collection must have a row in it.** An empty feed, an empty approval queue and a run with no steps all parse. The first draft of this check passed 34/34 with several collections empty — the checks now assert population, and the two that could not be populated turned out to be fixture defects of mine rather than schema defects.
+2. **A vocabulary must be observed, not assumed.** A *narrowed* enum still parses a one-value fixture. This one was caught by trying it: after the check was green, dropping `user_request` from `pauseReasonSchema` still passed, because only one pause reason appeared in any response. Fixed by pausing a chat run with each of the six reasons, seeding every message role and status, and reading the eight task-run states back; the mutation now fails, as does re-adding the `updatedAt` requirement.
+3. **Coverage is reported, not implied.** Every exported schema is cited by a check, listed as validated inside one, or listed with the reason it cannot be exercised — and one that is in none of the three fails the run. Two claims in my own lists were corrected rather than asserted: `approvalDecisionSchema` is an input vocabulary no response carries (moved to the not-exercised list with that reason), and each of the other 34 was verified mechanically to be embedded in a checked response.
+4. **The deliberate limits are stated where the check is.** The seven `chatSse*` payloads need a live model stream; the eleven attention kinds are printed rather than required, because producing all of them needs fixtures for sources this script has none of (a failed scheduled run, a disconnected MCP server). A check that cannot be satisfied is not a check.
+
+It is a script rather than a test in either suite, and that is a constraint: the frontend's `tsc` forbids the `.ts`-suffixed imports the backend uses, and the backend's Node test runner cannot resolve the extensionless imports the frontend uses. `frontend/scripts/*.mjs` — where the contract snapshot check already lived — is the one place both resolve.
+
+**What this changes about the earlier entry:** its claim stands (the defect was real and is fixed), but "fixed with a wire test that parses the shapes the routes actually return (9 cases)" described one module's fixture, not the class. The class now has a gate, and the gate has been shown to fail.
+
+Numbers: 35 response schemas parsed against the real backend across 51 responses, all matching; 8 schemas not exercised, each with a reason; two mutants killed (`updatedAt` required again → 4 checks red; `user_request` dropped → the paused-runs check red); both files restored byte-identical afterwards.
+
 ## The merge was blocked by an approval that could not be given (2026-09-22)
 
 PR #7 reported `mergeable: true` and would not merge, because `main`'s ruleset (id `23166873`) requires **one approving review** *plus* `require_extra_approval_for_unattributed_changes: true` — GitHub's own default on ruleset creation, not a field anybody chose here — and the ruleset has **no bypass actors**, so no account, admin included, can merge around it. The PR's author is `arena-ai-coding-agent[bot]`, which is what makes an approval possible at all (the owner is a different identity), but it left one approval available where two were required:

@@ -5764,3 +5764,54 @@ route itself including the deregistered-project case); `test/migration027.test.t
 — **3 cases** (a pre-`027` database built from the migration files on disk: legacy
 rows survive with NULL, `ON DELETE SET NULL` under enforced foreign keys, and a
 `project_id` naming no project is refused).
+
+## The frontend's schemas are checked against the backend that exists *(added 2026-09-22)*
+
+**Who depends on this:** every module in `frontend/src/contracts/wire/`, and every
+surface built on them. The frontend parses each response with a zod schema at the
+network boundary; a schema that disagrees with the backend is not a type error and
+not a test failure — it is an `invalid_response` thrown in a browser, in whichever
+surface is built on that module first.
+
+That is not hypothetical. `wire/projects.ts` required an `updatedAt` the backend has
+never sent. Nothing called the module, so nothing noticed: `tsc` was green, the
+frontend suite was green, and `npm run contracts` was green, because the static
+snapshot checks the **route** side of the boundary (does the path exist, is the row's
+status true) and not the shape.
+
+Two checked halves now, and neither is sufficient alone:
+
+- **`frontend/scripts/check-contracts.mjs`** (`npm run contracts`) — the snapshot:
+  routes, contract statuses, route pointers, SSE declarations, gaps.
+- **`frontend/scripts/check-wire.mjs`** (`npm run wire`) — the live parse: it boots
+  the real app against a throwaway `HYPERION_HOME`, seeds deep fixtures, and runs the
+  frontend's own schemas over the responses the routes really send.
+
+Three rules make the second one evidence rather than ceremony:
+
+1. **A collection must have a row in it.** An empty feed, an empty approval queue and
+   a run with no steps all parse, so every check that can be populated asserts it was;
+   a schema validated against `[]` proves nothing.
+2. **A vocabulary must be observed, not assumed.** An enum narrowed to one option
+   still parses a one-value fixture and then refuses a real response in production.
+   Every `PauseReason` (six), message role (four), message status (four) and task-run
+   state (eight, a vocabulary widened four times) is asserted to have appeared in a
+   real response in the run.
+3. **Coverage is reported, not implied.** Every exported schema is either cited by a
+   check, listed as validated inside one, or listed with the reason it cannot be
+   exercised — and a schema in none of those three fails the run, so a new wire module
+   has to be given a fixture or a stated reason rather than quietly skipped.
+
+Its limits are in the script and not left to be found later: the seven `chatSse*`
+payloads need a live model stream, and the attention kinds are printed rather than
+required, because producing all of them needs fixtures for sources the script has
+none of. Neither direction of mismatch is symmetric in cost — a schema missing a
+field the backend sends fails loudly on first use, while an enum *narrower* than the
+backend is the quiet one, which is why the value-level assertions exist.
+
+It runs as a script rather than as a test in either suite, and that is a constraint
+rather than a preference: the frontend's `tsc` cannot include backend sources (they
+import with `.ts` extensions, which its config forbids), and the backend's Node test
+runner cannot import frontend sources (they import without extensions, which Node
+does not resolve). `frontend/scripts/*.mjs` is the one place both resolve, which is
+where the contract check already lived.

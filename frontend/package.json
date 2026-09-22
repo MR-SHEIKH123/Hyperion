@@ -13,7 +13,8 @@
     "typecheck": "tsc -b --pretty false",
     "test": "vitest run",
     "lint": "eslint . --max-warnings 0",
-    "contracts": "node scripts/check-contracts.mjs"
+    "contracts": "node scripts/check-contracts.mjs",
+    "wire": "node scripts/check-wire.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.87.1",

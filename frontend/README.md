@@ -22,12 +22,18 @@ target.
 ## Gates
 
 ```bash
-npm run contracts
+npm run contracts   # the static snapshot: routes, contracts, SSE, gaps
+npm run wire        # the same boundary, live: real responses against the real schemas
 npm run typecheck
 npm run test
 npm run lint
 npm run build
 ```
+
+`npm run wire` boots the backend in-process and parses every response the frontend
+has a schema for, so a schema that disagrees with the backend fails here instead of
+in whichever surface is built on it first. It found the case it exists for: a
+required `updatedAt` the backend has never sent. Details in `contracts/README.md`.
 
 ## Architecture
 

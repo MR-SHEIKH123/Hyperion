@@ -84,3 +84,38 @@ clients use `${encodeURIComponent(id)}`), and the segment after `/api/` may be a
 interpolated tool (`api/tasks.ts` writes `/api/${tool}/tasks/...`, while the ledger
 spells each tool out because that is what the backend mounts). Anything else has to
 match literally.
+
+## The other half of the boundary: `npm run wire` (2026-09-22)
+
+Everything above checks the *route* side: that a path a client calls exists, that a
+row's status is true, that a pointer names its registration. None of it checks the
+**shape**: whether the schema in `src/contracts/wire/` accepts what the route
+actually sends. That gap produced this directory's own cautionary example —
+`wire/projects.ts` required an `updatedAt` the backend has never sent, so every
+project response would have parsed as `invalid_response` the first time anything
+called the module. Nothing called it, so nothing noticed. A `tsc` green run and a
+green `npm run contracts` were both true of that tree.
+
+`frontend/scripts/check-wire.mjs` closes it. It boots the real Express app on a
+random port against a throwaway `HYPERION_HOME`, seeds deep fixtures, and parses
+every real response with the frontend's *own* schema — not a copy, not an
+expectation written by hand:
+
+| property | why it is the property |
+| --- | --- |
+| the real server, from real migrations | a route's serialization is the thing under test, and a mock of it would agree with whatever the schema says |
+| deep fixtures, asserted | an empty feed, an empty approval queue and a run with no steps all parse, so each collection that can hold a row must hold one for the check to count |
+| value-level coverage, asserted | an enum *narrowed* to one option still parses a one-value fixture. Every `PauseReason`, message role, message status and task-run state is asserted to have appeared in a real response. Two mutants died on this: re-adding the `updatedAt` requirement, and dropping one `PauseReason` |
+| coverage reported, not implied | every exported schema is either cited by a check, listed as validated inside one, or listed with a stated reason it cannot be exercised (stream payloads need a live model). A schema in none of those three fails the run |
+
+Its limits are stated in the script rather than left to be discovered: the seven
+`chatSse*` payloads need a model to emit a stream, and the eleven attention kinds
+are *reported* rather than required, because producing all of them needs fixtures
+for sources the script has none of.
+
+It is deliberately a script rather than a test in either suite. The frontend's
+`tsc` cannot include backend sources (they import with `.ts` extensions, which its
+`allowImportingTsExtensions` does not permit), and the backend's Node test runner
+cannot import frontend sources (they import without extensions, which Node's
+resolver does not fill in). `scripts/*.mjs` is the one place both resolve — the
+same reason `check-contracts.mjs` lives there.
