@@ -1,0 +1,33 @@
+-- Which project a task run was scoped to when it started.
+--
+-- `task_runs` records what a run did and when, but never *where* it was working.
+-- Every other fact about a run is a fact about its own row; the directory is not,
+-- because the filesystem scope is a process-level setting (`active_project_id`)
+-- that can move while a run is in flight. So the question the shell asks before
+-- it switches away from a project — "what is still running in here?" — had no
+-- column to read, and the only way to answer it was to ask about every task the
+-- client happened to remember, one request each, and never learn about the ones
+-- it did not remember.
+--
+-- Nullable, and NULL has one meaning: **no project**. A run started with nothing
+-- open works in the default projects root, which is not a project row; and rows
+-- written before this migration have no scope recorded anywhere. The read that
+-- uses this column reports those runs as unattributed rather than folding them
+-- into whichever project happens to be open, because that is the one answer it
+-- cannot give truthfully — and "unattributed" can only go to zero for rows
+-- written from now on, which is stated rather than hidden.
+--
+-- Deliberately not `NOT NULL`, and deliberately not backfilled: guessing a
+-- project for an existing row from the current `active_project_id` would
+-- attribute old work to whichever project the user last opened, and a wrong
+-- attribution is worse than an absent one in a listing whose purpose is to stop
+-- somebody switching away from work in progress.
+--
+-- `ON DELETE SET NULL`: deregistering a project never touches the user's files,
+-- and it must not touch the record of what ran either. The run does not stop
+-- being a run because its directory came off the list; it stops naming a project.
+ALTER TABLE task_runs ADD COLUMN project_id TEXT REFERENCES projects (id) ON DELETE SET NULL;
+
+-- The listing's own access path — one project, filtered to the states that mean
+-- "still active" — and the same pair the unattributed count reads with NULL.
+CREATE INDEX idx_task_runs_project ON task_runs (project_id, state);

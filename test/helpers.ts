@@ -78,12 +78,29 @@ export interface MockBehaviour {
   /** Status to return from GET /models instead of a model list. */
   modelsFailStatus?: number;
   /**
+   * Puter's catalogue, as its two endpoints would answer.
+   *
+   * A second listing shape is needed because Puter's model catalogue is *not*
+   * `{base}/models`: it is a sibling path carrying `context` (the context window)
+   * and the vendor behind each model. `catalogueFailStatus` fails the rich
+   * endpoint so the documented fallback can be exercised.
+   */
+  catalogue?: { id: string; name?: string; provider?: string; context?: number }[];
+  catalogueFailStatus?: number;
+  /**
    * Raw body sent with `failStatus`/`modelsFailStatus`. Real gateways echo the
    * rejected credential here, which is exactly what must not reach the client.
    */
   failBody?: string;
   /** Fail only the first N stream requests, then behave normally. */
   failFirst?: number;
+  /**
+   * `Retry-After` header sent with a failing stream response.
+   *
+   * Real gateways send it with a 429, and it is the one thing a rate limit
+   * cannot be respected without, so the mock has to be able to say it.
+   */
+  retryAfter?: string;
   /** Emit these tokens, then abort the connection mid-stream. */
   truncateAfter?: number;
   /** Hang without responding, to exercise the timeout path. */
@@ -110,6 +127,14 @@ export interface MockProvider {
    * `tool_call_id`.
    */
   streamCalls: { model: string; body: Record<string, unknown> }[];
+  /**
+   * `Authorization` as received on the last stream request, or null.
+   *
+   * The credential path is otherwise unobservable from a test: a provider whose
+   * token never leaves the process looks identical, from the response alone, to
+   * one that sends it (Part 1.38).
+   */
+  lastAuthorization: string | null;
   modelCalls: number;
   behave(next: MockBehaviour): void;
   close(): Promise<void>;
@@ -125,11 +150,32 @@ export interface MockProvider {
 export async function startMockProvider(initial: MockBehaviour = {}): Promise<MockProvider> {
   let behaviour: MockBehaviour = { models: ['mock-model'], tokens: ['Hello', ' world'], ...initial };
   const streamCalls: { model: string; body: Record<string, unknown> }[] = [];
+  let lastAuthorization: string | null = null;
   let modelCalls = 0;
   let streamRequests = 0;
 
   const server = http.createServer((req, res) => {
     const url = req.url ?? '';
+
+    // Checked before `/models`: `/puterai/chat/models` also ends with `/models`.
+    if (url.endsWith('/puterai/chat/models/details') || url.endsWith('/puterai/chat/models')) {
+      const rich = url.endsWith('/details');
+      if (rich && behaviour.catalogueFailStatus !== undefined) {
+        res.writeHead(behaviour.catalogueFailStatus, { 'Content-Type': 'application/json' });
+        res.end(behaviour.failBody ?? JSON.stringify({ error: { code: 'subscription_required' } }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      const catalogue = behaviour.catalogue ?? [];
+      res.end(
+        JSON.stringify(
+          rich
+            ? catalogue.map((entry) => ({ provider: 'mock', ...entry }))
+            : { models: catalogue.map((entry) => entry.id) },
+        ),
+      );
+      return;
+    }
 
     if (url.endsWith('/models')) {
       modelCalls++;
@@ -152,6 +198,7 @@ export async function startMockProvider(initial: MockBehaviour = {}): Promise<Mo
       req.on('data', (chunk) => (body += chunk));
       req.on('end', () => {
         streamRequests++;
+        lastAuthorization = req.headers.authorization ?? null;
         const parsed = JSON.parse(body || '{}') as { model?: string };
         streamCalls.push({ model: parsed.model ?? '', body: parsed as Record<string, unknown> });
 
@@ -162,7 +209,10 @@ export async function startMockProvider(initial: MockBehaviour = {}): Promise<Mo
           (behaviour.failFirst === undefined || streamRequests <= behaviour.failFirst);
 
         if (shouldFail) {
-          res.writeHead(behaviour.failStatus ?? 500, { 'Content-Type': 'application/json' });
+          res.writeHead(behaviour.failStatus ?? 500, {
+            'Content-Type': 'application/json',
+            ...(behaviour.retryAfter === undefined ? {} : { 'Retry-After': behaviour.retryAfter }),
+          });
           res.end(behaviour.failBody ?? JSON.stringify({ error: { message: 'mock failure' } }));
           return;
         }
@@ -263,6 +313,9 @@ export async function startMockProvider(initial: MockBehaviour = {}): Promise<Mo
     streamCalls,
     get modelCalls() {
       return modelCalls;
+    },
+    get lastAuthorization() {
+      return lastAuthorization;
     },
     behave(next) {
       behaviour = { ...behaviour, ...next };

@@ -4,6 +4,9 @@ import {
   chatRunsResponseSchema,
   chatsResponseSchema,
   deletedResponseSchema,
+  chatContextSchema,
+  forkChatResponseSchema,
+  resumeInNewSessionResponseSchema,
   messagesPageSchema,
   openChatResponseSchema,
   pausedRunsResponseSchema,
@@ -70,6 +73,39 @@ export const unarchiveChat = (id: string, signal?: AbortSignal) =>
 /** Cursor-paginated transcript: `before` names a message id; feed `nextBefore` back. */
 export const listMessages = (chatId: string, params: { limit?: number; before?: string } = {}, signal?: AbortSignal) =>
   request(`/api/chat/${encodeURIComponent(chatId)}/messages` + qs({ limit: params.limit, before: params.before }), messagesPageSchema, { ...(signal === undefined ? {} : { signal }) });
+
+/**
+ * Branch a conversation (1.27's session fork). `upToMessageId` is **inclusive** —
+ * it names the last message the branch gets. Omit everything for a full copy;
+ * the branch's title defaults to `<source title> (fork)`.
+ */
+export const forkChat = (
+  id: string,
+  body: { upToMessageId?: string; title?: string; chatId?: string } = {},
+  signal?: AbortSignal,
+) =>
+  request(`/api/chat/${encodeURIComponent(id)}/fork`, forkChatResponseSchema, { method: 'POST', body, ...(signal === undefined ? {} : { signal }) });
+
+/**
+ * How full this conversation is (1.28). A read with no provider call: the window
+ * is the model's cached context length when something knows one, and the
+ * conservative default otherwise (`window.assumed` says which).
+ */
+export const getChatContext = (id: string, signal?: AbortSignal) =>
+  request(`/api/chat/${encodeURIComponent(id)}/context`, chatContextSchema, { ...(signal === undefined ? {} : { signal }) });
+
+/**
+ * Continue this conversation in a new session (1.28). The source is untouched —
+ * the messages left behind still exist there — and the response carries the
+ * receipt and the numbers. A conversation that already fits is refused with a
+ * `409` naming both, because a copy that drops nothing solves nothing.
+ */
+export const resumeInNewSession = (
+  id: string,
+  body: { title?: string; chatId?: string } = {},
+  signal?: AbortSignal,
+) =>
+  request(`/api/chat/${encodeURIComponent(id)}/resume-in-new-session`, resumeInNewSessionResponseSchema, { method: 'POST', body, ...(signal === undefined ? {} : { signal }) });
 
 export const getChatRuns = (chatId: string, signal?: AbortSignal) =>
   request(`/api/chat/${encodeURIComponent(chatId)}/runs`, chatRunsResponseSchema, { ...(signal === undefined ? {} : { signal }) });

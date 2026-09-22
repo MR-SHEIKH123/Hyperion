@@ -18,6 +18,9 @@ const { cleanupHome, freshDb } = await import('./helpers.ts');
 const { AppError } = await import('../src/util/errors.ts');
 const { createCoworkAgent, readKnowledgeSource, runCoworkTask } = await import('../src/services/cowork/agent.ts');
 const { saveKnowledgeSource } = await import('../src/services/cowork/knowledge.ts');
+const { listRunKnowledge } = await import('../src/db/runKnowledge.ts');
+const { setPluginAvailability } = await import('../src/db/plugins.ts');
+const { mcpPluginId } = await import('../src/services/plugins/availability.ts');
 
 type StreamPlan = { chunks?: StreamChunk[]; error?: unknown };
 
@@ -34,6 +37,9 @@ function context(
   let artifactIndex = 0;
   const ctx = {
     taskId: 'task-1',
+    // Provenance is per run (1.39 A6), so the context carries one exactly as the
+    // route does. A run with no id records nothing rather than failing.
+    runId: 'run-cowork-1',
     emit: (event: string, data: Record<string, unknown>) => events.push({ event, data }),
     llm: {
       async *stream(request: CompletionRequest): AsyncGenerator<StreamChunk, void, unknown> {
@@ -45,6 +51,10 @@ function context(
       async complete() { return { text: '', usage: { tokensIn: 0, tokensOut: 0 } }; },
     },
     saveArtifactVersion: () => ({ version: options.artifacts?.[artifactIndex++]?.version ?? 1 }),
+    // The agent binds an approval ticket to the workspace its tools resolve
+    // against (S1); Cowork's tools stay inside the projects scope, so the stub
+    // answers the same shape the real context does.
+    resolvePath: (candidate: string) => `/projects/demo/${candidate}`,
     signal: new AbortController().signal,
     log: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
   } as unknown as AgentContext;
@@ -86,7 +96,14 @@ function makeManager(
   return { manager: value, starts, listed, calls };
 }
 
-before(async () => { await freshDb(); });
+const { startTaskRun } = await import('../src/db/taskRuns.ts');
+
+before(async () => {
+  await freshDb();
+  // The run row the context names. Provenance has a foreign key to it, exactly as
+  // `task_steps` does: a record of what a run used needs a run.
+  startTaskRun({ runId: 'run-cowork-1', taskId: 'task-1', tool: 'cowork' });
+});
 after(async () => { await cleanupHome(); });
 
 describe('the additive Cowork agent', () => {
@@ -130,6 +147,18 @@ describe('the additive Cowork agent', () => {
     assert.match(system, /missing; not used as evidence/);
     assert.match(system, /binary; not used as evidence/);
     assert.match(system, /hash_mismatch; not used as evidence/);
+
+    // Provenance (1.39 A6) says the same thing the prompt does, and that is the
+    // point: "used" means evidence, so the consulted-but-unusable sources are
+    // absent rather than listed. A digest and a byte count come from the read
+    // itself, not from the source's registration.
+    const recorded = listRunKnowledge('run-cowork-1');
+    assert.deepEqual(
+      recorded.map((row) => row.sourceId),
+      [usable.id],
+    );
+    assert.equal(recorded[0]?.filename, 'guide.md');
+    assert.equal(recorded[0]?.sha256, null, 'this read did not report a digest, so none is claimed');
   });
 
   it('uses Wigolo only when enabled and running, and preserves MCP errors as results', async () => {
@@ -144,7 +173,7 @@ describe('the additive Cowork agent', () => {
     const result = await runCoworkTask(input(), run.ctx, {
       dependencies: {
         listKnowledgeSources: () => [],
-        findWigolo: () => ({ enabled: true }),
+        findWigolo: () => ({ id: 'wigolo-server', enabled: true }),
         getMcpProcessManager: () => live.manager,
         recallForTurn: async () => null,
       },
@@ -155,6 +184,32 @@ describe('the additive Cowork agent', () => {
     assert.deepEqual(live.starts, []);
     assert.deepEqual(live.calls, [{ name: 'wigolo', tool: 'search', args: { query: 'Hyperion' } }]);
     assert.match(run.requests[1]?.messages.find((message) => message.role === 'tool')?.content ?? '', /MCP tool reported an error/);
+  });
+
+  it('withholds Wigolo when the Plugins hub has it switched off for Cowork (1.34)', async () => {
+    // The switch is stored, not passed in: this is the same row the hub's route
+    // writes, read at the point the decision becomes behaviour. Saying a plugin
+    // is unavailable and then handing the model its tools anyway is the one
+    // outcome a hub must not have.
+    const wigoloId = 'wigolo-server';
+    setPluginAvailability(mcpPluginId(wigoloId), 'cowork', false);
+
+    const live = makeManager([{ name: 'WIGOLO', state: 'running' }], { content: [], isError: false });
+    const run = context([{ chunks: [token('I will work without Wigolo.')] }]);
+    const result = await runCoworkTask(input(), run.ctx, {
+      dependencies: {
+        listKnowledgeSources: () => [],
+        findWigolo: () => ({ id: wigoloId, enabled: true }),
+        getMcpProcessManager: () => live.manager,
+        recallForTurn: async () => null,
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(live.listed, [], 'the tools are not even listed');
+    assert.deepEqual(live.starts, []);
+    const prompt = run.requests[0]?.messages.map((message) => message.content).join('\n') ?? '';
+    assert.match(prompt, /switched off for Cowork in the Plugins hub/);
   });
 
   it('keeps Ask refusal, Plan actions, and Act artifact versions on the shared loop', async () => {
@@ -220,7 +275,16 @@ describe('Cowork knowledge reading', () => {
   it('reads a stored UTF-8 source through the scoped path and rejects unsupported bytes', async () => {
     const saved = saveKnowledgeSource({ filename: 'reference.md', buffer: Buffer.from('scoped text', 'utf8'), mimeType: 'text/markdown' });
     const usable = await readKnowledgeSource(saved);
-    assert.deepEqual(usable, { status: 'usable', text: 'scoped text' });
+    // A usable read reports the text *and* the identity of the bytes it read: the
+    // digest and the byte count are what a provenance row stores, and computing
+    // them only when a source happens to pin a digest would leave the common case
+    // unable to say which version of a file a run was given.
+    assert.deepEqual(usable, {
+      status: 'usable',
+      text: 'scoped text',
+      bytes: 11,
+      sha256: 'b36158d82c1a1cd721b437e9c7c1bea712e7881abba617fd8b8af3e96659fb55',
+    });
 
     const unsupported = await readKnowledgeSource({ ...saved, filename: 'reference.exe', mimeType: 'application/octet-stream' });
     assert.deepEqual(unsupported, { status: 'unsupported' });

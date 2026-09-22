@@ -9,6 +9,7 @@
  * `subagent_runs` lifecycle is their durable record.
  */
 import { randomUUID } from 'node:crypto';
+import path from 'node:path';
 
 import { finishSubagentRun, startSubagentRun } from '../../db/subagents.ts';
 import { sessionPermissionRules } from '../../db/approvals.ts';
@@ -17,7 +18,7 @@ import { runAgentLoop } from '../agent/loop.ts';
 import { createPermissionResolver } from '../agent/permissions.ts';
 import { assertKnownTools, permissionLayers, profileSelector, resolveProfile } from '../agent/profiles.ts';
 import { resolveContextWindow } from '../agent/compaction.ts';
-import { findCachedModel } from '../../providers/registry.ts';
+import { contextWindowFallback, contextWindowOverride, findCachedModel } from '../../providers/registry.ts';
 import { assertWithinSpendCap, TaskBudget } from '../limits/budget.ts';
 import {
   loadAgentProfile,
@@ -89,7 +90,7 @@ export interface CodeDependencies {
   assertWithinSpendCap?: typeof assertWithinSpendCap;
   startSubagentRun?: typeof startSubagentRun;
   finishSubagentRun?: typeof finishSubagentRun;
-  resolveContextWindow?: (input: { model?: ModelInfo; override?: number }) => ReturnType<typeof resolveContextWindow>;
+  resolveContextWindow?: (input: { model?: ModelInfo; override?: number; fallback?: number }) => ReturnType<typeof resolveContextWindow>;
   /** Test seam for the cache-only model lookup; production uses the registry. */
   findModel?: (modelId: string) => ModelInfo | null;
   unattended?: boolean;
@@ -224,6 +225,19 @@ async function runCodeInternal(
         ...(Object.keys(session).length === 0 ? {} : { session }),
       }),
       knownTools: new Set(allowed),
+      // Path rules are matched against the file the tools will touch, so the
+      // engine gets the same resolver they use. `resolvePath` answers absolutely
+      // and patterns are authored relative to the workspace, so the workspace root
+      // is resolved once here and subtracted per call. A path the run is not
+      // allowed to touch throws inside `canonicalPathSubject`'s try — the engine
+      // keeps the lexical form and lets the tool refuse it with its own coded
+      // error, rather than a permission check failing for a different reason.
+      pathResolver: (candidate) => {
+        const workspace = ctx.resolvePath('.');
+        const resolved = ctx.resolvePath(candidate);
+        const relative = path.relative(workspace, resolved).split(path.sep).join('/');
+        return relative === '' ? '.' : relative;
+      },
     });
 
     const policy = {
@@ -305,6 +319,8 @@ async function runCodeInternal(
     // Cache-only: a run start must not wait on a network call, and an
     // unknown model keeps the honest `assumed` default.
     const modelInfo = (runtime.dependencies.findModel ?? findCachedModel)(input.modelId);
+    const ceiling = contextWindowOverride();
+    const fallback = contextWindowFallback();
 
     const loop = await runAgentLoop({
       ...(runtime.depth === 0 && ctx.runId !== undefined ? { runId: ctx.runId } : {}),
@@ -314,6 +330,15 @@ async function runCodeInternal(
       profile,
       permissions,
       policy,
+      // What an approval ticket binds beyond the call itself (S1). The worktree
+      // root, not the requested path: the point of binding it is that a call
+      // approved in this worktree is not honoured in another one. A delegated
+      // child names the task it was delegated from, which is what makes "the same
+      // approval" mean the same delegation rather than merely the same arguments.
+      ticketBinding: {
+        workspace: projectRoot,
+        ...(runtime.depth === 1 ? { parentTaskId: runtime.shared.parentTaskId } : {}),
+      },
       run: runTool,
       // See cowork/agent.ts: the per-run flag wins, and the dependency survives
       // only as a test override.
@@ -323,9 +348,14 @@ async function runCodeInternal(
       context: {
         messages: () => messages,
         replace: (next) => { messages = [...next]; },
-        window: (runtime.dependencies.resolveContextWindow ?? resolveContextWindow)(
-          modelInfo === null ? {} : { model: modelInfo },
-        ),
+        window: (runtime.dependencies.resolveContextWindow ?? resolveContextWindow)({
+          ...(modelInfo === null ? {} : { model: modelInfo }),
+          // The provider's declared ceiling wins over the model list (1.28), and
+          // it is read here, at run start, for the same reason the cache is:
+          // neither may wait on the network.
+          ...(ceiling === undefined ? {} : { override: ceiling }),
+        fallback,
+        }),
       },
       turn: async (feedback) => {
         for (const item of feedback) {

@@ -4,42 +4,23 @@
  * The orchestrator owns capability and filesystem policy. This module owns the
  * process lifecycle after those checks have passed: shell selection, bounded
  * output, timeout handling, and terminating descendants left by a command.
+ *
+ * Every execution is registered with the process registry for its lifetime (S3),
+ * which is where its output now lives: the buffers belong to the entry, and this
+ * module reads them back through the ownership token it was handed at
+ * registration. That is deliberate rather than convenient — a second copy of the
+ * output here would be a second truth about what a running command has printed,
+ * and the entry is the one an audit or a status read is going to look at.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 
 import { AppError } from '../../util/errors.ts';
 import type { CommandResult, TerminalModule } from '../../types/core.ts';
+import { processRegistry, type ProcessRegistry } from './registry.ts';
 
 const DEFAULT_TIMEOUT_MS = 120_000;
-const MAX_OUTPUT_BYTES = 256 * 1024;
 const TIMEOUT_EXIT_CODE = 124;
-const TRUNCATION_MARKER = '\n[output truncated after 262144 bytes]\n';
 const KILL_GRACE_MS = 2_000;
-
-class OutputBuffer {
-  private readonly chunks: Buffer[] = [];
-  private size = 0;
-  private truncated = false;
-
-  append(chunk: Buffer): void {
-    if (this.truncated) return;
-    const remaining = MAX_OUTPUT_BYTES - this.size;
-    if (chunk.length <= remaining) {
-      this.chunks.push(chunk);
-      this.size += chunk.length;
-      return;
-    }
-
-    if (remaining > 0) this.chunks.push(chunk.subarray(0, remaining));
-    this.size = MAX_OUTPUT_BYTES;
-    this.truncated = true;
-  }
-
-  toString(): string {
-    const content = Buffer.concat(this.chunks).toString('utf8');
-    return this.truncated ? `${content}${TRUNCATION_MARKER}` : content;
-  }
-}
 
 function shellInvocation(command: string): { file: string; args: string[] } {
   if (process.platform === 'win32') {
@@ -93,7 +74,13 @@ function timeoutFrom(value: number | undefined): number {
   return timeoutMs;
 }
 
-export function createTerminalModule(): TerminalModule {
+/**
+ * The registry is injectable so a test can hold the tokens the module keeps to
+ * itself. Production takes the module singleton.
+ */
+export function createTerminalModule(options: { registry?: ProcessRegistry } = {}): TerminalModule {
+  const registry = options.registry ?? processRegistry;
+
   return {
     executeCommand(cwd, command, options): Promise<CommandResult> {
       const timeoutMs = timeoutFrom(options?.timeoutMs);
@@ -108,8 +95,7 @@ export function createTerminalModule(): TerminalModule {
         let timer: NodeJS.Timeout | undefined;
         let forceKillTimer: NodeJS.Timeout | undefined;
         let child: ChildProcess | undefined;
-        const stdout = new OutputBuffer();
-        const stderr = new OutputBuffer();
+        let execution: { id: string; token: string } | undefined;
 
         const cleanup = (): void => {
           if (timer !== undefined) clearTimeout(timer);
@@ -126,7 +112,10 @@ export function createTerminalModule(): TerminalModule {
 
         const abort = (): void => {
           if (settled) return;
-          if (child !== undefined) killProcessTree(child);
+          // The entry moves to `aborted` before the signal is sent, so a close
+          // event that races the kill cannot record the process as completed.
+          if (execution !== undefined) registry.abort(execution.id, execution.token);
+          else if (child !== undefined) killProcessTree(child);
           settled = true;
           cleanup();
           reject(new AppError('aborted', 'Command execution was cancelled.', { retryable: false }));
@@ -155,14 +144,31 @@ export function createTerminalModule(): TerminalModule {
           return;
         }
 
+        // Registered in the same tick as a successful spawn: the process exists
+        // before this line, and from this line it can be named, read and aborted.
+        execution = registry.register({
+          pid: child.pid ?? null,
+          taskId: options?.taskId ?? null,
+          runId: options?.runId ?? null,
+          sessionId: options?.sessionId ?? null,
+          workspace: cwd,
+          command,
+          terminate: () => {
+            if (child !== undefined) killProcessTree(child);
+          },
+        });
+
         child.stdout?.on('data', (chunk: Buffer | string) => {
-          stdout.append(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          if (execution !== undefined) registry.append(execution.id, execution.token, 'stdout', chunk);
         });
         child.stderr?.on('data', (chunk: Buffer | string) => {
-          stderr.append(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          if (execution !== undefined) registry.append(execution.id, execution.token, 'stderr', chunk);
         });
         child.once('error', (error: Error) => {
           if (settled) return;
+          if (execution !== undefined) {
+            registry.finish(execution.id, execution.token, { state: 'failed', exitCode: null });
+          }
           settled = true;
           cleanup();
           reject(new AppError('internal_error', 'The terminal process could not be started.', {
@@ -171,13 +177,18 @@ export function createTerminalModule(): TerminalModule {
           }));
         });
         child.once('close', (exitCode: number | null) => {
-          if (settled) return;
-          finish({
-            stdout: stdout.toString(),
-            stderr: stderr.toString(),
-            exitCode: timedOut ? TIMEOUT_EXIT_CODE : (exitCode ?? 1),
+          const active = execution;
+          if (settled || active === undefined) return;
+          const code = timedOut ? TIMEOUT_EXIT_CODE : (exitCode ?? 1);
+          registry.finish(active.id, active.token, {
+            // A process the timeout killed did not finish: it was terminated, and
+            // `timedOut` keeps that distinguishable from a caller's abort.
+            state: timedOut ? 'aborted' : code === 0 ? 'completed' : 'failed',
+            exitCode: code,
             timedOut,
           });
+          const { stdout, stderr } = registry.read(active.id, active.token);
+          finish({ stdout, stderr, exitCode: code, timedOut });
         });
 
         timer = setTimeout(() => {
@@ -185,14 +196,15 @@ export function createTerminalModule(): TerminalModule {
           timedOut = true;
           killProcessTree(child);
           forceKillTimer = setTimeout(() => {
-            if (settled) return;
-            child.kill('SIGKILL');
-            finish({
-              stdout: stdout.toString(),
-              stderr: stderr.toString(),
+            const active = execution;
+            if (settled || active === undefined) return;
+            registry.finish(active.id, active.token, {
+              state: 'aborted',
               exitCode: TIMEOUT_EXIT_CODE,
               timedOut: true,
             });
+            const { stdout, stderr } = registry.read(active.id, active.token);
+            finish({ stdout, stderr, exitCode: TIMEOUT_EXIT_CODE, timedOut: true });
           }, KILL_GRACE_MS);
         }, timeoutMs);
       });

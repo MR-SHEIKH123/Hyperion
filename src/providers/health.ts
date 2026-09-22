@@ -30,6 +30,7 @@
 import { env } from '../config/env.ts';
 import { AppError } from '../util/errors.ts';
 import { recordHealth } from './repository.ts';
+import { clearCooldown, resetAllCooldowns } from './cooldowns.ts';
 import { createLogger } from '../util/logger.ts';
 import type { HealthStatus } from '../types/core.ts';
 
@@ -138,17 +139,24 @@ export function consecutiveFailures(providerId: string): number {
 }
 
 /**
- * Forget everything known about a provider's health.
+ * Forget everything known about a provider's health — and its cooldown.
  *
- * Used when the user manually retries or edits a provider: an explicit user
- * action is a request to re-evaluate from scratch, and holding the old verdict
- * would make the retry button pointless.
+ * Used when the user manually retries, edits or deletes a provider: an explicit
+ * user action is a request to re-evaluate from scratch, and holding the old verdict
+ * would make the retry button pointless. Deleting is the extreme case of the same
+ * argument — the state is not stale but unreadable, and it would sit in this
+ * process under an id no row holds. That argument covers 1.36's cooldowns exactly,
+ * so this is the one place both are forgotten: a user who just fixed a rejected key
+ * must not wait out the hour the rejection bought, and a second entry point would
+ * be a second place to forget.
  */
 export function resetHealth(providerId: string): void {
   trackers.delete(providerId);
+  clearCooldown(providerId);
 }
 
 /** Test hook. */
 export function resetAllHealth(): void {
   trackers.clear();
+  resetAllCooldowns();
 }

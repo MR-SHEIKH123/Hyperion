@@ -5,6 +5,7 @@ import {
   deleteChat,
   deleteChats,
   findChat,
+  forkChat,
   listChats,
   listMessagePage,
   listMessages,
@@ -22,6 +23,7 @@ import { currentJob, isBusy, withLock } from '../orchestrator/lock.ts';
 import { latestRunForChat, listPausedRuns } from '../orchestrator/runState.ts';
 import { openStream } from '../orchestrator/sse.ts';
 import { exportChat } from '../services/export/index.ts';
+import { assessChatContext, resumeInNewSession } from '../services/chat/sessionResume.ts';
 import type { ToolName } from '../types/core.ts';
 import { AppError } from '../util/errors.ts';
 import { attachDownloadHeaders } from './download.ts';
@@ -38,8 +40,7 @@ import {
   body,
   pathParam,
   queryBool,
-  queryNumber,
-
+  queryLimit,
   queryString,
   requireTool,
 } from './params.ts';
@@ -142,7 +143,7 @@ chatRouter.get(
       tool: asTool(queryString(req, 'tool')),
       includeArchived: queryBool(req, 'includeArchived'),
       archivedOnly: queryBool(req, 'archivedOnly'),
-      limit: queryNumber(req, 'limit'),
+      limit: queryLimit(req, 'limit', { fallback: 200, max: 500 }),
     });
     res.json({ chats });
   }),
@@ -289,7 +290,7 @@ chatRouter.get(
     const chat = requireChat(id);
     res.json({
       chat,
-      messages: listMessages(id, queryNumber(req, 'limit') ?? 500),
+      messages: listMessages(id, queryLimit(req, 'limit', { fallback: 500, max: 500 })),
     });
   }),
 );
@@ -348,18 +349,43 @@ chatRouter.get(
     const id = pathParam(req, 'id');
     requireChat(id);
 
-    const limit = queryNumber(req, 'limit') ?? 50;
-    if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
-      throw new AppError('bad_request', 'limit must be an integer between 1 and 500.', {
-        details: { field: 'limit' },
-      });
-    }
+    const limit = queryLimit(req, 'limit', { fallback: 50, max: 500 });
 
     const page = listMessagePage(id, limit, queryString(req, 'before'));
     res.json({ messages: page.messages, nextBefore: page.nextBefore });
   }),
 );
 
+
+/**
+ * Branch a conversation (1.27's session fork).
+ *
+ * `201` with the new chat and the messages copied into it, so the client can open
+ * the branch without a second round trip. The source chat is not touched — see
+ * `forkChat` for why that is the contract rather than an implementation detail.
+ */
+chatRouter.post(
+  '/:id/fork',
+  wrap(async (req, res) => {
+    const id = pathParam(req, 'id');
+    const payload = body(req);
+    const upToMessageId = asOptionalString(payload.upToMessageId, 'upToMessageId');
+    const title = asOptionalString(payload.title, 'title');
+    const chatId = asOptionalString(payload.chatId, 'chatId');
+    const result = forkChat({
+      sourceId: id,
+      ...(upToMessageId === undefined ? {} : { upToMessageId }),
+      ...(title === undefined ? {} : { title }),
+      ...(chatId === undefined ? {} : { id: chatId }),
+    });
+    res.status(201).json({
+      chat: result.chat,
+      messages: result.messages,
+      forkedFrom: id,
+      pausedPartials: result.pausedPartials,
+    });
+  }),
+);
 
 /** Resets the idle timer used by the cleanup job. */
 chatRouter.post(
@@ -420,6 +446,46 @@ chatRouter.get(
       latest: latestRunForChat(id),
       paused: listPausedRuns(id),
     });
+  }),
+);
+
+/**
+ * How full this conversation is (1.28's detection half).
+ *
+ * A read, and always a 200 for a chat that exists: an empty conversation and one
+ * about to be refused are both answers. `window.assumed` is carried because the
+ * estimate is only as good as the limit it is compared against, and most
+ * OpenAI-compatible gateways do not report one.
+ */
+chatRouter.get(
+  '/:id/context',
+  wrap(async (req, res) => {
+    res.json(assessChatContext(pathParam(req, 'id')));
+  }),
+);
+
+/**
+ * Continue this conversation in a new session (1.28).
+ *
+ * `201` with the new chat, the receipt, the copied tail and the numbers the
+ * decision was made from. The source is untouched — nothing is deleted or
+ * truncated in it — so the part that was left behind still exists where it
+ * always did. A conversation that already fits is refused with a `409` naming
+ * the estimate and the window, because a copy that leaves nothing behind would
+ * solve nothing; see `services/chat/sessionResume.ts`.
+ */
+chatRouter.post(
+  '/:id/resume-in-new-session',
+  wrap(async (req, res) => {
+    const id = pathParam(req, 'id');
+    const payload = body(req);
+    const title = asOptionalString(payload.title, 'title');
+    const chatId = asOptionalString(payload.chatId, 'chatId');
+    const result = resumeInNewSession(id, {
+      ...(title === undefined ? {} : { title }),
+      ...(chatId === undefined ? {} : { id: chatId }),
+    });
+    res.status(201).json(result);
   }),
 );
 

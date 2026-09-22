@@ -251,16 +251,24 @@ warning and never blocks boot. Process lifecycle is the MCP supervisor's
   No special path anywhere.
 - **Never auto-enabled.** `enabled` stays body-only on create, so local detection
   can't switch one on; the user enables it manually.
-- **It is not Chat-Completions-compatible inbound.** opencodex's local proxy
-  accepts `GET /v1/models` and `POST /v1/responses` (Responses API) — not
-  `/v1/chat/completions`. So `openCodexAdapter` in `src/providers/adapters.ts`
-  delegates `listModels` to the OpenAI adapter but has its own `stream()` that
-  POSTs `/responses`, hoists `system` messages into `instructions`, and reads
-  `response.output_text.delta` frames. From the frontend's perspective the
-  streaming contract is unchanged.
+- **It speaks the Responses API natively, and that is the path this app uses.**
+  opencodex's local proxy serves `GET /v1/models` and `POST /v1/responses` as its
+  own data plane — the one Codex uses — and *also* advertises a translating
+  `POST /v1/chat/completions` compatibility surface for clients that speak only
+  chat-completions. (This line said the opposite until 2026-09-21: it claimed
+  chat-completions was rejected inbound, which the project's own documentation
+  contradicts — see the note in `src/providers/adapters.ts`.) So
+  `openCodexAdapter` delegates `listModels` to the OpenAI adapter but has its own
+  `stream()` that POSTs `/responses`, hoists `system` messages into
+  `instructions`, and reads `response.output_text.delta` frames — natively, rather
+  than asking the proxy to translate a protocol it treats as a compatibility
+  shim. From the frontend's perspective the streaming contract is unchanged.
 - **Setup, for the UI's help text**: the real npm package is
   `@bitkyc08/opencodex` (`npm i -g @bitkyc08/opencodex`), then `ocx init`, then
   `ocx start`. Default base URL `http://localhost:10100`. Note the bare `ocx`
-  package on npm is an unrelated project — don't install it.
+  package on npm is an unrelated project — don't install it. A non-loopback bind
+  wants opencodex's own admission token in `x-opencodex-api-key`; a key stored on
+  this provider type travels as `Authorization: Bearer`, so it is the loopback
+  case this type covers.
 
 

@@ -50,6 +50,12 @@
  * applies with more force here, because this layer can grant more than Plan mode
  * ever could.
  *
+ * **A path rule is matched against the file, not against the string the model
+ * wrote.** The file tools resolve their argument before touching disk, so
+ * `./secrets/k.txt` and `src/../secrets/k.txt` are one file; a rule matched
+ * against the raw argument would refuse one spelling and allow the other while
+ * the bytes landed in the same denied directory. See `canonicalPathSubject`.
+ *
  * **A write whose path or content looks like a credential is downgraded from
  * `allow` to `ask`.** This is not gated on `redaction_check_enabled`: that toggle
  * governs *outbound egress* (`services/safety/outbound.ts`), where the risk is a
@@ -58,6 +64,9 @@
  * tree*, where a false positive costs one confirmation and a false negative gets
  * committed. Different trade-off, different default.
  */
+
+import { createHash } from 'node:crypto';
+import path from 'node:path';
 
 import { findSensitive } from '../../util/redact.ts';
 import { compileGlob, normalizeGlob } from '../../util/glob.ts';
@@ -131,11 +140,18 @@ const WRITE_CAPABLE = new Set(['write', 'restore']);
  * Which argument a glob is matched against, per tool.
  *
  * A path for the file tools, the command line for `bash`, the declared selector
- * for `command`. Anything unlisted matches against the raw argument JSON, which
- * is a deliberately blunt fallback: it will not match a useful glob, so an
- * unlisted tool is effectively governed by its scalar rule only. That is the
- * right failure — a wrong guess about which field matters would silently apply a
- * path rule to something that is not a path.
+ * for `command`. Anything unlisted has **no subject at all** — `primaryArgument`
+ * returns `null`, and `matchLayer` then skips that tool's map rules entirely, so an
+ * unlisted tool is governed by its scalar rule only.
+ *
+ * That is deliberately *not* the "match against the raw argument JSON" fallback
+ * this comment used to describe. Matching a JSON blob against a glob would let
+ * `{"**": "allow"}` apply to a call that named nothing, and
+ * `test/permissions.test.ts` pins the refusal for exactly that case: a rule that
+ * matched by accident is the failure mode this engine exists to prevent. Where a
+ * tool's argument is knowable, name it here. An arbitrary MCP tool's argument shape
+ * is not knowable, and the honest reading of that is "path globs do not govern
+ * this tool" rather than a guess about which field might have been a path.
  */
 const PRIMARY_ARGUMENT: Record<string, string> = {
   read: 'path',
@@ -144,6 +160,21 @@ const PRIMARY_ARGUMENT: Record<string, string> = {
   bash: 'command',
   command: 'selector',
 };
+
+/**
+ * Tools whose primary argument names a file, derived from the table above so the
+ * two lists cannot drift apart.
+ *
+ * Only these get path treatment. A `bash` subject is a command line, and running
+ * one through a path normaliser would rewrite the command — `cat a/../b` would
+ * become `b` — which is a rule matching something the user did not write. What a
+ * pattern means has to follow from what the argument *is*.
+ */
+const PATH_ARGUMENT_TOOLS = new Set(
+  Object.entries(PRIMARY_ARGUMENT)
+    .filter(([, field]) => field === 'path')
+    .map(([tool]) => tool),
+);
 
 /**
  * Turn a dotted MCP wire name into a permission key: `wigolo.search` →
@@ -227,6 +258,72 @@ interface RuleMatch {
 }
 
 /**
+ * The string a rule is matched against for this call.
+ *
+ * Path tools get their path canonicalized; everything else keeps the raw
+ * argument with separators unified, because a command line or a prompt is not a
+ * path and must not be rewritten. `null` means the call named nothing to match —
+ * see `primaryArgument`.
+ */
+function subjectFor(call: ToolCall, pathResolver?: (candidate: string) => string): string | null {
+  const subject = primaryArgument(call);
+  if (subject === null) return null;
+  if (!PATH_ARGUMENT_TOOLS.has(call.name)) return subject.replace(/\\/g, '/');
+  return canonicalPathSubject(subject, pathResolver);
+}
+
+/**
+ * The canonical spelling of a path subject, so a rule governs the *file* rather
+ * than one way of writing it.
+ *
+ * The file tools resolve their argument before touching disk — `ctx.resolvePath`,
+ * then the same containment check the write itself performs — so
+ * `./secrets/k.txt`, `src/../secrets/k.txt` and an absolute path inside the
+ * workspace all name one file. Matching the raw argument instead would let any
+ * respelling step around a rule written for the canonical one:
+ * `{"secrets/**": "deny"}` would refuse `secrets/k.txt` and allow
+ * `./secrets/k.txt`, and the write would land in exactly the directory the user
+ * denied. Same failure, same shape, as a permission *key* that silently fails to
+ * match the tool it was written for — the class S12 closed for MCP names.
+ *
+ * Two passes, cheapest first:
+ *
+ *   1. **Lexical.** Backslashes become separators, `.`/`..` segments collapse,
+ *      duplicate separators fold, and a trailing slash goes. No filesystem, and it
+ *      closes every relative respelling.
+ *   2. **The caller's resolver**, when supplied — the same function the file tools
+ *      call, reduced to a workspace-relative path. That is what closes an absolute
+ *      or symlinked spelling, because it is realpath work and only the caller knows
+ *      which root the run is confined to. See `EvaluateInput.pathResolver`.
+ *
+ * A resolver that *refuses* the path (it escapes the scope) is deliberately not an
+ * error here: the tool refuses it with its own coded error moments later, so the
+ * lexical form stands and this function never turns a permission check into a
+ * different failure. A leading `..` on a relative subject is left in place for the
+ * same reason — it cannot be popped lexically without inventing a root, and the
+ * scope check is what actually refuses it.
+ */
+function canonicalPathSubject(
+  subject: string,
+  pathResolver?: (candidate: string) => string,
+): string {
+  const unified = subject.replace(/\\/g, '/');
+  const normalized = path.posix.normalize(unified);
+  // posix.normalize answers '.' for an empty string; a bare './' is the workspace
+  // root, and saying so is more honest than matching the empty string.
+  const trimmed =
+    normalized.length > 1 && normalized.endsWith('/') ? normalized.replace(/\/+$/, '') : normalized;
+  const lexical = trimmed === '' ? '.' : trimmed;
+
+  if (pathResolver === undefined) return lexical;
+  try {
+    return pathResolver(lexical).replace(/\\/g, '/');
+  } catch {
+    return lexical;
+  }
+}
+
+/**
  * Apply one layer's rules to one call.
  *
  * `undefined` means the layer said nothing and evaluation falls through. That is
@@ -247,13 +344,15 @@ function matchLayer(
     // A map rule needs something to match. Longest pattern first, so a specific
     // `src/**` beats a `*` in the same object regardless of key order — object
     // key order is an authoring accident, not a precedence declaration.
+    //
+    // `subject` arrives already canonical (`subjectFor`): separators unified, and
+    // for a path tool resolved to the file the call will touch.
     if (subject === null) continue;
-    const normalizedSubject = subject.replace(/\\/g, '/');
     const patterns = Object.keys(rule).sort((a, b) => b.length - a.length);
     for (const pattern of patterns) {
       const action = rule[pattern];
       if (action === undefined) continue;
-      if (pattern === ANY_TOOL || compileGlob(normalizeGlob(pattern, 'permissions')).test(normalizedSubject)) {
+      if (pattern === ANY_TOOL || compileGlob(normalizeGlob(pattern, 'permissions')).test(subject)) {
         return { action, pattern };
       }
     }
@@ -273,6 +372,21 @@ export interface EvaluateInput {
   layers: readonly PermissionLayerInput[];
   /** Tool names the agent actually registered. An unlisted name is denied. */
   knownTools: ReadonlySet<string>;
+  /**
+   * The agent's own path resolver, reduced to a workspace-relative path.
+   *
+   * Optional, and the only thing a caller has to add to make path rules exact.
+   * Without it, path subjects still get the lexical pass, which covers every
+   * relative respelling; with it, they are resolved the way the file tools resolve
+   * them, so an absolute or symlinked spelling of a denied file is denied too. The
+   * Code adapter passes `ctx.resolvePath` on both sides of a `path.relative`,
+   * because patterns are authored relative to the workspace while `resolvePath`
+   * answers absolutely.
+   *
+   * It must not throw on paths the run is not allowed to touch — see
+   * `canonicalPathSubject`, which falls back to the lexical form if it does.
+   */
+  pathResolver?: (candidate: string) => string;
 }
 
 /**
@@ -308,7 +422,7 @@ export function evaluate(input: EvaluateInput): PermissionVerdict {
     return { action: 'deny', layer: 'builtin', pattern: null, key };
   }
 
-  const subject = primaryArgument(input.call);
+  const subject = subjectFor(input.call, input.pathResolver);
   let verdict: PermissionVerdict = { action: 'deny', layer: 'builtin', pattern: null, key };
 
   for (const { layer, rules } of input.layers) {
@@ -335,6 +449,36 @@ export function evaluate(input: EvaluateInput): PermissionVerdict {
 }
 
 /**
+ * The effective stack's own revision (S1).
+ *
+ * An approval binds the permission configuration that was in effect when the user
+ * was asked, so the same stack has to be recognisable later. This is a hash of the
+ * *resolved* layers — each layer's name and rules, in evaluation order — plus the
+ * tool set, because that is what "the configuration" means to an evaluation: two
+ * spellings of one rule file that resolve to the same rules are the same
+ * configuration, and a rule added to a layer the run never consults is not a change
+ * to *this* run's authority.
+ *
+ * Deliberately not a counter in the settings table. A counter would need every
+ * writer of every permission source to remember to bump it — a project file is
+ * edited in an editor, not through this process — and a revision nobody bumps is
+ * worse than none, because it reads as a check. A hash of the resolved rules is
+ * derived from the same inputs the engine itself uses, so it cannot disagree with
+ * them.
+ */
+export function permissionRevision(input: {
+  layers: readonly PermissionLayerInput[];
+  knownTools: ReadonlySet<string>;
+}): string {
+  const parts = input.layers.map(({ layer, rules }) => {
+    const keys = Object.keys(rules).sort();
+    return `${layer}:${keys.map((key) => `${key}=${JSON.stringify(rules[key])}`).join(';')}`;
+  });
+  parts.push(`tools:${[...input.knownTools].sort().join(',')}`);
+  return createHash('sha256').update(parts.join('|'), 'utf8').digest('hex').slice(0, 32);
+}
+
+/**
  * Bind a layer stack to a resolver the loop can call per tool call.
  *
  * The stack is assembled once per run, not per call: the project file is read at
@@ -344,10 +488,36 @@ export function evaluate(input: EvaluateInput): PermissionVerdict {
 export function createPermissionResolver(input: {
   layers: readonly PermissionLayerInput[];
   knownTools: ReadonlySet<string>;
-}): (call: { call: ToolCall; effect: ToolEffect }) => PermissionVerdict {
+  /** See `EvaluateInput.pathResolver` — bound here so the loop's hot path stays one call. */
+  pathResolver?: (candidate: string) => string;
+}): RevisionedResolver {
   assertNoPermissionKeyCollisions(input.knownTools);
-  return ({ call, effect }) =>
-    evaluate({ call, effect, layers: input.layers, knownTools: input.knownTools });
+  const resolver: RevisionedResolver = ({ call, effect }) =>
+    evaluate({
+      call,
+      effect,
+      layers: input.layers,
+      knownTools: input.knownTools,
+      ...(input.pathResolver === undefined ? {} : { pathResolver: input.pathResolver }),
+    });
+  // Carried on the resolver rather than returned beside it, because the resolver is
+  // the only object that is *provably* the stack the engine will consult. An agent
+  // that resolved its layers somewhere else and computed a revision from a second
+  // reading would be checking a rule file against itself (S1).
+  resolver.revision = permissionRevision({ layers: input.layers, knownTools: input.knownTools });
+  return resolver;
+}
+
+/**
+ * A resolver plus the revision of the stack behind it.
+ *
+ * The revision is what an approval ticket binds, so it has to come from the same
+ * layers the engine evaluates against — see `permissionRevision` for why it is a
+ * hash of the resolved rules rather than a counter somebody has to remember to bump.
+ */
+export interface RevisionedResolver {
+  (call: { call: ToolCall; effect: ToolEffect }): PermissionVerdict;
+  revision?: string;
 }
 
 /** A one-line, loggable statement of who decided and how. */

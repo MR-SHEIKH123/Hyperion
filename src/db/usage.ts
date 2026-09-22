@@ -13,8 +13,9 @@
  */
 
 import { getDb } from './adapter.ts';
+import { findChat } from './chats.ts';
 import { isTemporaryChat } from './temporaryChats.ts';
-import { classifyProviderType } from '../services/safety/outbound.ts';
+import { classifyProviderType, egressClassFor, tryEgressProxy } from '../services/safety/outbound.ts';
 import { zdrPreferenceUnmet } from '../services/safety/zdr.ts';
 import { isZdrRequirement } from '../types/core.ts';
 import { createLogger } from '../util/logger.ts';
@@ -31,6 +32,33 @@ export interface RecordUsageInput {
   modelId: string;
   providerId?: string | null;
   providerName?: string | null;
+  /**
+   * The task this request belongs to, and the run that made it (v4 §6.2).
+   *
+   * Two keys rather than one, because they answer different questions: `taskId`
+   * attributes the spend to the work, while `runId` names the execution, which is
+   * what the activity feed and the task-state route report on.
+   *
+   * A delegated child's requests carry **both of its parent's keys**, and that is
+   * worth stating because it was documented the other way. `childContext` hands the
+   * child the parent's `llm`, so the wrapper that calls `recordUsage` closes over
+   * the identity of the run that built the context — the parent's `taskId` *and* the
+   * parent's `runId`. A task total therefore includes what its subagents spent
+   * (true as previously documented) and so does the parent *run*'s figure, which the
+   * activity feed reports per entry. A child's own spend is not separable from its
+   * parent's today; that is why a `subagent` feed entry carries `spend: null` rather
+   * than a share, and why a nested per-child figure would need a new key rather than
+   * a new reading of these two.
+   *
+   * `runId` is also absent for scheduled runs whose execution row is allocated by
+   * the scheduler: the scheduler does pass one (`startRun`'s id is the same id),
+   * so a scheduled run is attributed like any other.
+   *
+   * Optional and stored as NULL when absent, for the same reason `providerType`
+   * is — a caller that cannot say must not lose its spend row.
+   */
+  taskId?: string | null;
+  runId?: string | null;
   /**
    * The provider's type at the time of the request (Part 1.23).
    *
@@ -53,7 +81,34 @@ export interface RecordUsageInput {
   zdrRequirement?: ZdrRequirement | null;
   tokensIn: number;
   tokensOut: number;
+  /**
+   * The optional accounting fields from `TokenUsage` (1.28): prompt tokens the
+   * provider served from its own cache, prompt tokens it wrote into that cache,
+   * and thinking tokens it counted separately.
+   *
+   * `undefined` means the provider said nothing and is stored as NULL — which is
+   * not the same as a reported zero. A query for "how much of this was cached"
+   * has to be able to tell a month nobody measured from a month with no hits.
+   */
+  cacheReadTokens?: number | null;
+  cacheWriteTokens?: number | null;
+  reasoningTokens?: number | null;
   status?: 'ok' | 'error' | 'partial';
+  /**
+   * Wall-clock time inside the provider request, in milliseconds.
+   *
+   * Written by every caller that makes one — the chat turn and the three agent
+   * context paths — and until 1.30 nothing read it back: the column has been
+   * filled on every row since the log existed and appeared in no read, no
+   * document and no screen. `UsageBucket` now carries it.
+   *
+   * Optional and NULL when absent, and **0 is a measurement**: a request that
+   * returned in under a millisecond recorded a duration, and a bucket that
+   * counted it as silence would report a floor of "not measured" for exactly the
+   * fastest provider. The row's `status` is stored beside it, so a duration on a
+   * failed row is a failed attempt's duration rather than a missing success —
+   * which is the fact `byProvider` needs to answer "is this endpoint slow".
+   */
   durationMs?: number | null;
 }
 
@@ -64,6 +119,10 @@ export function findPrice(
 ): { inputPer1m: number; outputPer1m: number } | null {
   const db = getDb();
   // Provider-specific price wins; a NULL provider_id row is the global default.
+  // Both are unique per model — `(model_id, provider_id)` for the specific case
+  // and a partial index for the global one (018) — so the ORDER BY picks between
+  // rows that mean different things rather than arbitrarily choosing between two
+  // rows that mean the same thing.
   const row = db
     .prepare<{ input_per_1m_usd: number; output_per_1m_usd: number }>(
       `SELECT input_per_1m_usd, output_per_1m_usd
@@ -89,6 +148,29 @@ export function computeCost(
 }
 
 /**
+ * The two provider facts the egress class needs, read at write time.
+ *
+ * A narrow `SELECT` rather than `findProvider` because that one is allowed to
+ * throw: this runs inside `recordUsage`'s catch-all, and a throwing lookup would
+ * turn "no such provider" into "no usage row at all". `undefined` means the row
+ * does not exist, which is answered rather than guessed at by the caller.
+ */
+function providerFacts(
+  providerId: string | null,
+): { type: string; base_url: string; egress_proxy: string | null } | undefined {
+  if (providerId === null) return undefined;
+  try {
+    return getDb()
+      .prepare<{ type: string; base_url: string; egress_proxy: string | null }>(
+        `SELECT type, base_url, egress_proxy FROM providers WHERE id = ?`,
+      )
+      .get(providerId);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Appends a usage row. Never throws — a failure to log spend must not fail the
  * request that produced it.
  *
@@ -107,10 +189,79 @@ export function computeCost(
  * The second is privacy. A temporary chat's id must not reach disk at all, or a
  * row in `usage_log` would attest that a private session happened, and when —
  * which is metadata the user asked not to keep.
+ *
+ * The same reasoning governs `provider_id`, and it was learned the same way:
+ * the column is `REFERENCES providers (id) ON DELETE SET NULL`, so the schema
+ * already says what a link to a deleted provider means — NULL. A caller that
+ * names an id with no row is in exactly that state already; the FK failure would
+ * only add the loss of the spend row. The link is therefore resolved here too,
+ * and the egress class is stamped from the provider's actual URL rather than
+ * from its type alone.
+ *
+ * A third case turned up with the per-task accounting in v4 §6.2, and it is the
+ * same bug wearing different clothes: **a chat id with no chat row behind it.**
+ * The FK is real, so the insert raised SQLITE_CONSTRAINT, the catch swallowed it,
+ * and the spend vanished — silently, and only for the callers whose chat id is
+ * not guaranteed to exist. The agent path is exactly such a caller (`chatId` is
+ * whatever the client sent; `linkedChatId` in `http/agents.ts` nulls it for the
+ * *task run* row for this very reason). So the linkage is resolved here rather
+ * than trusted: an id with no row is not a link to anything, and is stored as
+ * NULL with the spend kept. `message_id` follows `chat_id`, since a message
+ * without its chat is not a link either.
  */
+/** Sum two optional counts, keeping "nothing reported" as nothing reported. */
+function addNullable(a: number | null, b: number | null): number | null {
+  if (a === null) return b;
+  if (b === null) return a;
+  return a + b;
+}
+
+/**
+ * The larger of two optional figures, keeping "nothing measured" as nothing.
+ *
+ * `Math.max(null, 5)` is 5 only because a null is coerced to 0, which would make a
+ * merge report a smallest-ever duration of 0 ms for a bucket nobody measured. The
+ * merge is where that has to be handled explicitly, so it is.
+ */
+function maxNullable(a: number | null, b: number | null): number | null {
+  if (a === null) return b;
+  if (b === null) return a;
+  return Math.max(a, b);
+}
+
+/** A reported count as a column value: `null` for "said nothing", rounded otherwise. */
+function optionalCount(value: number | null | undefined): number | null {
+  if (value === null || value === undefined || !Number.isFinite(value)) return null;
+  return Math.max(0, Math.round(value));
+}
+
 export function recordUsage(input: RecordUsageInput): void {
   try {
     const cost = computeCost(input.modelId, input.providerId ?? null, input.tokensIn, input.tokensOut);
+    const facts = providerFacts(input.providerId ?? null);
+    // A provider id with no row behind it is not a link to anything — the same
+    // call the chat linkage below makes, for the same reason. `ON DELETE SET
+    // NULL` means the schema already treats a departed provider as NULL.
+    const providerId = facts === undefined ? null : input.providerId ?? null;
+    // Stamped at write time, like the type beside it: a provider's URL can be
+    // edited or the row deleted, and history must not change retroactively. A
+    // local-typed provider whose URL is not this machine is `remote`, which is
+    // the whole point — see `egressClassFor`.
+    const egress = egressClassFor({
+      type: (input.providerType ?? facts?.type ?? null) as ProviderType | null,
+      baseUrl: facts?.base_url ?? null,
+      // The proxy is part of the route, not an extra: a request to a loopback
+      // provider that is tunnelled through a proxy elsewhere left the machine
+      // (Part 1.37), and a row that classified it `local` would understate egress
+      // — the one direction this classification refuses to fail in.
+      egressProxy: facts?.egress_proxy ?? null,
+    });
+    // The audit stamp is `host:port` with no credentials: the question it answers
+    // is where the bytes went, and a usage row is exported and aggregated far
+    // more widely than the providers table is read. A proxy that cannot be parsed
+    // stamps NULL rather than the raw string — an audit value that might be a
+    // password must never be written on a guess.
+    const egressProxy = tryEgressProxy(facts?.egress_proxy ?? null)?.authority ?? null;
     const temporary = input.chatId != null && isTemporaryChat(input.chatId);
     if (temporary) {
       // The cost is the point of the row, so log that it was kept while the
@@ -120,24 +271,37 @@ export function recordUsage(input: RecordUsageInput): void {
         modelId: input.modelId,
       });
     }
+    // A chat id that names no row would fail the FK and take the whole row with
+    // it. Checked once, here, so every caller is covered — including the ones
+    // that cannot know whether their chat id exists.
+    const unlinked = temporary || (input.chatId != null && findChat(input.chatId) === null);
+    if (!temporary && unlinked) {
+      log.debug('recording usage with no chat behind the id it named', {
+        tool: input.tool,
+        modelId: input.modelId,
+      });
+    }
     getDb()
       .prepare(
         `INSERT INTO usage_log
            (chat_id, message_id, tool, model_id, provider_id, provider_name, provider_type,
-            zdr_status, zdr_requirement, tokens_in, tokens_out, cost_usd, status, duration_ms,
-            created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            provider_egress, egress_proxy, zdr_status, zdr_requirement, tokens_in, tokens_out,
+            cache_read_tokens, cache_write_tokens, reasoning_tokens,
+            cost_usd, status, duration_ms, task_id, run_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
-        temporary ? null : input.chatId ?? null,
-        temporary ? null : input.messageId ?? null,
+        unlinked ? null : input.chatId ?? null,
+        unlinked ? null : input.messageId ?? null,
         input.tool,
         input.modelId,
-        input.providerId ?? null,
+        providerId,
         input.providerName ?? null,
         // Stamped at write time rather than joined on read: a provider row can be
         // retyped or deleted afterwards, and history must not change retroactively.
         input.providerType ?? null,
+        egress,
+        egressProxy,
         // Same rule, and it matters more here: a provider's recorded ZDR support
         // can be edited or attested at any time, and a row that re-derived its
         // status on read would silently restate history as the current settings.
@@ -145,9 +309,16 @@ export function recordUsage(input: RecordUsageInput): void {
         input.zdrRequirement ?? null,
         Math.max(0, Math.round(input.tokensIn)),
         Math.max(0, Math.round(input.tokensOut)),
+        // Nullable on purpose: absent stays NULL, and a reported `0` is kept as
+        // the measurement it is. Rounding mirrors the two required counts.
+        optionalCount(input.cacheReadTokens),
+        optionalCount(input.cacheWriteTokens),
+        optionalCount(input.reasoningTokens),
         cost,
         input.status ?? 'ok',
         input.durationMs ?? null,
+        input.taskId ?? null,
+        input.runId ?? null,
         Date.now(),
       );
   } catch {
@@ -188,6 +359,54 @@ export interface UsageBucket {
   costUsd: number;
   /** Rows whose model/provider pair has no price entry. */
   unpricedRequests: number;
+  /**
+   * Prompt tokens the provider served from its own cache (1.28), summed over the
+   * rows that reported any. `null` when no row in the bucket reported a figure —
+   * which is not zero, and must not be shown as one.
+   */
+  cacheReadTokens: number | null;
+  /** Prompt tokens written into that cache, same rule. */
+  cacheWriteTokens: number | null;
+  /** Thinking tokens counted separately, same rule. */
+  reasoningTokens: number | null;
+  /**
+   * Share of prompt tokens served from cache: `cacheReadTokens / tokensIn`.
+   *
+   * `null` when nothing reported cache reads, so the UI says "not reported"
+   * rather than 0%.
+   *
+   * Read the direction of its error before quoting it: on gateways where
+   * `prompt_tokens` *includes* the cached part, `tokensIn` is the larger number
+   * and the rate is a floor (conservative); on gateways that report the cached
+   * part beside the uncached prompt, it is the literal share. Nothing here sums
+   * `cacheReadTokens` into `tokensIn` — see `TokenUsage` for why that is the
+   * safer mistake to make.
+   */
+  cacheHitRate: number | null;
+  /** Rows that reported cache reads at all — the denominator's caution. */
+  rowsWithCacheReporting: number;
+  /**
+   * How long the provider request took, which `usage_log.duration_ms` has recorded
+   * since the log existed and nothing has ever read.
+   *
+   * Same rule as every other optional measure here: **silence is not zero.** A
+   * bucket whose rows recorded no duration answers `null` and says
+   * `rowsWithDuration: 0`, because "we did not measure" and "it took no time" are
+   * different claims and only one of them is ever true.
+   *
+   * Unlike the token counts, these rows include the **failed and partial**
+   * requests, and that is deliberate rather than an oversight. Excluding them
+   * would produce the flattering number: the endpoint that hangs for two minutes
+   * before dying is slower than the one that fails in 40 ms, and "how slow is this
+   * provider" is a question that has to include the requests nobody got an answer
+   * from. `byProvider`/`byModel` are where that matters, and a reader that wants
+   * success-only latency has to say so and mean it — no reader this build has does.
+   */
+  rowsWithDuration: number;
+  /** Mean of the rows that recorded one, rounded; `null` when none did. */
+  meanDurationMs: number | null;
+  /** The slowest of them — a mean hides the request that hung. */
+  slowestDurationMs: number | null;
 }
 
 export interface UsageSummary {
@@ -208,6 +427,13 @@ interface AggRow {
   tokens_out: number;
   cost_usd: number | null;
   unpriced: number;
+  cache_read: number | null;
+  cache_write: number | null;
+  reasoning: number | null;
+  cache_reported: number;
+  duration_total: number | null;
+  duration_max: number | null;
+  duration_rows: number;
 }
 
 function where(query: UsageQuery): { sql: string; values: (string | number)[] } {
@@ -245,17 +471,46 @@ const AGG_COLUMNS = `
   COALESCE(SUM(tokens_in), 0)                    AS tokens_in,
   COALESCE(SUM(tokens_out), 0)                   AS tokens_out,
   COALESCE(SUM(cost_usd), 0)                     AS cost_usd,
-  SUM(CASE WHEN cost_usd IS NULL THEN 1 ELSE 0 END) AS unpriced
+  SUM(CASE WHEN cost_usd IS NULL THEN 1 ELSE 0 END) AS unpriced,
+  SUM(cache_read_tokens)                        AS cache_read,
+  SUM(cache_write_tokens)                       AS cache_write,
+  SUM(reasoning_tokens)                         AS reasoning,
+  SUM(CASE WHEN cache_read_tokens IS NULL THEN 0 ELSE 1 END) AS cache_reported,
+  -- SUM and MAX are NULL exactly when no row recorded a duration, which is the
+  -- answer the bucket wants; the count beside them is what says whether the two
+  -- figures describe the whole bucket or a corner of it.
+  SUM(duration_ms)                              AS duration_total,
+  MAX(duration_ms)                              AS duration_max,
+  SUM(CASE WHEN duration_ms IS NULL THEN 0 ELSE 1 END) AS duration_rows
 `;
 
 function mapBucket(row: AggRow, fallbackKey = 'unknown'): UsageBucket {
+  const tokensIn = Number(row.tokens_in ?? 0);
+  const cacheReadTokens = row.cache_read === null || row.cache_read === undefined ? null : Number(row.cache_read);
+  const rowsWithCacheReporting = Number(row.cache_reported ?? 0);
+  const rowsWithDuration = Number(row.duration_rows ?? 0);
   return {
     key: row.key ?? fallbackKey,
     requests: Number(row.requests ?? 0),
-    tokensIn: Number(row.tokens_in ?? 0),
+    tokensIn,
     tokensOut: Number(row.tokens_out ?? 0),
     costUsd: Number(row.cost_usd ?? 0),
     unpricedRequests: Number(row.unpriced ?? 0),
+    cacheReadTokens,
+    cacheWriteTokens: row.cache_write === null || row.cache_write === undefined ? null : Number(row.cache_write),
+    reasoningTokens: row.reasoning === null || row.reasoning === undefined ? null : Number(row.reasoning),
+    cacheHitRate:
+      cacheReadTokens === null || tokensIn <= 0 ? null : Math.min(1, cacheReadTokens / tokensIn),
+    rowsWithCacheReporting,
+    rowsWithDuration,
+    // Rounded because the column is whole milliseconds and a mean carrying
+    // decimals would imply a precision the measurement never had.
+    meanDurationMs:
+      row.duration_total === null || row.duration_total === undefined || rowsWithDuration === 0
+        ? null
+        : Math.round(Number(row.duration_total) / rowsWithDuration),
+    slowestDurationMs:
+      row.duration_max === null || row.duration_max === undefined ? null : Number(row.duration_max),
   };
 }
 
@@ -281,6 +536,13 @@ export function summarizeUsage(query: UsageQuery = {}): UsageSummary {
     tokens_out: 0,
     cost_usd: 0,
     unpriced: 0,
+    cache_read: null,
+    cache_write: null,
+    reasoning: null,
+    cache_reported: 0,
+    duration_total: null,
+    duration_max: null,
+    duration_rows: 0,
   });
 
   return {
@@ -303,18 +565,46 @@ export interface PriceInput {
   outputPer1mUsd: number;
 }
 
-/** Upserts a price. The user supplies these; nothing is bundled or guessed. */
+/**
+ * Upserts a price. The user supplies these; nothing is bundled or guessed.
+ *
+ * Two conflict targets, because a NULL provider id needs its own. The row key is
+ * `(model_id, provider_id)`, and SQLite treats NULLs as distinct in a unique
+ * index — so `ON CONFLICT(model_id, provider_id)` never fires for the *global*
+ * price (`provider_id IS NULL`, which is the common case: "all providers"), and
+ * saving one twice inserted a second row instead of updating the first. The old
+ * price then stayed in force, silently, for cost reporting and for the daily
+ * spend cap that `assertWithinSpendCap` computes from it.
+ *
+ * Fixed with a partial unique index on the NULL case (migration 018) plus a
+ * conflict target that names it. `deletePrice` already handled NULL explicitly,
+ * which is how this went unnoticed: the semantics were known in one place and
+ * missed in the other.
+ */
 export function setPrice(input: PriceInput): void {
-  getDb()
-    .prepare(
+  const db = getDb();
+  const now = Date.now();
+
+  if (input.providerId === null || input.providerId === undefined) {
+    db.prepare(
       `INSERT INTO model_prices (model_id, provider_id, input_per_1m_usd, output_per_1m_usd, updated_at)
-       VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(model_id, provider_id) DO UPDATE SET
+       VALUES (?, NULL, ?, ?, ?)
+       ON CONFLICT (model_id) WHERE provider_id IS NULL DO UPDATE SET
          input_per_1m_usd = excluded.input_per_1m_usd,
          output_per_1m_usd = excluded.output_per_1m_usd,
          updated_at = excluded.updated_at`,
-    )
-    .run(input.modelId, input.providerId ?? null, input.inputPer1mUsd, input.outputPer1mUsd, Date.now());
+    ).run(input.modelId, input.inputPer1mUsd, input.outputPer1mUsd, now);
+    return;
+  }
+
+  db.prepare(
+    `INSERT INTO model_prices (model_id, provider_id, input_per_1m_usd, output_per_1m_usd, updated_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(model_id, provider_id) DO UPDATE SET
+       input_per_1m_usd = excluded.input_per_1m_usd,
+       output_per_1m_usd = excluded.output_per_1m_usd,
+       updated_at = excluded.updated_at`,
+  ).run(input.modelId, input.providerId, input.inputPer1mUsd, input.outputPer1mUsd, now);
 }
 
 export function listPrices(): PriceInput[] {
@@ -416,6 +706,22 @@ export interface ZdrBucket extends UsageBucket {
 
 interface ExposureRow extends AggRow {
   provider_type: string | null;
+  provider_egress: string | null;
+}
+
+/**
+ * The class stamped on a row, or — for rows written before 019 — the type
+ * mapping they were written under.
+ *
+ * There is deliberately no attempt to re-decide old rows: the provider's URL was
+ * never stored, so the only available input is the same type string those rows
+ * were bucketed by. A stamped value this build does not recognise (a downgrade)
+ * falls back to the type rather than inventing a bucket.
+ */
+function rowEgressClass(row: ExposureRow): EgressClass {
+  const stamped = row.provider_egress;
+  if (stamped === 'local' || stamped === 'remote' || stamped === 'unknown') return stamped;
+  return classifyProviderType(row.provider_type as ProviderType | null);
 }
 
 interface ZdrRow extends AggRow {
@@ -553,15 +859,15 @@ export function summarizeExposure(query: UsageQuery = {}): ExposureSummary {
 
   const rows = getDb()
     .prepare<ExposureRow>(
-      `SELECT provider_type, provider_type AS key, ${AGG_COLUMNS}
+      `SELECT provider_type, provider_egress, provider_type AS key, ${AGG_COLUMNS}
          FROM usage_log ${sql}
-        GROUP BY provider_type`,
+        GROUP BY provider_type, provider_egress`,
     )
     .all(...values);
 
   const merged = new Map<EgressClass, { bucket: UsageBucket; types: Set<string> }>();
   for (const row of rows) {
-    const cls = classifyProviderType(row.provider_type as ProviderType | null);
+    const cls = rowEgressClass(row);
     const bucket = mapBucket(row, cls);
     const existing = merged.get(cls);
     if (existing) {
@@ -586,16 +892,63 @@ export function summarizeExposure(query: UsageQuery = {}): ExposureSummary {
     byClass.push({ ...entry.bucket, key: cls, providerTypes: [...entry.types].sort() });
   }
 
+  // The exposure summary's total is folded here rather than aggregated in SQL,
+  // so the cache/reasoning fields have to be merged too. They keep the same rule
+  // as everywhere else: a merge of "nothing reported" and "nothing reported" is
+  // still nothing reported, not zero.
+  //
+  // Durations merge by count and not by averaging the averages: the two figures
+  // that survive aggregation are a mean and a count, so the total is rebuilt from
+  // `mean × count` per bucket. Each mean was already rounded to whole
+  // milliseconds, so the rebuilt mean can differ from the exact one by less than a
+  // millisecond — which is smaller than the measurement and not worth a third
+  // figure on every bucket to avoid. `summarizeUsage`'s own totals are aggregated
+  // in SQL and carry no such rounding.
+  let durationTotalMs = 0;
+  let rowsWithDuration = 0;
   const totals = byClass.reduce<UsageBucket>(
-    (accumulator, bucket) => ({
+    (accumulator, bucket) => {
+      rowsWithDuration += bucket.rowsWithDuration;
+      durationTotalMs += (bucket.meanDurationMs ?? 0) * bucket.rowsWithDuration;
+      const merged = {
+        key: 'total',
+        requests: accumulator.requests + bucket.requests,
+        tokensIn: accumulator.tokensIn + bucket.tokensIn,
+        tokensOut: accumulator.tokensOut + bucket.tokensOut,
+        costUsd: accumulator.costUsd + bucket.costUsd,
+        unpricedRequests: accumulator.unpricedRequests + bucket.unpricedRequests,
+        cacheReadTokens: addNullable(accumulator.cacheReadTokens, bucket.cacheReadTokens),
+        cacheWriteTokens: addNullable(accumulator.cacheWriteTokens, bucket.cacheWriteTokens),
+        reasoningTokens: addNullable(accumulator.reasoningTokens, bucket.reasoningTokens),
+        rowsWithCacheReporting: accumulator.rowsWithCacheReporting + bucket.rowsWithCacheReporting,
+        cacheHitRate: null as number | null,
+        rowsWithDuration,
+        meanDurationMs:
+          rowsWithDuration === 0 ? null : Math.round(durationTotalMs / rowsWithDuration),
+        slowestDurationMs: maxNullable(accumulator.slowestDurationMs, bucket.slowestDurationMs),
+      };
+      merged.cacheHitRate =
+        merged.cacheReadTokens === null || merged.tokensIn <= 0
+          ? null
+          : Math.min(1, merged.cacheReadTokens / merged.tokensIn);
+      return merged;
+    },
+    {
       key: 'total',
-      requests: accumulator.requests + bucket.requests,
-      tokensIn: accumulator.tokensIn + bucket.tokensIn,
-      tokensOut: accumulator.tokensOut + bucket.tokensOut,
-      costUsd: accumulator.costUsd + bucket.costUsd,
-      unpricedRequests: accumulator.unpricedRequests + bucket.unpricedRequests,
-    }),
-    { key: 'total', requests: 0, tokensIn: 0, tokensOut: 0, costUsd: 0, unpricedRequests: 0 },
+      requests: 0,
+      tokensIn: 0,
+      tokensOut: 0,
+      costUsd: 0,
+      unpricedRequests: 0,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+      reasoningTokens: null,
+      cacheHitRate: null,
+      rowsWithCacheReporting: 0,
+      rowsWithDuration: 0,
+      meanDurationMs: null,
+      slowestDurationMs: null,
+    },
   );
 
   const zdr = summarizeZdr(query);
@@ -625,4 +978,137 @@ export function recordedZdrStatuses(): string[] {
     )
     .all()
     .map((row) => row.zdr_status);
+}
+
+// --- per-task and per-run cost (v4 §6.2) -----------------------------------
+
+/**
+ * What one task's spend looks like, summed over every request logged against it.
+ *
+ * `costUsd` is the sum over **priced** rows only and is `null` when no row has a
+ * price — the module's standing rule that unpriced is not free, kept here because
+ * a task total is exactly where a zero would be believed. `priced` is the flag
+ * that says whether that total is the whole bill: it is true only when the task
+ * logged at least one request and every one of them had a price.
+ *
+ * `runs` counts *distinct* run ids, which means delegated children are inside
+ * `tokensIn`/`tokensOut`/`costUsd` but are not one of the counted runs: a child's
+ * rows carry the parent's `task_id` and no `run_id` (see migration 018). A task
+ * total therefore includes work it delegated, and a run total never does.
+ */
+export interface TaskUsage {
+  /** Requests logged against this task. Zero means nothing was recorded. */
+  requests: number;
+  /** Distinct runs that logged a request. Excludes unattributable child rows. */
+  runs: number;
+  tokensIn: number;
+  tokensOut: number;
+  /** Sum over priced rows; `null` when no row for this task has a price. */
+  costUsd: number | null;
+  /** True only when every logged request had a known price. */
+  priced: boolean;
+  unpricedRequests: number;
+}
+
+const EMPTY_TASK_USAGE: TaskUsage = {
+  requests: 0,
+  runs: 0,
+  tokensIn: 0,
+  tokensOut: 0,
+  costUsd: null,
+  priced: false,
+  unpricedRequests: 0,
+};
+
+interface TaskUsageRow {
+  requests: number;
+  runs: number;
+  tokens_in: number | null;
+  tokens_out: number | null;
+  cost: number | null;
+  unpriced: number | null;
+}
+
+/**
+ * Spend recorded against one task id.
+ *
+ * A task with no rows is not a 404 and not an error: most task ids predate this
+ * accounting, and a run that never reached a provider has nothing to report. The
+ * answer is `requests: 0` with `costUsd: null` — "nothing was recorded" — which a
+ * caller must not render as "$0.00 spent". Same distinction the price table makes
+ * between unpriced and free; see `docs/API.md` §12.4.
+ */
+export function taskUsage(taskId: string): TaskUsage {
+  const row = getDb()
+    .prepare<TaskUsageRow>(
+      `SELECT COUNT(*)                              AS requests,
+              COUNT(DISTINCT run_id)                AS runs,
+              SUM(tokens_in)                        AS tokens_in,
+              SUM(tokens_out)                       AS tokens_out,
+              SUM(cost_usd)                         AS cost,
+              SUM(CASE WHEN cost_usd IS NULL THEN 1 ELSE 0 END) AS unpriced
+         FROM usage_log
+        WHERE task_id = ?`,
+    )
+    .get(taskId);
+
+  if (row === undefined || row.requests === 0) return { ...EMPTY_TASK_USAGE };
+  const unpriced = row.unpriced ?? 0;
+  return {
+    requests: row.requests,
+    runs: row.runs,
+    tokensIn: row.tokens_in ?? 0,
+    tokensOut: row.tokens_out ?? 0,
+    costUsd: row.cost,
+    // A task with rows but no priced row has `costUsd: null` and `priced: false`;
+    // a task with every row priced has a number and `priced: true`.
+    priced: unpriced === 0,
+    unpricedRequests: unpriced,
+  };
+}
+
+/**
+ * The same summary for many runs at once, keyed by run id.
+ *
+ * Batched deliberately: the activity feed renders up to `limit` entries per page,
+ * and a per-entry query would put fifty of them behind one HTTP response. A run
+ * with no logged request is **absent from the map** rather than present with
+ * zeroes, so the caller can tell "nothing recorded" from "spent nothing" — which
+ * is the same distinction `taskUsage` draws with `requests: 0`.
+ */
+export function usageByRun(runIds: readonly string[]): Map<string, TaskUsage> {
+  const out = new Map<string, TaskUsage>();
+  const wanted = [...new Set(runIds.filter((id) => id !== ''))];
+  if (wanted.length === 0) return out;
+
+  const placeholders = wanted.map(() => '?').join(', ');
+  const rows = getDb()
+    .prepare<TaskUsageRow & { run_id: string }>(
+      `SELECT run_id,
+              COUNT(*)                              AS requests,
+              COUNT(DISTINCT run_id)                AS runs,
+              SUM(tokens_in)                        AS tokens_in,
+              SUM(tokens_out)                       AS tokens_out,
+              SUM(cost_usd)                         AS cost,
+              SUM(CASE WHEN cost_usd IS NULL THEN 1 ELSE 0 END) AS unpriced
+         FROM usage_log
+        WHERE run_id IN (${placeholders})
+        GROUP BY run_id`,
+    )
+    .all(...wanted);
+
+  for (const row of rows) {
+    if (row.requests === 0) continue;
+    const unpriced = row.unpriced ?? 0;
+    out.set(row.run_id, {
+      requests: row.requests,
+      runs: row.runs,
+      tokensIn: row.tokens_in ?? 0,
+      tokensOut: row.tokens_out ?? 0,
+      costUsd: row.cost,
+      priced: unpriced === 0,
+      unpricedRequests: unpriced,
+    });
+  }
+  return out;
 }

@@ -483,7 +483,7 @@ describe('the backup archive', () => {
     assert.equal(hasConversation(taskId), true);
 
     const { exportBackup } = await import('../src/services/backup/export.ts');
-    const result = exportBackup();
+    const result = await exportBackup();
 
     const AdmZip = (await import('adm-zip')).default;
     const { DB_ENTRY } = await import('../src/services/backup/export.ts');

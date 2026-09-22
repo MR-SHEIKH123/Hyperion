@@ -33,14 +33,19 @@ export function isToolName(value: unknown): value is ToolName {
  *               a distinct type because its operational profile (registered by
  *               hand, one generation at a time, minutes-to-hours per reply) is
  *               nothing like a hosted gateway's.
+ *   puter     — Puter's hosted OpenAI-compatible endpoint. Also chat-completions
+ *               shaped, and also reuses the `openai` adapter; a distinct type
+ *               because its credential is a *session auth token* rather than a
+ *               vendor API key, which expires and has to be pasted again (1.38).
  */
-export type ProviderType = 'remote' | 'local' | 'opencodex' | 'colibri';
+export type ProviderType = 'remote' | 'local' | 'opencodex' | 'colibri' | 'puter';
 
 export const PROVIDER_TYPES: readonly ProviderType[] = [
   'remote',
   'local',
   'opencodex',
   'colibri',
+  'puter',
 ];
 
 export function isProviderType(value: unknown): value is ProviderType {
@@ -217,10 +222,73 @@ export interface ProviderRecord {
   models: ModelInfo[] | null;
   modelsFetchedAt: number | null;
   modelsError: string | null;
+  /**
+   * The proxy every request to this provider is tunnelled through (Part 1.37).
+   *
+   * Stored verbatim, credentials included, because it is what the transport
+   * dials. Nothing returns this field: read paths use `egressProxyFor`, which
+   * yields the redacted form, and the audit column stores `host:port` alone.
+   */
+  egressProxy: string | null;
+  /**
+   * The ceiling this provider's models are judged against, or null for none
+   * (Part 1.28).
+   *
+   * The first rung of the context ladder — `1.28`'s "explicit override" — and it
+   * exists because a provider that reports no context length leaves the ladder's
+   * middle rung empty: the loop then guesses a default, which is deliberately
+   * small and therefore compacts earlier than the model requires. Declaring it is
+   * how a user says "I know this endpoint takes 200 000" — and the provider type
+   * that needs it most is `local`, where nothing on the wire reports the loaded
+   * window (Ollama's `OLLAMA_CONTEXT_LENGTH`, a Modelfile `num_ctx`, or its
+   * VRAM-tiered default) and the runner truncates silently past it.
+   *
+   * Deliberately *declared*, not probed: nothing in the provider API reports it,
+   * and a wrong guess in the other direction — deciding a conversation fits when
+   * it does not — is the failure mode with no recovery, because the provider
+   * answers by rejecting the whole request.
+   */
+  maxContextTokens: number | null;
   /** Zero-data-retention facts (Part 1.26). Always present; defaults to `unknown`. */
   zdr: ProviderZdr;
   createdAt: number;
   updatedAt: number;
+}
+
+/**
+ * How a provider failed, for the failures worth pausing for (1.36).
+ *
+ * Declared here rather than in `providers/cooldowns.ts` because it is a
+ * client-visible fact now: `ProviderCooldown` carries it across the wire, and a
+ * badge that could not tell a rejected key from an exhausted balance could not
+ * tell the user what to fix.
+ */
+export type ProviderFailureClass =
+  | 'auth'
+  | 'payment'
+  | 'rate_limit'
+  | 'not_found'
+  | 'server'
+  | 'network';
+
+/**
+ * Why a provider is being left alone for now, as a client reads it (1.36).
+ *
+ * `until` is a deadline rather than a length, because a client rendering a length
+ * keeps rendering it after the wait is over — the fact a countdown needs is when
+ * the provider comes back, not how long it was once given. `reason` is the
+ * sentence the provider layer already writes for its switch messages
+ * (`cooldowns.ts`, whose wording is user-facing by design): the routing decision
+ * and the disclosure describe the same event, and a UI phrasing its own would
+ * drift from what actually happened.
+ */
+export interface ProviderCooldown {
+  /** Epoch ms at which the provider may be tried again. */
+  until: number;
+  failureClass: ProviderFailureClass;
+  /** Where the duration came from — the class table, or the provider's Retry-After. */
+  source: 'table' | 'retry_after';
+  reason: string;
 }
 
 /**
@@ -245,6 +313,28 @@ export interface ProviderPublic {
   modelCount: number | null;
   modelsFetchedAt: number | null;
   modelsError: string | null;
+  /**
+   * The egress proxy as the user may read it back: `user:***@host:port` at most.
+   *
+   * A redacted string rather than a structured object, because the only consumer
+   * is a disclosure — "this is where the traffic goes" — and a structure invites
+   * a consumer to reconstruct the URL, which is how a password comes back.
+   */
+  egressProxy: string | null;
+  /**
+   * The cooldown this provider is serving, or null when it is not cooling (1.36).
+   *
+   * In-memory state rather than a column, and deliberately so: a cooldown dies
+   * with the process (`cooldowns.ts` argues why a persisted one would punish a key
+   * the user has since fixed), so this field answers "may I use it right now" and
+   * not "what happened last week". It rides the provider read rather than a route
+   * of its own because the question it answers is asked on every screen that lists
+   * providers, and because `docs/CONTRACTS.md` records the enforcement and the
+   * disclosure as one feature.
+   */
+  cooldown: ProviderCooldown | null;
+  /** The declared ceiling, so a settings screen can show and edit it (Part 1.28). */
+  maxContextTokens: number | null;
   /**
    * ZDR facts, returned in full including `requestFlag.value`.
    *
@@ -354,9 +444,33 @@ export interface MessageRecord {
   updatedAt: number;
 }
 
+/**
+ * What one provider request consumed (1.28's `reasoningTokens`/`cacheHitRate`).
+ *
+ * `tokensIn`/`tokensOut` are exactly what the provider reported and are the only
+ * two the cost table prices. The three optional fields are **additional
+ * accounting some providers report separately**, and they are optional rather
+ * than defaulted to zero for the reason the whole dashboard turns on: a provider
+ * that does not report cache reads has *not* reported zero, and a total built
+ * from silent zeroes would say "nothing was cached" about traffic nobody
+ * measured.
+ *
+ * `cacheReadTokens` is deliberately **not** folded into `tokensIn`, even for
+ * gateways where `prompt_tokens` already includes it. Folding would change what
+ * `tokensIn` means overnight — and with it every historical row — while
+ * `computeCost` prices `tokensIn` at the input rate and the price table has no
+ * cache tier to price it with. The rate is computed from the parts instead, and
+ * the direction of its error is documented where it is computed.
+ */
 export interface TokenUsage {
   tokensIn: number;
   tokensOut: number;
+  /** Prompt tokens served from the provider's own cache, when it says so. */
+  cacheReadTokens?: number;
+  /** Prompt tokens written into that cache, when it says so. */
+  cacheWriteTokens?: number;
+  /** Thinking tokens, counted separately from the answer by some models. */
+  reasoningTokens?: number;
 }
 
 /** What a provider adapter yields while streaming. */
@@ -702,7 +816,16 @@ export interface TerminalModule {
   executeCommand(
     cwd: string,
     command: string,
-    options?: { timeoutMs?: number; signal?: AbortSignal },
+    options?: {
+      timeoutMs?: number;
+      signal?: AbortSignal;
+      /** The task that asked, when there is one. Bound into the process entry (S3). */
+      taskId?: string;
+      /** The run that asked. Absent for a route-level or headless execution. */
+      runId?: string;
+      /** The live interactive session whose human asked, when one did (S17). */
+      sessionId?: string;
+    },
   ): Promise<CommandResult>;
 }
 

@@ -25,10 +25,33 @@
  *      user can opt in with `includeKeys` — and when they do, the manifest says
  *      so in words, so a restore can warn them what they're handling.
  *
+ *   2b. **`mcp_config.json` is excluded by the same rule, from the same
+ *      commit.** It is the one file in the backup that holds a credential in
+ *      the clear: `registry.ts::toEntry` materialises a remote server's token
+ *      as a literal `Authorization: Bearer` header, and a local server's `env`
+ *      or `args` can carry a token too. There is no honest redaction pass for
+ *      it — the format does not mark which value is a secret, and the same slot
+ *      holds a workspace path — so the file travels only with `includeKeys`.
+ *      Nothing is lost by that: the registry lives in the database (both
+ *      `listServers()` and the process manager read the table, and
+ *      `POST /api/mcp/sync` regenerates the file from it), so the servers and
+ *      their names travel regardless, and the tokens are useless without the
+ *      key a default export also leaves out.
+ *
  *   3. **Attachments are not included by default.** They're the bulk of the
  *      data (images, generated files) and a backup that takes ten minutes is a
  *      backup nobody runs. `includeAttachments` bundles them for a full
  *      machine migration.
+ *
+ *   4. **A passphrase-protected export writes `.hypbak`, not `.zip`** (1.29).
+ *      The zip is built as it always was and then wrapped by
+ *      `services/backup/crypto.ts` — Argon2id from the passphrase, AES-256-GCM
+ *      over the archive, cost parameters in the container header. The plaintext
+ *      zip is **deleted** once the protected file exists: an export that leaves
+ *      both would mean the protection is decorative, because the unprotected
+ *      copy is still sitting in the backups directory. The passphrase itself is
+ *      used and dropped — it is never written to the archive, the manifest, the
+ *      settings table, or a log line.
  */
 
 import fs from 'node:fs';
@@ -37,6 +60,7 @@ import path from 'node:path';
 import AdmZip from 'adm-zip';
 
 import { env } from '../../config/env.ts';
+import { encryptArchive } from './crypto.ts';
 import { getDb, openDatabase, type Db } from '../../db/adapter.ts';
 import { getRoot, resolveInScope } from '../../security/fsScope.ts';
 import { AppError } from '../../util/errors.ts';
@@ -68,7 +92,20 @@ export interface BackupManifest {
     encryptionKey: boolean;
   };
   counts: Record<string, number>;
-  /** Present only when the encryption key is inside. Human-readable on purpose. */
+  /**
+   * True when this manifest was written inside a passphrase-protected archive
+   * (1.29). Informational only: the container, not the manifest, is what enforces
+   * the passphrase, and a reader that could open the archive already had it.
+   * It is recorded so an archive that was decrypted by hand can still say how it
+   * travelled — and so a user who *thought* they had protected an archive can see
+   * that they did not.
+   */
+  encrypted?: boolean;
+  /**
+   * Present when the reader should know something about this archive's
+   * contents — an included encryption key, or a credential-bearing file that
+   * was deliberately left out. Human-readable on purpose.
+   */
   warning?: string;
 }
 
@@ -77,6 +114,13 @@ export interface ExportOptions {
   includeAttachments?: boolean;
   /** Where to write the archive; defaults to the backups scope. */
   outFile?: string;
+  /**
+   * Encrypt the archive with this passphrase. Absent means the archive is a
+   * plain zip, which is the documented default for an automated backup: a
+   * scheduled job has nowhere to keep a passphrase except the settings table,
+   * and a key stored beside the lock is not encryption.
+   */
+  passphrase?: string;
 }
 
 export interface ExportResult {
@@ -84,11 +128,18 @@ export interface ExportResult {
   filename: string;
   bytes: number;
   manifest: BackupManifest;
+  /** True when `file` is a `.hypbak` container rather than a zip. */
+  encrypted: boolean;
 }
 
 const KEY_WARNING =
   'This archive contains secret.key, which decrypts every stored API key and token. ' +
   'Treat the file itself as a credential: anyone who obtains it obtains your provider keys.';
+
+const MCP_OMISSION_WARNING =
+  'mcp_config.json is not in this archive. It can hold a remote MCP server\'s token as a ' +
+  'plaintext header, so it is included only when the archive is exported with keys. The ' +
+  'servers themselves are in the database; re-enter their tokens after restoring.';
 
 function timestamp(at: number): string {
   // Local time, filesystem-safe: 2026-07-29_1904
@@ -217,10 +268,11 @@ function addTree(zip: AdmZip, root: string, prefix: string): number {
   return files;
 }
 
-export function exportBackup(options: ExportOptions = {}): ExportResult {
+export async function exportBackup(options: ExportOptions = {}): Promise<ExportResult> {
   const now = Date.now();
   const includeKeys = options.includeKeys ?? false;
   const includeAttachments = options.includeAttachments ?? false;
+  const passphrase = options.passphrase;
 
   const filename = `hyperion-backup-${timestamp(now)}.zip`;
   const outFile = options.outFile ?? resolveInScope('backups', filename);
@@ -233,8 +285,9 @@ export function exportBackup(options: ExportOptions = {}): ExportResult {
     stripConversationSnapshots(snapshot);
     zip.addFile(DB_ENTRY, fs.readFileSync(snapshot));
 
+    const hasMcpConfig = fs.existsSync(env.paths.mcpConfig);
     let mcpConfig = false;
-    if (fs.existsSync(env.paths.mcpConfig)) {
+    if (includeKeys && hasMcpConfig) {
       zip.addFile(MCP_ENTRY, fs.readFileSync(env.paths.mcpConfig));
       mcpConfig = true;
     }
@@ -258,16 +311,46 @@ export function exportBackup(options: ExportOptions = {}): ExportResult {
       schemaMigrations: appliedMigrations(),
       contents: { database: true, mcpConfig, skills, attachments, encryptionKey },
       counts: tableCounts(),
-      ...(encryptionKey ? { warning: KEY_WARNING } : {}),
+      ...(passphrase !== undefined ? { encrypted: true } : {}),
+      ...(encryptionKey
+        ? { warning: KEY_WARNING }
+        : hasMcpConfig
+          ? { warning: MCP_OMISSION_WARNING }
+          : {}),
     };
 
     zip.addFile(MANIFEST_ENTRY, Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, 'utf8'));
     zip.writeZip(outFile);
 
+    if (passphrase !== undefined) {
+      // Read the zip back rather than encrypting from memory: `writeZip` is what
+      // produced the bytes that will be restored, so protecting anything else
+      // would be protecting a copy that never travels.
+      const container = await encryptArchive(fs.readFileSync(outFile), passphrase);
+      const protectedFile = `${outFile.replace(/\.zip$/, '')}.hypbak`;
+      fs.writeFileSync(protectedFile, container);
+      fs.rmSync(outFile, { force: true });
+
+      const protectedBytes = fs.statSync(protectedFile).size;
+      log.info('backup exported (passphrase-protected)', {
+        filename: path.basename(protectedFile),
+        bytes: protectedBytes,
+        includeKeys,
+        includeAttachments,
+      });
+      return {
+        file: protectedFile,
+        filename: path.basename(protectedFile),
+        bytes: protectedBytes,
+        manifest,
+        encrypted: true,
+      };
+    }
+
     const bytes = fs.statSync(outFile).size;
     log.info('backup exported', { filename, bytes, includeKeys, includeAttachments });
 
-    return { file: outFile, filename: path.basename(outFile), bytes, manifest };
+    return { file: outFile, filename: path.basename(outFile), bytes, manifest, encrypted: false };
   } catch (error) {
     throw new AppError('storage_error', `Backup export failed: ${String(error)}`);
   } finally {
@@ -288,7 +371,7 @@ export function listBackups(): BackupFile[] {
 
   return fs
     .readdirSync(root, { withFileTypes: true })
-    .filter((e) => e.isFile() && e.name.endsWith('.zip'))
+    .filter((e) => e.isFile() && (e.name.endsWith('.zip') || e.name.endsWith('.hypbak')))
     .map((e) => {
       const stat = fs.statSync(path.join(root, e.name));
       return { filename: e.name, bytes: stat.size, createdAt: stat.mtimeMs };

@@ -20,7 +20,7 @@
 import { Router } from 'express';
 
 import { wrap } from './errors.ts';
-import { asBool, body, pathParam, queryNumber } from './params.ts';
+import { asBool, body, pathParam, queryLimit } from './params.ts';
 import { getDesignVersion } from '../services/design/tools.ts';
 import { AppError } from '../util/errors.ts';
 import {
@@ -38,7 +38,7 @@ export const designRouter: Router = Router();
 designRouter.get(
   '/assets/approved',
   wrap(async (req, res) => {
-    const assets = listApprovedAssets(queryNumber(req, 'limit') ?? 100);
+    const assets = listApprovedAssets(queryLimit(req, 'limit', { fallback: 100, max: 500 }));
     res.json({ assets, total: assets.length });
   }),
 );

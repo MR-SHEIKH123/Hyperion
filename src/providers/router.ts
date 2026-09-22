@@ -25,6 +25,13 @@ import { AppError, toAppError } from '../util/errors.ts';
 import { createLogger } from '../util/logger.ts';
 import { adapterFor } from './adapters.ts';
 import { recordFailure, recordSuccess, resetHealth } from './health.ts';
+import {
+  clearCooldown,
+  coolingProviderIds,
+  describeCooldown,
+  isCoolingDown,
+  recordCooldown,
+} from './cooldowns.ts';
 import { cachedSupportsModel, ensureModelsCached } from './registry.ts';
 import {
   enableProvider,
@@ -119,7 +126,17 @@ export function assertZdrDispatchable(intended: ProviderRecord | null, modelId: 
 }
 
 /** Why the router moved off the provider it started with. */
-export type SwitchReason = 'capability_mismatch' | 'health_failure' | 'zdr_requirement';
+export type SwitchReason =
+  | 'capability_mismatch'
+  | 'health_failure'
+  | 'zdr_requirement'
+  /**
+   * The provider it started with is serving out a cooldown — a bad key, a rate
+   * limit, a server error — so this request goes elsewhere. Distinct from
+   * `health_failure` because nothing tripped a threshold here: one failure of a
+   * non-retryable class is enough to pause, which is the whole point of 1.36.
+   */
+  | 'cooldown';
 
 export type RouteEvent =
   /** Always first. Tells the caller which provider actually got the request. */
@@ -201,6 +218,25 @@ export async function selectProvider(
     };
   }
 
+  // A provider serving a cooldown is skipped when — and only when — a different
+  // provider can serve this model. The check comes before the model-cache probe
+  // because the question it answers is not "does it have the model" but "is
+  // asking it a waste of the user's time", and a wasted request that returns
+  // instantly with the same 401 is worse than a switch.
+  const coolingReason = describeCooldown(start.id);
+  if (coolingReason !== null) {
+    const alternative = await findProviderWithModel(modelId, start.id);
+    if (alternative !== null) {
+      return {
+        provider: alternative,
+        switched: true,
+        from: start,
+        reason: 'cooldown',
+        message: `${start.name} is paused (${coolingReason}); using ${alternative.name} instead.`,
+      };
+    }
+  }
+
   const primed = await ensureModelsCached(start);
   const supported = cachedSupportsModel(primed, modelId);
 
@@ -238,6 +274,21 @@ export async function selectProvider(
 }
 
 /**
+ * Cooling providers last, everything else in the order it came in.
+ *
+ * Last rather than excluded, for the reason `listFailoverCandidates` gives for
+ * unhealthy ones: a provider serving a 60-minute auth cooldown is the right
+ * answer when it is the only one that can serve the model, and refusing outright
+ * would turn a key the user is about to fix into an outage. Ordering is what
+ * makes the choice prefer someone else *when there is someone else*.
+ */
+function orderByCooldown(providers: ProviderRecord[]): ProviderRecord[] {
+  const cooling = coolingProviderIds();
+  if (cooling.size === 0) return providers;
+  return [...providers].sort((a, b) => Number(cooling.has(a.id)) - Number(cooling.has(b.id)));
+}
+
+/**
  * Find a configured provider whose cached list contains `modelId`.
  *
  * Only cached lists are consulted for providers that have one. A provider with
@@ -255,9 +306,8 @@ async function findProviderWithModel(
   excludeId: string,
   requirementOverride?: ZdrRequirement,
 ): Promise<ProviderRecord | null> {
-  const candidates = orderByZdr(
-    listFailoverCandidates(excludeId),
-    requirementOverride ?? zdrRequirement(),
+  const candidates = orderByCooldown(
+    orderByZdr(listFailoverCandidates(excludeId), requirementOverride ?? zdrRequirement()),
   );
 
   for (const candidate of candidates) {
@@ -287,7 +337,7 @@ async function findEligibleProviderWithModel(
   excludeId: string,
   requirement: ZdrRequirement,
 ): Promise<ProviderRecord | null> {
-  for (const candidate of orderByZdr(listFailoverCandidates(excludeId), requirement)) {
+  for (const candidate of orderByCooldown(orderByZdr(listFailoverCandidates(excludeId), requirement))) {
     const primed = await ensureModelsCached(candidate);
     if (cachedSupportsModel(primed, modelId) !== false) return primed;
   }
@@ -359,6 +409,10 @@ export async function* stream(
         }
       }
       recordSuccess(provider.id);
+      // A live response settles the cooldown, whoever set it: the provider is
+      // talking to us, so a deadline set by an earlier 429 no longer describes
+      // anything true.
+      clearCooldown(provider.id);
       return;
     } catch (error) {
       const appError = toAppError(error);
@@ -368,6 +422,13 @@ export async function* stream(
       if (appError.code === 'aborted') throw appError;
 
       const verdict = recordFailure(provider.id, appError);
+
+      // Every provider failure sets a cooldown by class, including the
+      // non-retryable ones the health threshold deliberately ignores — that
+      // exclusion is what left a wrong key being retried on every request.
+      recordCooldown(provider.id, appError, {
+        retryAfterSeconds: retryAfterSeconds(appError),
+      });
 
       // Output already reached the user. Anything we do now risks duplicating or
       // contradicting it, so hand the failure up and let the run pause with the
@@ -433,6 +494,12 @@ export async function* stream(
   }
 }
 
+/** The provider's own `Retry-After`, read off the error's public details. */
+function retryAfterSeconds(error: AppError): number | null {
+  const value = error.details?.['retryAfterSeconds'];
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
 /**
  * Next provider that both serves the model and has not already been tried.
  *
@@ -451,7 +518,9 @@ async function pickHealthyAlternative(
   tried: Set<string>,
   requirementOverride?: ZdrRequirement,
 ): Promise<ProviderRecord | null> {
-  const candidates = orderByZdr(listFailoverCandidates(), requirementOverride ?? zdrRequirement());
+  const candidates = orderByCooldown(
+    orderByZdr(listFailoverCandidates(), requirementOverride ?? zdrRequirement()),
+  );
   for (const candidate of candidates) {
     if (tried.has(candidate.id)) continue;
     const primed = await ensureModelsCached(candidate);

@@ -40,7 +40,7 @@
       "id": "chat.fork",
       "method": "POST",
       "expectedPath": "/api/chat/:id/fork",
-      "status": "missing"
+      "status": "implemented"
     },
     {
       "id": "chat.stream",
@@ -78,21 +78,28 @@
       "expectedPath": "/api/{tool}/tasks/:taskId/continue",
       "status": "route-mismatch",
       "specifiedPath": "/api/{tool}/tasks/:taskId/resume",
-      "reason": "All three implemented agent tools use /continue."
+      "reason": "All three implemented agent tools use /continue. The mismatch is the path alone: the continuation control in the Code surface (`tools/code/ParkedTask.tsx` over `api/agentStream.ts`) posts `/api/{tool}/tasks/:taskId/continue`, so the implemented half of this row now has a caller, which it did not when the row was written."
+    },
+    {
+      "id": "tasks.recovery",
+      "method": "GET",
+      "expectedPath": "/api/{tool}/tasks/:taskId/recovery",
+      "status": "partial",
+      "reason": "The Code surface renders it (2026-09-21): RecoveryPanel, mounted in the main region when the selected task's run is interrupted, showing the bounded step tail with totals over all of it, the leftover checkout with what a discard would lose, and a two-step discard that mirrors the backend's own force rule. Resume is actioned from Code as of 2026-09-22: the panel takes `onResume` and hands the interrupted task's id to the Task composer, which focuses that region and starts the re-run through `POST /api/{tool}/run-task` \u2014 a re-run, not a continuation, because the continuation routes only move a parked run. Still `partial` for the one half that is left: Cowork and Design have no surface of their own yet, so only Code mounts the panel, and a host with no run-starter gets the verb with its reason and route in words rather than a disabled control."
     },
     {
       "id": "attention.approvals",
       "method": "GET",
-      "expectedPath": "/api/attention/approvals",
-      "status": "partial",
-      "reason": "Approvals can only be listed for a known tool and task id."
+      "expectedPath": "/api/attention",
+      "status": "implemented",
+      "reason": "Served by the queue rather than a separate /api/attention/approvals path: approvals arrive as items with kind approval_required, carrying the tool, task and the call that answers them."
     },
     {
       "id": "attention.interrupted",
       "method": "GET",
-      "expectedPath": "/api/attention/interrupted",
-      "status": "missing",
-      "reason": "The implemented TaskRun state union has no interrupted state and there is no discovery route."
+      "expectedPath": "/api/attention",
+      "status": "implemented",
+      "reason": "Served by the queue rather than a separate /api/attention/interrupted path: interrupted runs arrive as items with kind interrupted. The TaskRun contract carries the state too since migration 020 (boot reconciliation writes interrupted, not error), so an interruption is discoverable in both places it is read."
     },
     {
       "id": "providers.registry",
@@ -110,14 +117,15 @@
       "id": "providers.zdr",
       "method": "PUT",
       "expectedPath": "/api/providers/:id/zdr",
-      "status": "implemented"
+      "status": "partial",
+      "reason": "Half of it is real and half is not: the frontend reads the ZDR status a provider is serving under (the privacy line, the provider wire types) and nothing anywhere sets the policy \u2014 no client posts to this route, and no settings surface exists to host one. That is a `partial`, not a `missing`: the read half is what a user sees."
     },
     {
       "id": "providers.cooldown",
       "method": "GET",
       "expectedPath": "/api/providers",
-      "status": "partial",
-      "reason": "Registry exists but does not expose explicit failover cooldown reason and duration."
+      "status": "implemented",
+      "reason": "Enforced *and* disclosed since 2026-09-22. 1.36 classifies every provider failure and applies a cooldown per class (401/403 60m, 402 30m, 429 5m or Retry-After, 404 2m, 5xx 1m, network 30s) and the router skips a cooled provider; `ProviderPublic.cooldown` now carries the class, the `until` deadline, which length won (`table` or the provider's own `retry_after`) and the same sentence `cooldowns.ts` writes into switch events, on every provider read. `PrivacyIndicator` renders it at the point of send, including the fact that being skipped is not being disabled. The field is live in-memory state, so a cooldown clears with the process \u2014 which is the design (`cooldowns.ts` argues a persisted one would punish a key the user has since fixed), not a missing read."
     },
     {
       "id": "providers.egress-proxy",
@@ -130,7 +138,14 @@
       "method": "POST",
       "expectedPath": "/api/providers",
       "status": "missing",
-      "reason": "Puter is not an accepted provider type."
+      "reason": "The frontend has no provider-creation form: `POST /api/providers` is not called. `providerTypeSchema` accepts `puter` (1.38), so the type itself is no longer the gap \u2014 a settings screen is."
+    },
+    {
+      "id": "providers.puter-advisory",
+      "method": "GET",
+      "expectedPath": "/api/providers/puter/advisory",
+      "status": "missing",
+      "reason": "Nothing renders it yet. The route exists (1.38) and carries the credential kind, the catalogue URL, `requiresPaidPlan` and the note, so a settings form can warn before a token is pasted rather than after the first 402."
     },
     {
       "id": "projects.registry",
@@ -149,7 +164,7 @@
       "method": "GET",
       "expectedPath": "/api/projects/:id/tasks",
       "status": "partial",
-      "reason": "Code tasks can be listed globally; Cowork and Design have no task list."
+      "reason": "Backend complete 2026-09-22: every unfinished task in the project, all three tools, latest run per task, per-state counts, and `unattributedActive` for active runs that name no project rather than folding them in. `api/projects.ts` has `getProjectTasks`. Still partial because no surface calls it, so no switch warning is rendered."
     },
     {
       "id": "health.summary",
@@ -174,13 +189,15 @@
       "id": "plugins.unified",
       "method": "GET",
       "expectedPath": "/api/plugins",
-      "status": "missing"
+      "status": "missing",
+      "reason": "The route exists (1.34) and composes the catalogue; nothing calls it. The Plugins tool is a placeholder with a rail entry \u2014 there is no `api/plugins` client at all \u2014 so the gap is the surface, not the backend."
     },
     {
       "id": "plugins.availability",
       "method": "PATCH",
       "expectedPath": "/api/plugins/:id/availability",
-      "status": "missing"
+      "status": "missing",
+      "reason": "Same surface as `plugins.unified`: `PATCH /api/plugins/:id/availability` stores the per-tool decision (migration `025`) and no client sends one. A placeholder screen cannot render a toggle, let alone post it."
     },
     {
       "id": "design.diff",
@@ -192,13 +209,16 @@
       "id": "design.preview",
       "method": "GET",
       "expectedPath": "/api/design/preview/:versionId",
-      "status": "implemented"
+      "status": "missing",
+      "reason": "The route exists (a preview fetched by version id) and the Design tool has no frontend surface at all, so there is nothing to render one in. That surface is Prompt-2 scope, and `gaps.md` says so."
     },
     {
       "id": "artifacts.lineage",
       "method": "GET",
-      "expectedPath": "/api/artifacts/:id/versions",
-      "status": "missing"
+      "expectedPath": "/api/artifacts/versions",
+      "status": "route-mismatch",
+      "specifiedPath": "/api/artifacts/:id/versions",
+      "reason": "The spec asked for lineage by artifact id (`GET /api/artifacts/:id/versions`); the implementation serves it by artifact key (`GET /api/artifacts/versions?key=`, 1.39 A6), which is what the provenance panel calls. An id-based route would be a second way to ask the same question \u2014 artifact ids name a single version, while the lineage is the version list of one key."
     },
     {
       "id": "settings.spending-cap",
@@ -213,7 +233,8 @@
       "method": "POST",
       "expectedPath": "/api/settings/reload-config",
       "status": "route-mismatch",
-      "specifiedPath": "GET|PUT /api/settings/reload-config"
+      "specifiedPath": "GET|PUT /api/settings/reload-config",
+      "reason": "The spec asked for `GET|PUT /api/settings/reload-config`; the implementation is a `POST`. A `PUT` would have to name what it replaces, and nothing is cached to replace \u2014 `db/settings.ts` keeps settings un-cached and project files are read per task \u2014 while the route itself only re-reads, validates and reports the on-disk configuration, which is why `docs/CONTRACTS.md` argues it adds no cache at all. The capability is present, so this row is a verb mismatch rather than a missing route: a client that followed the specification and sent a GET would get a 404."
     },
     {
       "id": "backup.inspect",
@@ -239,6 +260,12 @@
       "expectedPath": "/api/search",
       "status": "partial",
       "reason": "The shell can federate list endpoints, but there is no global content-search contract."
+    },
+    {
+      "id": "attention.queue",
+      "method": "GET",
+      "expectedPath": "/api/attention",
+      "status": "implemented"
     }
   ]
 }

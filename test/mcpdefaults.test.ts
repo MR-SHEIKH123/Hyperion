@@ -30,12 +30,12 @@ describe('seeded MCP defaults', () => {
     await cleanupHome();
   });
 
-  it('seeds filesystem enabled, wigolo and graphify disabled', async () => {
+  it('seeds filesystem enabled, and the three setup-required servers disabled', async () => {
     const { seedDefaultServers } = await import('../src/services/mcp/defaults.ts');
     const { listServers } = await import('../src/services/mcp/registry.ts');
 
     const result = seedDefaultServers();
-    assert.deepEqual(result.created.sort(), ['filesystem', 'graphify', 'wigolo']);
+    assert.deepEqual(result.created.sort(), ['browser-use', 'filesystem', 'graphify', 'wigolo']);
 
     const byName = new Map(listServers().map((server) => [server.name, server]));
     assert.equal(byName.get('filesystem')?.enabled, true);
@@ -43,13 +43,36 @@ describe('seeded MCP defaults', () => {
     // Nothing auto-enables itself, and graphify additionally has a one-time
     // setup: neither its interpreter nor its graph exists on a fresh install.
     assert.equal(byName.get('graphify')?.enabled, false);
+    // browser-use (1.35) needs `uv` and an API key of its own, and it drives a
+    // real browser — the last thing that should start because a seed said so.
+    assert.equal(byName.get('browser-use')?.enabled, false);
+  });
+
+  it('seeds browser-use with its documented launch, and no invented credential', async () => {
+    const { defaultServers } = await import('../src/services/mcp/defaults.ts');
+
+    const entry = defaultServers().find((server) => server.input.name === 'browser-use');
+    assert.ok(entry, 'browser-use should be part of the seed set');
+    assert.equal(entry.input.type, 'local');
+    assert.equal(entry.input.command, 'uvx');
+    // `--from browser-use[cli]` is the documented form; without the extra the
+    // package starts and reports a missing CLI addon, which reads as a broken
+    // install rather than an argument list to fix.
+    assert.deepEqual(entry.input.args, ['--from', 'browser-use[cli]', 'browser-use', '--mcp']);
+    // The browser agent runs its own model loop, so it needs a key of its own.
+    // Seeding a placeholder would be a credential that cannot work; the note is
+    // where the requirement is stated instead.
+    assert.equal(entry.input.env, undefined);
+    assert.equal(entry.input.token, undefined);
+    assert.match(entry.note, /API key of its own/);
+    assert.match(entry.note, /uv/);
   });
 
   it('is idempotent — a second call creates nothing', async () => {
     const { seedDefaultServers } = await import('../src/services/mcp/defaults.ts');
     const result = seedDefaultServers();
     assert.deepEqual(result.created, []);
-    assert.deepEqual(result.skippedSeeded.sort(), ['filesystem', 'graphify', 'wigolo']);
+    assert.deepEqual(result.skippedSeeded.sort(), ['browser-use', 'filesystem', 'graphify', 'wigolo']);
   });
 
   it('points graphify at its own venv interpreter and graph, not at PATH', async () => {

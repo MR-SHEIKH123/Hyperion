@@ -12,6 +12,7 @@ export type TaskViewState=
  |({kind:'ready_for_review';runId:string}&ActiveMetadata)
  |({kind:'reconnecting';previous:Exclude<TaskViewState,{kind:'idle'}|{kind:'reconnecting'}>}&ActiveMetadata)
  |({kind:'stopped';runId:string;reason:string|null}&ActiveMetadata)
+ |({kind:'interrupted';runId:string;reason:string|null}&ActiveMetadata)
  |({kind:'complete';runId:string;completedAt:number}&ActiveMetadata)
  |({kind:'error';runId:string;code:string|null;message:string|null}&ActiveMetadata);
 
@@ -26,6 +27,7 @@ export function fromBackendRun(run:BackendRun,pendingCancel=false):TaskViewState
   case'blocked':return{kind:'approval_required',...common,runId:run.runId,reason:run.pauseReason};
   case'ready_for_review':return{kind:'ready_for_review',...common,runId:run.runId};
   case'stopped':return{kind:'stopped',...common,runId:run.runId,reason:run.pauseReason};
+  case'interrupted':return{kind:'interrupted',...common,runId:run.runId,reason:run.errorMessage??run.pauseReason};
   case'complete':return{kind:'complete',...common,runId:run.runId,completedAt:run.completedAt??run.updatedAt};
   case'error':return{kind:'error',...common,runId:run.runId,code:run.errorCode,message:run.errorMessage};
  }

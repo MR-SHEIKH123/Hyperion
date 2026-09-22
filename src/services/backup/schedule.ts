@@ -115,7 +115,7 @@ function mirrorBackup(filename: string): string | null {
 export async function runAutoBackup(): Promise<AutoBackupResult> {
   return await withLock({ tool: 'chat', label: 'automatic backup', mode: 'queue' }, async () => {
     const outFile = backupPath(`${AUTO_PREFIX}${timestamp(Date.now())}.zip`);
-    const result = exportBackup({ outFile });
+    const result = await exportBackup({ outFile });
     const mirrored = mirrorBackup(result.filename);
     const pruned = pruneAutoBackups();
     log.info('automatic backup complete', {

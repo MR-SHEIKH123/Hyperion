@@ -94,12 +94,27 @@ export function asNumber(value: unknown, field: string): number | undefined {
   return parsed;
 }
 
-/** An optional positive integer, used for client-controlled durations. */
-export function asPositiveInteger(value: unknown, field: string): number | undefined {
+/**
+ * An optional positive integer, used for client-controlled durations and for
+ * counts. `max` is optional because some callers (a token ceiling, a timeout)
+ * have no meaningful upper bound; it is *not* optional for a row count — see
+ * `queryLimit`.
+ *
+ * Fractions are refused rather than rounded: `2.5` is a client bug, and
+ * answering a question nobody asked is worse than saying so.
+ */
+export function asPositiveInteger(
+  value: unknown,
+  field: string,
+  max?: number,
+): number | undefined {
   const parsed = asNumber(value, field);
   if (parsed === undefined) return undefined;
   if (!Number.isInteger(parsed) || parsed <= 0) {
     fail(`${field} must be a positive integer.`, field);
+  }
+  if (max !== undefined && parsed > max) {
+    fail(`${field} must be a positive integer no greater than ${String(max)}.`, field);
   }
   return parsed;
 }
@@ -176,6 +191,19 @@ export function requireTool(value: unknown, field = 'tool'): ToolName {
  * `noUncheckedIndexedAccess` keeps that union intact at every use site. This
  * collapses it once, so routes can read `pathParam(req, 'id')` without a cast.
  */
+/**
+ * A request header, with an empty value read as absent.
+ *
+ * Headers are how a credential travels (S17's session token), and an empty string
+ * is what a client that "sent the header" without a value produces — treating it as
+ * a value would make `''` something a comparison has to reject rather than
+ * something the caller never supplied.
+ */
+export function headerString(req: Request, name: string): string | undefined {
+  const value = req.get(name);
+  return value === undefined || value === '' ? undefined : value;
+}
+
 export function pathParam(req: Request, name: string): string {
   const raw: unknown = (req.params as Record<string, unknown>)[name];
   if (typeof raw !== 'string' || raw.trim() === '') {
@@ -205,6 +233,51 @@ export function queryStrings(req: Request, name: string): string[] {
 /** A query-string value parsed as a number. */
 export function queryNumber(req: Request, name: string): number | undefined {
   return asNumber(queryString(req, name), name);
+}
+
+/**
+ * A row count from the query string: a positive whole number up to `max`, or
+ * the route's default when omitted.
+ *
+ * Every list route takes its limit from here, because a limit is the one query
+ * value whose *type* SQLite refuses to coerce: every other number arrives in a
+ * comparison, where `2.5` compares fine, but the two ways an unchecked limit
+ * bites are both invisible at the call site:
+ *
+ *   `LIMIT 2.5` — SQLite raises "datatype mismatch", which arrives at the client
+ *                 as a 500 `internal_error` about the driver, not a 400 about
+ *                 the field, and lands in `error_log` as a server fault
+ *   `LIMIT -1`  — SQLite reads a negative limit as **no limit**, so a caller
+ *                 asking for "-1 rows" is handed the entire table
+ *
+ * `max` is required rather than defaulted so that each route states its own
+ * bound in its own code, and an out-of-range value is refused instead of
+ * clamped — a caller handed 200 rows when it asked for 5000 concludes the table
+ * only holds 200. The exception would have to be documented, and a silent
+ * exception is how the routes drifted apart in the first place.
+ */
+export function queryLimit(
+  req: Request,
+  name: string,
+  spec: { fallback: number; max: number },
+): number {
+  return asPositiveInteger(queryString(req, name), name, spec.max) ?? spec.fallback;
+}
+
+/**
+ * A non-negative whole number from the query string, for `offset`.
+ *
+ * Zero is legitimate and is the default, so this is not `asPositiveInteger`
+ * with different wording: the bound is `>= 0`, and a fractional offset is the
+ * same driver error a fractional limit is.
+ */
+export function queryOffset(req: Request, name: string, fallback = 0): number {
+  const parsed = queryNumber(req, name);
+  if (parsed === undefined) return fallback;
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    fail(`${name} must be a whole number of zero or more.`, name);
+  }
+  return parsed;
 }
 
 /**

@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { getDb } from '../../db/adapter.ts';
+import { assertNoSymlinkedTraversal, assertStillInside } from '../../security/toctou.ts';
 import { AppError } from '../../util/errors.ts';
 
 import type { ToolName } from '../../types/core.ts';
@@ -199,8 +200,15 @@ function locate(candidate: string, services: CodeFileServices): {
   relative: string;
   artifactKey: string;
 } {
-  const absolute = services.resolvePath(candidate);
   const root = services.resolvePath('.');
+  // Point-of-use revalidation (prompt-1 item P1-S4), in the only order that
+  // works: the spelling first, because the resolver below canonicalises symlinks
+  // away and would leave nothing for a traversal check to see; then the resolved
+  // path against the task's own boundary, which the scope-wide resolver cannot
+  // express — two tasks in one `projects` scope are both "in scope" and are not
+  // each other's workspace.
+  assertNoSymlinkedTraversal(root, candidate);
+  const absolute = assertStillInside(root, services.resolvePath(candidate));
   const relative = path.relative(root, absolute).split(path.sep).join('/');
   if (!relative || relative === '.' || relative.startsWith('../')) {
     throw new AppError('bad_request', 'A Code file path must name a file inside the task workspace.');

@@ -33,6 +33,16 @@
  * and is what keeps the mutex effective while queued: a park that stayed parked
  * until a slot opened could be claimed twice.
  *
+ * **And a claim that never becomes a run is released.** The wait between the claim
+ * and the start is where a continuation can end without one: the client disconnects
+ * — the SSE stream is the run's own liveness, so `acquireCodeLane` drops its waiter
+ * — or the queue times out. Before this was handled, that left the park `running`
+ * with nothing behind it: `requireContinuable` then refused it as `not parked`, and
+ * the next boot demoted it to `interrupted`. A user who closed a tab lost the park.
+ * The release is guarded the same way the claim is, and only fires when the
+ * continuation's own run row does not exist, so a continuation that *did* start is
+ * never un-started by it.
+ *
  * ## Why an explicit route rather than overloading run-task
  *
  * `POST /run-task` with the same `taskId` is how a user re-runs work. Continuation
@@ -64,11 +74,13 @@ import {
   finishTaskRun,
   getTaskRun,
   latestRunForTask,
+  releaseParkedRun,
   startTaskRun,
   updateTaskRunState,
   type TaskRunTool,
 } from '../db/taskRuns.ts';
 import { nextStepNumber, recordStep } from '../db/taskSteps.ts';
+import { approvalExpiresAt, approvalWaitTtlMs } from '../services/agent/approvalWait.ts';
 import { provisionWorktree } from '../services/code/worktree.ts';
 import { AppError, toAppError } from '../util/errors.ts';
 import { createLogger } from '../util/logger.ts';
@@ -150,8 +162,21 @@ function applyDecision(
 
   const { applied } = resolveApproval(approvalId, decision);
   if (!applied) {
+    // `expired` is not `already_resolved`: nobody answered this one, and the
+    // difference is the whole reason the deadline exists. A prompt that timed out
+    // gets its own sentence and its own reason code, because the retry is
+    // different — a second attempt at an answered prompt is a bug, while a
+    // prompt that expired is answered by continuing the task, which asks again.
+    const state = getApproval(approvalId)?.state;
+    if (state === 'expired') {
+      throw new AppError(
+        'conflict',
+        'That approval expired before it was answered, so this decision cannot be applied. Continue the task to be asked again.',
+        { details: { approvalId, state, reason: 'expired', waitHours: approvalWaitTtlMs() / 3_600_000 } },
+      );
+    }
     throw new AppError('conflict', 'That approval has already been resolved.', {
-      details: { approvalId, state: getApproval(approvalId)?.state, reason: 'already_resolved' },
+      details: { approvalId, state, reason: 'already_resolved' },
     });
   }
   return { approvalId, decision };
@@ -351,6 +376,13 @@ function continueTaskRoute(tool: AgentTool) {
               code: failure.code,
               message: failure.message,
             });
+          } else {
+            // No row of its own: the continuation never reached `startTaskRun`, so
+            // the claim on the parked run is the only trace it left. Released,
+            // because a user whose connection dropped while queued should find
+            // their task exactly as parked as they left it — not claimed by a run
+            // that does not exist.
+            releaseClaim(run, failure);
           }
         } catch (writeError) {
           log.warn(`continuation ${continuationRunId}: recording error failed: ${String(writeError)}`);
@@ -362,6 +394,31 @@ function continueTaskRoute(tool: AgentTool) {
         sse.close();
       });
   };
+}
+
+/**
+ * Give a park back, because the continuation that claimed it never started.
+ *
+ * `run` is the row as it was read before the claim, which is the only place the
+ * park's own state and reason still exist — `claimParkedRun` overwrites the state
+ * and stores no memory of what it was. A release that fails is logged rather than
+ * thrown: the request is already over, and the durable outcome (`running` with no
+ * process) is what the next boot reconciles.
+ */
+function releaseClaim(run: TaskRun, failure: AppError): void {
+  try {
+    const released = releaseParkedRun(run.runId, {
+      state: run.state === 'blocked' ? 'blocked' : 'ready_for_review',
+      pauseReason: run.pauseReason,
+    });
+    log.info(
+      released
+        ? `run ${run.runId}: continuation did not start (${failure.code}); the park is back`
+        : `run ${run.runId}: continuation did not start (${failure.code}); another attempt already owns it`,
+    );
+  } catch (error) {
+    log.warn(`run ${run.runId}: releasing the claim failed: ${String(error)}`);
+  }
 }
 
 /**
@@ -468,6 +525,11 @@ function listApprovalsRoute(tool: TaskRunTool) {
         matchedPattern: approval.matchedPattern,
         reason: approval.reason,
         createdAt: approval.createdAt,
+        // The deadline the reaper will hold this row to, computed from the same
+        // setting the sweep reads. A client that had to guess it — or that
+        // hard-coded the default — would show a countdown that disagrees with the
+        // moment the prompt actually stops being answerable.
+        expiresAt: approvalExpiresAt(approval.createdAt),
       })),
     });
   });

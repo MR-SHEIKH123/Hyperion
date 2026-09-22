@@ -26,7 +26,7 @@ import {
   resolveProfile,
 } from '../agent/profiles.ts';
 import { resolveContextWindow } from '../agent/compaction.ts';
-import { findCachedModel } from '../../providers/registry.ts';
+import { contextWindowFallback, contextWindowOverride, findCachedModel } from '../../providers/registry.ts';
 import { sessionPermissionRules } from '../../db/approvals.ts';
 import { loadConversation } from '../../db/taskMessages.ts';
 import { TaskBudget } from '../limits/budget.ts';
@@ -56,7 +56,7 @@ import type { DesignToolServices } from './tools.ts';
 export interface DesignDependencies extends DesignToolServices {
   resolveProfile?: typeof resolveProfile;
   sessionPermissionRules?: (taskId: string) => Record<string, PermissionRule>;
-  resolveContextWindow?: (input: { model?: ModelInfo; override?: number }) => ReturnType<typeof resolveContextWindow>;
+  resolveContextWindow?: (input: { model?: ModelInfo; override?: number; fallback?: number }) => ReturnType<typeof resolveContextWindow>;
   /** Test seam for the cache-only model lookup; production uses the registry. */
   findModel?: (modelId: string) => ModelInfo | null;
   createBudget?: () => TaskBudget;
@@ -169,6 +169,8 @@ export async function runDesignTask(
     // Cache-only: a run start must not wait on a network call, and an
     // unknown model keeps the honest `assumed` default.
     const modelInfo = (deps.findModel ?? findCachedModel)(input.modelId);
+    const ceiling = contextWindowOverride();
+    const fallback = contextWindowFallback();
 
     const loop = await runAgentLoop({
       runId: ctx.runId,
@@ -178,6 +180,9 @@ export async function runDesignTask(
       profile,
       permissions,
       policy,
+      // See cowork/agent.ts: Design stays inside the projects scope, so its
+      // containment root is the workspace its approvals bind (S1).
+      ticketBinding: { workspace: ctx.resolvePath('.') },
       run: runTool,
       unattended: input.unattended ?? deps.unattended ?? false,
       iterationCeiling: deps.iterationCeiling,
@@ -185,9 +190,14 @@ export async function runDesignTask(
       context: {
         messages: () => messages,
         replace: (next) => { messages = [...next]; },
-        window: (deps.resolveContextWindow ?? ((value) => resolveContextWindow(value)))(
-          modelInfo === null ? {} : { model: modelInfo },
-        ),
+        window: (deps.resolveContextWindow ?? ((value) => resolveContextWindow(value)))({
+          ...(modelInfo === null ? {} : { model: modelInfo }),
+          // The provider's declared ceiling wins over the model list (1.28), and
+          // it is read here, at run start, for the same reason the cache is:
+          // neither may wait on the network.
+          ...(ceiling === undefined ? {} : { override: ceiling }),
+        fallback,
+        }),
       },
       turn: async (feedback) => {
         for (const item of feedback) {

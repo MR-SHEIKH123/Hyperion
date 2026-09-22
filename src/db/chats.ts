@@ -40,6 +40,17 @@ export interface ChatRecord {
   providerId: string | null;
   pinned: boolean;
   archived: boolean;
+  /**
+   * The chat this one was forked from, when it was (1.27).
+   *
+   * A branch, not a category: forking copies the source's messages up to a point
+   * and leaves the original untouched, and the reference is the only thing that
+   * records where the branch came from. It is `ON DELETE SET NULL` (migration
+   * `017`), so deleting the original keeps the fork rather than cascading into it
+   * — a fork is a conversation in its own right, and losing the parent should cost
+   * at most the provenance line, never the transcript.
+   */
+  forkedFrom: string | null;
   createdAt: number;
   updatedAt: number;
   lastOpenedAt: number;
@@ -53,6 +64,7 @@ interface ChatRow {
   provider_id: string | null;
   pinned: number;
   archived: number;
+  forked_from: string | null;
   created_at: number;
   updated_at: number;
   last_opened_at: number;
@@ -86,6 +98,7 @@ function mapChat(row: ChatRow): ChatRecord {
     providerId: row.provider_id,
     pinned: row.pinned === 1,
     archived: row.archived === 1,
+    forkedFrom: row.forked_from,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     lastOpenedAt: row.last_opened_at,
@@ -168,6 +181,7 @@ export function createChat(input: {
   modelId?: string | null;
   providerId?: string | null;
   id?: string;
+  forkedFrom?: string | null;
 }): ChatRecord {
   const id = input.id ?? randomUUID();
   // Reaching here with a temporary id would insert the row this whole feature
@@ -177,13 +191,32 @@ export function createChat(input: {
       details: { field: 'id', chatId: id },
     });
   }
+  // A caller-supplied id is a request, not an instruction to overwrite. Without
+  // this the INSERT would hit the primary key and surface as a 500 — a client
+  // that raced itself or repeated a request would read an internal error where
+  // the honest answer is "that id is taken".
+  if (input.id !== undefined && findChat(id) !== null) {
+    throw new AppError('conflict', `Chat "${id}" already exists.`, {
+      details: { field: 'id', chatId: id },
+    });
+  }
   const now = Date.now();
   getDb()
     .prepare(
-      `INSERT INTO chats (id, title, tool, model_id, provider_id, pinned, archived, created_at, updated_at, last_opened_at)
-       VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, ?)`,
+      `INSERT INTO chats (id, title, tool, model_id, provider_id, pinned, archived, forked_from, created_at, updated_at, last_opened_at)
+       VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?)`,
     )
-    .run(id, input.title ?? 'New chat', input.tool, input.modelId ?? null, input.providerId ?? null, now, now, now);
+    .run(
+      id,
+      input.title ?? 'New chat',
+      input.tool,
+      input.modelId ?? null,
+      input.providerId ?? null,
+      input.forkedFrom ?? null,
+      now,
+      now,
+      now,
+    );
   return requireChat(id);
 }
 
@@ -313,6 +346,195 @@ export function listMessages(chatId: string, limit = 500): MessageRecord[] {
     .prepare<MessageRow>(`SELECT * FROM messages WHERE chat_id = ? ORDER BY seq ASC LIMIT ?`)
     .all(chatId, limit)
     .map(mapMessage);
+}
+
+export interface ForkChatInput {
+  /** The chat to branch from. */
+  sourceId: string;
+  /**
+   * Copy messages up to and including this one. Omitted means all of them, which
+   * is the "give me this conversation as my own starting point" case; naming one
+   * is the "branch from here instead of living with the end of that thread" case.
+   */
+  upToMessageId?: string;
+  /** Defaults to the source's title with ` (fork)` appended. */
+  title?: string;
+  /** Id for the new chat; the frontend generates ids client-side everywhere else. */
+  id?: string;
+}
+
+export interface ForkResult {
+  chat: ChatRecord;
+  /** The copied messages, oldest first, with their new ids and sequence numbers. */
+  messages: MessageRecord[];
+  /**
+   * How many copied messages were mid-stream in the source and land `paused`.
+   * A number rather than silence: the fork carries a partial reply whose writer
+   * is still the original chat, and the surface can say so.
+   */
+  pausedPartials: number;
+}
+
+/**
+ * Branch a conversation (1.27's session fork).
+ *
+ * The shape, and why:
+ *
+ *   * **The original is untouched.** Nothing is moved, renumbered or truncated in
+ *     the source chat, so a fork is always safe to take — including from a
+ *     conversation the user is still having.
+ *   * **The copy is a real conversation, not a view.** Messages are inserted as
+ *     new rows with new ids, so the branch can be continued, renamed, exported and
+ *     deleted on its own. `forked_from` records where it came from.
+ *   * **A mid-stream message lands `paused`.** The source's row may still be
+ *     written to by the run that owns it; the copy has no writer at all, and
+ *     `streaming` would claim a process is about to complete it. `paused` is the
+ *     status this schema already uses for "partial text, nothing running".
+ *   * **Timestamps are preserved.** A conversation's history reads in the order it
+ *     happened, and re-stamping every copied row with "now" would put a
+ *     week-old exchange in the branch as if it had just been said.
+ *
+ * A temporary chat is refused rather than copied: its messages exist only in the
+ * process, and forking one would write down exactly what the user asked to leave
+ * no trace of.
+ */
+export interface CopyMessagesResult {
+  /** The copied rows, oldest first, read back out of the database. */
+  messages: MessageRecord[];
+  /** How many copies were mid-stream in the source and landed `paused`. */
+  pausedPartials: number;
+}
+
+/**
+ * Copy persisted messages into another chat, as new rows.
+ *
+ * One implementation, two callers — the session fork (1.27) and resume-in-a-new
+ * session (1.28) — because the properties that make a copy correct are the same
+ * in both cases and a second implementation would drift on exactly the ones that
+ * are easy to forget:
+ *
+ *   * new ids and fresh sequence numbers, so the copy is a conversation rather
+ *     than a view that shares rows with its source;
+ *   * timestamps preserved, because re-stamping a week-old exchange with "now"
+ *     rewrites the history it is supposed to carry;
+ *   * a `streaming` row lands `paused` — the copy has no writer, and `streaming`
+ *     would claim a process is about to complete it;
+ *   * an optional **receipt** as the first message, which is how a partial copy
+ *     explains the gap instead of quietly starting mid-conversation.
+ *
+ * Nothing is read back here: the caller has the source rows, and the ids it just
+ * wrote are not what a response should quote. `copyMessages` returns what a
+ * caller needs to count (`pausedPartials`), and the response is assembled from a
+ * fresh `listMessages` so it describes what is *stored* rather than what this
+ * function intended.
+ */
+export function copyMessages(
+  sourceId: string,
+  targetId: string,
+  messages: readonly MessageRecord[],
+  options: { receipt?: string } = {},
+): CopyMessagesResult {
+  const insert = getDb().prepare(
+    `INSERT INTO messages
+       (id, chat_id, role, content, tool, model_id, provider_id, provider_name, status,
+        error_code, error_message, tokens_in, tokens_out, seq, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+
+  const now = Date.now();
+  let pausedPartials = 0;
+  let seq = 0;
+  getDb().transaction(() => {
+    if (options.receipt !== undefined && options.receipt !== '') {
+      seq += 1;
+      insert.run(
+        randomUUID(),
+        targetId,
+        'system',
+        options.receipt,
+        null,
+        null,
+        null,
+        null,
+        'complete',
+        null,
+        null,
+        null,
+        null,
+        seq,
+        now,
+        now,
+      );
+    }
+    for (const message of messages) {
+      const status: MessageStatus = message.status === 'streaming' ? 'paused' : message.status;
+      if (message.status === 'streaming') pausedPartials += 1;
+      seq += 1;
+      insert.run(
+        randomUUID(),
+        targetId,
+        message.role,
+        message.content,
+        message.tool,
+        message.modelId,
+        message.providerId,
+        message.providerName,
+        status,
+        message.errorCode,
+        message.errorMessage,
+        message.tokensIn,
+        message.tokensOut,
+        seq,
+        message.createdAt,
+        message.updatedAt,
+      );
+    }
+  })();
+
+  // The copy is complete as stored, so the target's own `updated_at` reflects the
+  // moment of copying rather than the last thing said before it.
+  getDb().prepare('UPDATE chats SET updated_at = ? WHERE id = ?').run(now, targetId);
+  return { messages: listMessages(targetId, 500), pausedPartials };
+}
+
+export function forkChat(input: ForkChatInput): ForkResult {
+  const sourceId = input.sourceId;
+  if (isTemporaryChat(sourceId)) {
+    throw new AppError(
+      'conflict',
+      'A temporary chat cannot be forked: its messages are not stored, and a fork would persist them.',
+      { details: { chatId: sourceId } },
+    );
+  }
+  const source = requireChat(sourceId);
+
+  let messages = listMessages(sourceId, 500);
+  if (input.upToMessageId !== undefined) {
+    const index = messages.findIndex((message) => message.id === input.upToMessageId);
+    if (index === -1) {
+      throw new AppError('bad_request', 'upToMessageId is not a message in this chat.', {
+        details: { field: 'upToMessageId', chatId: sourceId },
+      });
+    }
+    messages = messages.slice(0, index + 1);
+  }
+
+  const chat = createChat({
+    tool: source.tool,
+    title: input.title ?? `${source.title} (fork)`,
+    modelId: source.modelId,
+    providerId: source.providerId,
+    forkedFrom: source.id,
+    ...(input.id !== undefined ? { id: input.id } : {}),
+  });
+
+  const { pausedPartials } = copyMessages(source.id, chat.id, messages);
+
+  // Read back rather than returning the objects built in the loop: a response
+  // assembled from local variables describes what this function *meant* to write,
+  // and the one test that matters here (timestamps preserved) is exactly the kind
+  // of field that can differ between the two.
+  return { chat: requireChat(chat.id), messages: listMessages(chat.id, 500), pausedPartials };
 }
 
 export interface MessagePage {

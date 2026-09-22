@@ -28,13 +28,15 @@ import {
   testProviderConnection,
 } from '../providers/registry.ts';
 import { colibriAdvisory, probeColibri, requireSlowAcknowledgement } from '../providers/colibri.ts';
+import { resetHealth } from '../providers/health.ts';
+import { puterAdvisory } from '../providers/puter.ts';
 import { redactionCheckEnabled, zdrRequirement } from '../db/settings.ts';
-import { classifyProviderType } from '../services/safety/outbound.ts';
+import { egressClassFor, isLoopbackHost, tryEgressProxy } from '../services/safety/outbound.ts';
 import { zdrStatusFor } from '../services/safety/zdr.ts';
 import { isProviderType, PROVIDER_TYPES, ZDR_FLAG_LOCATIONS, ZDR_SUPPORTS } from '../types/core.ts';
 import { AppError } from '../util/errors.ts';
 import { wrap } from './errors.ts';
-import { asBool, asEnum, asNumber, asString, body, pathParam, queryBool } from './params.ts';
+import { asBool, asEnum, asNumber, asPositiveInteger, asString, body, pathParam, queryBool } from './params.ts';
 
 import type { ZdrRequestFlag } from '../types/core.ts';
 
@@ -72,6 +74,17 @@ providersRouter.post(
       apiKey: input.apiKey === undefined ? null : asString(input.apiKey, 'apiKey'),
       priority: asNumber(input.priority, 'priority'),
       enabled: asBool(input.enabled, 'enabled'),
+      // `null` and absent both mean "no proxy"; the repository parses whatever it
+      // is given and rejects an unusable URL before writing anything.
+      egressProxy: input.egressProxy === undefined || input.egressProxy === null
+        ? null
+        : asString(input.egressProxy, 'egressProxy'),
+      // The declared context ceiling (1.28). `asPositiveInteger` refuses zero and
+      // fractions with `details.field`; the repository refuses them too, for the
+      // callers that never pass through this route.
+      maxContextTokens: input.maxContextTokens === undefined || input.maxContextTokens === null
+        ? null
+        : (asPositiveInteger(input.maxContextTokens, 'maxContextTokens') ?? null),
     });
     res.status(201).json({ provider: toPublic(provider) });
   }),
@@ -90,6 +103,24 @@ providersRouter.post(
       typeof baseUrl === 'string' && baseUrl.trim() !== '' ? baseUrl : undefined,
     );
     res.json(result);
+  }),
+);
+
+/**
+ * What a Puter provider is configured with, where the credential comes from, and
+ * where its model list is read from (1.38).
+ *
+ * Advertised rather than left to documentation because three things about this
+ * provider are unlike every other one here: the credential is a minted access
+ * token rather than a vendor key, the model catalogue is not `{base}/models`, and
+ * the OpenAI-compatible endpoint is a paid-plan feature. A form can state all
+ * three before the token is pasted — `requiresPaidPlan` is the one that saves a
+ * free-plan user from discovering it through a 402 on their first message.
+ */
+providersRouter.get(
+  '/puter/advisory',
+  wrap((_req, res) => {
+    res.json(puterAdvisory());
   }),
 );
 
@@ -153,10 +184,32 @@ providersRouter.get(
   '/active',
   wrap((_req, res) => {
     const active = getActiveProvider();
+    const proxy = tryEgressProxy(active?.egressProxy ?? null);
     res.json({
       provider: active ? toPublic(active) : null,
-      egress: classifyProviderType(active?.type ?? null),
+      egress: egressClassFor(active),
       redactionCheckEnabled: redactionCheckEnabled(),
+      /**
+       * Honest disclosure for the point-of-action privacy line (Part 1.37).
+       *
+       * Structured rather than a boolean because two different sentences have to
+       * be derivable: "this goes through a proxy" and "this goes through a proxy
+       * that is not on this machine". The second is the one that changes what the
+       * egress class above means, and a frontend that had only a flag would end
+       * up asserting the first while the class said `remote` for reasons it could
+       * not name. `redacted` is the only URL form that crosses the wire — the
+       * credentials in a proxy URL are a secret this interface has never carried.
+       */
+      egressProxy:
+        proxy === null
+          ? null
+          : {
+              redacted: proxy.redacted,
+              authority: proxy.authority,
+              scheme: proxy.scheme,
+              hasCredentials: proxy.hasCredentials,
+              offMachine: !isLoopbackHost(proxy.host),
+            },
       zdr: {
         // Null rather than a status when nothing is enabled: there is no request
         // this would describe, and inventing `zdr_unknown` would read as a fact
@@ -184,6 +237,14 @@ providersRouter.patch(
       baseUrl: input.baseUrl === undefined ? undefined : asString(input.baseUrl, 'baseUrl'),
       priority: asNumber(input.priority, 'priority'),
       apiKey: input.apiKey === undefined ? undefined : (input.apiKey === null ? null : asString(input.apiKey, 'apiKey')),
+      egressProxy: input.egressProxy === undefined
+        ? undefined
+        : (input.egressProxy === null ? null : asString(input.egressProxy, 'egressProxy')),
+      maxContextTokens: input.maxContextTokens === undefined
+        ? undefined
+        : (input.maxContextTokens === null
+          ? null
+          : (asPositiveInteger(input.maxContextTokens, 'maxContextTokens') ?? null)),
     });
     res.json({ provider: toPublic(provider) });
   }),
@@ -260,7 +321,17 @@ providersRouter.put(
 providersRouter.delete(
   '/:id',
   wrap((req, res) => {
-    deleteProvider(pathParam(req, 'id'));
+    const id = pathParam(req, 'id');
+    deleteProvider(id);
+    // The row is gone, so nothing can read this provider's runtime state again:
+    // its health tracker and its cooldown are keyed by an id no row holds and
+    // would sit in this process until it exits. `resetHealth` is the single entry
+    // point for "what we concluded about this provider no longer applies" — it
+    // already covers editing the key, testing the connection and re-enabling —
+    // and deleting is the gesture that makes the state unreadable rather than
+    // merely stale. Found by deleting a provider live while testing 1.36's
+    // disclosure and noticing the cooldown outlived the row.
+    resetHealth(id);
     res.status(204).end();
   }),
 );

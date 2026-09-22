@@ -29,6 +29,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { getDb } from './adapter.ts';
+import { settleTicketForDecision, voidTicketsForApprovals, voidTicketsForTask } from './approvalTickets.ts';
 import { AppError } from '../util/errors.ts';
 
 import type { PermissionAction, PermissionLayer, PermissionRule } from '../types/core.ts';
@@ -41,9 +42,11 @@ import type { PermissionAction, PermissionLayer, PermissionRule } from '../types
  * single `allowed` value would make it impossible to tell which the user chose
  * when reading the history back.
  *
- * `expired` exists for the reaper — a park abandoned past its TTL has its
- * approvals closed out rather than left `pending` forever, so "what is this task
- * waiting on?" has an honest answer.
+ * `expired` exists for the reaper — `expireStaleApprovals` below closes out a
+ * prompt nobody answered rather than leaving it `pending` forever, so "what is
+ * this task waiting on?" has an honest answer. It was written here before it was
+ * written anywhere else, which is why the sentence used to describe a mechanism
+ * that did not exist yet.
  */
 export const APPROVAL_STATES = ['pending', 'allow_once', 'allow_session', 'denied', 'expired'] as const;
 
@@ -187,6 +190,98 @@ export function listPendingApprovals(taskId: string): PendingApproval[] {
 }
 
 /**
+ * Everything still waiting on the *user*, across every task, oldest first.
+ *
+ * The per-task listing above serves a task view, which is what the approval
+ * routes have: you are looking at one task, so its prompts are the ones you can
+ * answer. The attention queue is the other view — you are looking at the app, and
+ * a prompt you cannot see is a task that will wait for you indefinitely. Same
+ * rows, opposite direction, which is why this is a second function rather than a
+ * parameter: a caller that forgets to pass a task would silently get every task's
+ * prompts, and that is not a failure mode worth leaving reachable.
+ *
+ * `limit` exists because the queue is a screen, not an archive. A hundred
+ * unanswered prompts is already a state the user has to work through; the count
+ * in `countPendingApprovals` is what tells the truth about the rest.
+ */
+export function listAllPendingApprovals(limit = 100): PendingApproval[] {
+  return getDb()
+    .prepare<ApprovalRow>(
+      `SELECT * FROM pending_approvals WHERE state = 'pending' ORDER BY created_at LIMIT ?`,
+    )
+    .all(limit)
+    .map(mapRow);
+}
+
+/** How many prompts are waiting, without reading their rows. */
+export function countPendingApprovals(): number {
+  const row = getDb()
+    .prepare<{ total: number }>(
+      `SELECT COUNT(*) AS total FROM pending_approvals WHERE state = 'pending'`,
+    )
+    .get();
+  return row?.total ?? 0;
+}
+
+/**
+ * Close out prompts nobody answered, past the deadline (1.31).
+ *
+ * The wait for an answer used to have no end: a prompt stayed `pending` forever,
+ * so it kept being listed as something the user could act on and a click on a
+ * month-old one still authorised its call — against a conversation and a checkout
+ * from a month ago. The deadline is the fix at the row level; the caller owns the
+ * policy (see `services/agent/approvalWait.ts`).
+ *
+ * Three properties are the point, and each one is a way this could be wrong:
+ *
+ *   - **Only `pending` is touched.** `allow_once` / `allow_session` / `denied` are
+ *     answers, not waits: a session allowance is a standing rule and outlives its
+ *     prompt by design (it is `closeApprovals` that clears those, at the task's
+ *     terminal transition, because 1.27 §1 scopes them to the task).
+ *   - **The decision guard stays per row.** A user answering at the same moment the
+ *     reaper runs must win, so the update is `WHERE id = ? AND state = 'pending'`
+ *     and a row that moved is not reported as expired. The same mutex shape
+ *     `resolveApproval` uses — a read-then-write of the same field would expire a
+ *     prompt that had just been approved.
+ *
+ *     That guard and the `state = 'pending'` filter on the read overlap, and both
+ *     are kept: the filter narrows the write to rows that looked unanswered, and
+ *     the guard is what makes the answer win if one lands in the gap between the
+ *     two statements. Neither is observable on its own — dropping either leaves
+ *     every non-racy behaviour identical, which is also why the mutation checks in
+ *     `test/approvalwait.test.ts` do not claim to kill them individually.
+ *   - **It reports what it expired.** The caller has to know *which* waits ended,
+ *     because a prompt going away silently is indistinguishable from a bug; the
+ *     rows come back with their `state`/`resolvedAt` already advanced.
+ */
+export function expireStaleApprovals(input: { ttlMs: number; now?: number }): PendingApproval[] {
+  const now = input.now ?? Date.now();
+  const stale = getDb()
+    .prepare<ApprovalRow>(
+      `SELECT * FROM pending_approvals
+        WHERE state = 'pending' AND created_at <= ?
+        ORDER BY created_at`,
+    )
+    .all(now - input.ttlMs)
+    .map(mapRow);
+  if (stale.length === 0) return [];
+
+  const expire = getDb().prepare(
+    `UPDATE pending_approvals SET state = 'expired', resolved_at = ?
+      WHERE id = ? AND state = 'pending'`,
+  );
+  const expired: PendingApproval[] = [];
+  for (const approval of stale) {
+    if (expire.run(now, approval.id).changes === 0) continue;
+    expired.push({ ...approval, state: 'expired', resolvedAt: now });
+  }
+  // The question's deadline is the ticket's deadline (S1): a ticket that outlived
+  // its prompt would be an authorisation nobody is waiting on any more.
+  voidTicketsForApprovals(expired.map((approval) => approval.id), now);
+  return expired;
+}
+
+/**
  * Apply a decision, once.
  *
  * The `state = 'pending'` guard is the mutex. Two clients answering the same
@@ -213,6 +308,12 @@ export function resolveApproval(
   if (approval === null) {
     throw new AppError('not_found', `No approval "${id}" was found.`, { details: { approvalId: id } });
   }
+
+  // The ticket moves with the answer, and only when this call is the one that
+  // answered. A loser of the race must not arm an authorisation it did not grant
+  // — the same reason the state update above is guarded rather than read-then-write
+  // (S1).
+  if (updated.changes !== 0) settleTicketForDecision(id, decision);
   return { approval, applied: updated.changes !== 0 };
 }
 
@@ -275,6 +376,13 @@ export function closeApprovals(taskId: string): number {
         WHERE task_id = ? AND state = 'allow_session'`,
     )
     .run(now, taskId);
+  // Every ticket the task still holds goes with it (S1): an `allow_once` ticket
+  // that survived a task's ending could be spent by a later run that reused the
+  // id, and a `standing` one records a session allowance that has just been
+  // cleared. Voiding by task rather than by approval state is deliberate — the
+  // question here is "is this task still authorised to do anything?", and the
+  // answer does not depend on how each individual approval was answered.
+  voidTicketsForTask(taskId, now);
   return expired.changes + cleared.changes;
 }
 

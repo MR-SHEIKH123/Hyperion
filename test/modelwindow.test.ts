@@ -19,7 +19,7 @@ import type { ContextWindow } from '../src/services/agent/compaction.ts';
 const { cleanupHome, freshDb, testHome, startMockProvider } = await import('./helpers.ts');
 const { findCachedModel } = await import('../src/providers/registry.ts');
 const { createProvider, saveModelCache } = await import('../src/providers/repository.ts');
-const { resolveContextWindow: realResolveContextWindow } = await import('../src/services/agent/compaction.ts');
+const { OLLAMA_DEFAULT_CONTEXT_TOKENS, resolveContextWindow: realResolveContextWindow } = await import('../src/services/agent/compaction.ts');
 const { runCoworkTask } = await import('../src/services/cowork/agent.ts');
 const { runCodeTask } = await import('../src/services/code/agent.ts');
 const { runDesignTask } = await import('../src/services/design/agent.ts');
@@ -35,6 +35,10 @@ let counter = 0;
 
 interface SeenWindow {
   model?: ModelInfo | undefined;
+  /** The provider-aware bottom rung (1.28), so local and gateway defaults differ. */
+  fallback?: number | undefined;
+  /** The provider's declared ceiling, when one is in force (Part 1.28). */
+  override?: number | undefined;
 }
 
 /** One scripted ctx for whichever agent is under test. */
@@ -83,7 +87,7 @@ function harness(turns: { chunks?: StreamChunk[]; error?: unknown }[]) {
     mode: 'act',
   };
 
-  const windowSpy = (value: { model?: ModelInfo; override?: number }): ContextWindow => {
+  const windowSpy = (value: { model?: ModelInfo; override?: number; fallback?: number }): ContextWindow => {
     seen.push(value);
     return realResolveContextWindow(value);
   };
@@ -166,6 +170,74 @@ describe('the agents resolve the real window at run start', () => {
     });
     assert.equal(result.ok, true);
     assert.equal(run.seen[0]?.model?.contextLength, 123_456);
+  });
+});
+
+describe('a declared ceiling is the ladder\'s first rung', () => {
+  const foundModel = () => ({ id: 'model-1', contextLength: 123_456 });
+
+  it('every agent passes the active provider\'s ceiling into the resolution', async () => {
+    // 1.28 documented the ladder as "an explicit override, then what the provider
+    // reported, then the default" — and until this test existed, no caller ever
+    // supplied the first rung: `providers.max_context_tokens` had no reader. One
+    // loop per agent, because the three agents resolve their window independently
+    // and asserting one of them would leave the other two free to drift.
+    const declared = createProvider({
+      name: 'Declared',
+      type: 'remote',
+      baseUrl: 'https://example.test/v1',
+      enabled: true,
+      maxContextTokens: 40_000,
+    });
+    assert.equal(findCachedModel('model-1'), null, 'the model itself is unknown to the cache');
+
+    const code = harness([{ chunks: [token('done')] }]);
+    assert.equal((await runCodeTask(code.input, code.ctx, {
+      dependencies: { ...codeDeps, findModel: foundModel, resolveContextWindow: code.windowSpy },
+    })).ok, true);
+    assert.equal(code.seen[0]?.override, 40_000);
+
+    const cowork = harness([{ chunks: [token('done')] }]);
+    assert.equal((await runCoworkTask({ ...cowork.input, tool: 'cowork' }, cowork.ctx, {
+      dependencies: { ...coworkDeps, findModel: foundModel, resolveContextWindow: cowork.windowSpy },
+    })).ok, true);
+    assert.equal(cowork.seen[0]?.override, 40_000);
+
+    const design = harness([{ chunks: [token('done')] }]);
+    assert.equal((await runDesignTask({ ...design.input, tool: 'design' }, design.ctx, {
+      dependencies: { findModel: foundModel, resolveContextWindow: design.windowSpy },
+    })).ok, true);
+    assert.equal(design.seen[0]?.override, 40_000);
+
+    // And the ladder honours it: the declaration wins over the model's own number.
+    const { resolveContextWindow } = await import('../src/services/agent/compaction.ts');
+    assert.equal(resolveContextWindow({ model: { id: 'model-1', contextLength: 123_456 }, override: declared.maxContextTokens ?? undefined }).tokens, 40_000);
+  });
+
+  it('a local provider hands its own default to the ladder', async () => {
+    // Not the gateway default: Ollama truncates silently past its window, so the
+    // bottom rung is provider-aware and the agents must pass it through, or the
+    // four call sites could disagree about the same provider.
+    createProvider({ name: 'Ollama', type: 'local', baseUrl: 'http://127.0.0.1:11434', enabled: true });
+    const run = harness([{ chunks: [token('done')] }]);
+    assert.equal((await runCodeTask(run.input, run.ctx, {
+      dependencies: { ...codeDeps, findModel: () => null, resolveContextWindow: run.windowSpy },
+    })).ok, true);
+    assert.equal(run.seen[0]?.fallback, OLLAMA_DEFAULT_CONTEXT_TOKENS);
+    // And the ladder used it rather than the 8 192 gateway default.
+    const { resolveContextWindow } = await import('../src/services/agent/compaction.ts');
+    assert.equal(resolveContextWindow({ fallback: run.seen[0]?.fallback }).tokens, 4_096);
+  });
+
+  it('a provider that declares nothing leaves the ladder to the model and the default', async () => {
+    createProvider({ name: 'Silent', type: 'remote', baseUrl: 'https://example.test/v1', enabled: true });
+    const run = harness([{ chunks: [token('done')] }]);
+    assert.equal((await runCodeTask(run.input, run.ctx, {
+      dependencies: { ...codeDeps, findModel: () => null, resolveContextWindow: run.windowSpy },
+    })).ok, true);
+    // Absent, not zero: a `0` here would be read as "compact everything", which is
+    // the one way this field could do harm.
+    assert.equal(run.seen[0]?.override, undefined);
   });
 });
 

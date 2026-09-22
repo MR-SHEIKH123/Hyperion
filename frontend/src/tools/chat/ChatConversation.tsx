@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Archive, ArchiveRestore, Pin, PinOff, RefreshCw } from 'lucide-react';
-import { archiveChat, openChat, patchChat, pinChat, unarchiveChat } from '../../api/chat';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Archive, ArchiveRestore, GitFork, Pin, PinOff, RefreshCw, Split } from 'lucide-react';
+import { archiveChat, forkChat, getChatContext, openChat, patchChat, pinChat, resumeInNewSession, unarchiveChat } from '../../api/chat';
 import type { ChatReconciliation } from '../../api/chat';
 import type { MessageRecord, RunStateSnapshot } from '../../contracts/wire/chat';
 import { Button } from '../../design-system/components/Button/Button';
 import { StatusBadge } from '../../design-system/components/StatusBadge/StatusBadge';
+import { useScrollAnchor } from '../../state/persistence/useScrollAnchor';
+import { usePersistedDraft } from '../../state/persistence/usePersistedDraft';
+import { chatDraftKey } from './drafts';
 import { useChatStream } from './useChatStream';
 import { useModelSelection } from './useModelSelection';
 import { Composer } from './Composer';
@@ -23,6 +27,30 @@ const PAUSE_REASON_LABELS: Record<string, string> = {
 
 function pauseLabel(reason: string | null): string {
   return reason ? (PAUSE_REASON_LABELS[reason] ?? reason) : 'Paused';
+}
+
+/**
+ * What the fork handed to the surface it opened (1.27). Carried on the
+ * navigation rather than stored: it describes the act of branching, not the
+ * branch, and a branch reopened tomorrow is just a conversation.
+ */
+export interface ForkNotice {
+  sourceTitle: string;
+  copied: number;
+  pausedPartials: number;
+}
+
+/**
+ * What the resume handed to the session it opened (1.28). Carried on the
+ * navigation like the fork notice, for the same reason: it describes the act of
+ * continuing elsewhere, not the session.
+ */
+export interface SessionResumeNotice {
+  sourceTitle: string;
+  droppedMessages: number;
+  /** True when the window it was measured against was the assumed default. */
+  assumed: boolean;
+  windowTokens: number;
 }
 
 interface ConversationProps {
@@ -43,8 +71,20 @@ interface ConversationProps {
 export function ChatConversation({ chatId, pendingSend, onPendingSendConsumed }: ConversationProps) {
   const queryClient = useQueryClient();
   const scrollRef = useRef<HTMLDivElement>(null);
-  const contentLengthRef = useRef(0);
-  const rowCountRef = useRef(0);
+
+  // The unsent draft and the reading position are the two things this surface is
+  // expected to come back to (1.39 A5).
+  const draft = usePersistedDraft(chatDraftKey(chatId));
+
+  const location = useLocation();
+  const navigate = useNavigate();
+  const forkNotice: ForkNotice | null =
+    (location.state as { forkNotice?: ForkNotice } | null)?.forkNotice ?? null;
+  const sessionResumeNotice: SessionResumeNotice | null =
+    (location.state as { sessionResumeNotice?: SessionResumeNotice } | null)?.sessionResumeNotice ?? null;
+  const dismissNotice = useCallback(() => {
+    void navigate(location.pathname, { replace: true, state: null });
+  }, [navigate, location.pathname]);
 
   const chatQuery = useQuery({
     queryKey: ['chat', chatId],
@@ -129,6 +169,71 @@ export function ChatConversation({ chatId, pendingSend, onPendingSendConsumed }:
     });
   }, [chat, chatId, queryClient]);
 
+  /**
+   * Branch this conversation at its end and open the branch.
+   *
+   * The source is deliberately not refetched: the backend copies without
+   * touching it, and refetching would suggest otherwise (and would discard the
+   * cached page someone is reading). Only the chat list changes — a branch is a
+   * new entry in it.
+   */
+  const branch = useMutation({
+    mutationFn: () => forkChat(chatId),
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: ['chats'] });
+      void navigate(`/chat/${encodeURIComponent(result.chat.id)}`, {
+        state: {
+          forkNotice: {
+            sourceTitle: chat?.title ?? 'the original conversation',
+            copied: result.messages.length,
+            pausedPartials: result.pausedPartials,
+          } satisfies ForkNotice,
+        },
+      });
+    },
+  });
+
+  /**
+   * How full this conversation is (1.28).
+   *
+   * Fetched once when the conversation opens — the estimate only moves when
+   * messages are added, and a refetch per keystroke would be a provider-free way
+   * to still cost the user something. Refused rather than retried on failure:
+   * the read is an *offer*, and a surface that shouts about a metric nobody asked
+   * for is worse than one that stays quiet.
+   */
+  const context = useQuery({
+    queryKey: ['chat-context', chatId],
+    queryFn: ({ signal }) => getChatContext(chatId, signal),
+    retry: false,
+    staleTime: 30_000,
+  });
+
+  /**
+   * Continue this conversation in a new session.
+   *
+   * The response names the session it created, so the surface opens it rather
+   * than leaving the user on a transcript that is about to hit the ceiling. The
+   * source is not refetched: the backend leaves it byte-for-byte as it was, and
+   * refetching would suggest otherwise.
+   */
+  const continueInNewSession = useMutation({
+    mutationFn: () => resumeInNewSession(chatId),
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: ['chats'] });
+      void navigate(`/chat/${encodeURIComponent(result.chat.id)}`, {
+        state: {
+          sessionResumeNotice: {
+            sourceTitle: result.source.title,
+            droppedMessages: result.droppedMessages,
+            assumed: result.assessment.window.assumed,
+            windowTokens: result.assessment.window.tokens,
+          } satisfies SessionResumeNotice,
+        },
+      });
+    },
+  });
+
   const resume = useCallback(() => {
     const run = latestRun;
     if (run === null || run.state !== 'paused' || modelId === null) return;
@@ -201,18 +306,15 @@ export function ChatConversation({ chatId, pendingSend, onPendingSendConsumed }:
     return rows;
   }, [persisted, stream.status, modelId, model.activeProviderName]);
 
-  useEffect(() => {
-    const container = scrollRef.current;
-    if (container === null) return;
-    const length = view.reduce((n, m) => n + m.content.length, 0);
-    if (length > contentLengthRef.current || view.length !== rowCountRef.current) {
-      container.scrollTop = container.scrollHeight;
-    }
-    contentLengthRef.current = length;
-    rowCountRef.current = view.length;
-  }, [view]);
+  // Reading position: restored once per conversation, then followed only while the
+  // viewport is already at the bottom. The old behaviour — jump to the end whenever
+  // the transcript grew — moved the view out from under anyone reading back.
+  useScrollAnchor(scrollRef, chatDraftKey(chatId), view, { enabled: !chatQuery.isPending });
 
   const pausedRun = latestRun !== null && latestRun.state === 'paused' ? latestRun : null;
+  // The offer, not an alarm: shown only when the read succeeded and said the
+  // transcript has reached the trigger the agent loops compact at.
+  const showContextBanner = context.data?.needsNewSession === true && stream.status.phase !== 'running';
   const showResumeBanner = pausedRun !== null && stream.status.phase !== 'running';
   const serverRunInFlight = latestRun?.state === 'running' && stream.status.phase !== 'running';
   const busyError = stream.status.phase === 'error' && stream.status.error?.code === 'busy' ? stream.status.error : null;
@@ -233,12 +335,88 @@ export function ChatConversation({ chatId, pendingSend, onPendingSendConsumed }:
           <Button variant="quiet" onClick={toggleArchive} disabled={chat === null} aria-label={chat?.archived ? 'Unarchive chat' : 'Archive chat'}>
             {chat?.archived ? <ArchiveRestore aria-hidden="true" /> : <Archive aria-hidden="true" />}
           </Button>
+          <Button
+            variant="quiet"
+            onClick={() => branch.mutate()}
+            disabled={chat === null || branch.isPending}
+            aria-label="Fork conversation"
+            title="Copy this conversation into a new branch"
+          >
+            <GitFork aria-hidden="true" />
+          </Button>
         </div>
       </header>
 
       {chatQuery.isError && (
         <p className={styles.problem} role="alert">
           This conversation could not be opened. {chatQuery.error instanceof Error ? chatQuery.error.message : ''}
+        </p>
+      )}
+
+      {branch.isError && (
+        <p className={styles.problem} role="alert">
+          This conversation could not be branched. {branch.error instanceof Error ? branch.error.message : ''}
+        </p>
+      )}
+
+      {forkNotice !== null && (
+        <p className={styles.forkNotice} role="status">
+          <span className={styles.forkNoticeText}>
+            Branched from “{forkNotice.sourceTitle}” — {forkNotice.copied}{' '}
+            {forkNotice.copied === 1 ? 'message' : 'messages'} copied
+            {forkNotice.pausedPartials > 0
+              ? `, ${forkNotice.pausedPartials} of them stopped mid-stream and are paused here`
+              : ''}
+            .
+          </span>
+          <Button variant="quiet" onClick={dismissNotice}>
+            Dismiss
+          </Button>
+        </p>
+      )}
+
+      {sessionResumeNotice !== null && (
+        <p className={styles.forkNotice} role="status">
+          <span className={styles.forkNoticeText}>
+            Continued from “{sessionResumeNotice.sourceTitle}” — {sessionResumeNotice.droppedMessages}{' '}
+            {sessionResumeNotice.droppedMessages === 1 ? 'earlier message was' : 'earlier messages were'} left
+            behind and described in the note at the top of this session. The original conversation still
+            has them.
+          </span>
+          <Button variant="quiet" onClick={dismissNotice}>
+            Dismiss
+          </Button>
+        </p>
+      )}
+
+      {showContextBanner && (
+        <div className={styles.contextBanner} role="status">
+          <div className={styles.resumeCopy}>
+            <h2 className={styles.resumeTitle}>This conversation is nearly full</h2>
+            <p className={styles.resumeDetail}>
+              ~{Math.round(context.data?.estimatedTokens ?? 0).toLocaleString()} of{' '}
+              {context.data?.window.tokens.toLocaleString()} tokens
+              {context.data?.window.assumed === true
+                ? ' — the limit is assumed, because this model reports no context length'
+                : ''}
+              . Continue in a new session to keep the recent part and leave the earlier messages
+              behind with a note describing them.
+            </p>
+          </div>
+          <Button
+            variant="primary"
+            onClick={() => continueInNewSession.mutate()}
+            disabled={continueInNewSession.isPending}
+          >
+            <Split className={styles.resumeIcon} aria-hidden="true" /> Continue in a new session
+          </Button>
+        </div>
+      )}
+
+      {continueInNewSession.isError && (
+        <p className={styles.problem} role="alert">
+          This conversation could not be continued in a new session.{' '}
+          {continueInNewSession.error instanceof Error ? continueInNewSession.error.message : ''}
         </p>
       )}
 
@@ -289,6 +467,9 @@ export function ChatConversation({ chatId, pendingSend, onPendingSendConsumed }:
           notice={busyError !== null ? busyError.message : null}
           onSend={send}
           onStop={() => stream.stop()}
+          privacy={model.privacy}
+          initialDraft={draft.initial}
+          onDraftChange={draft.onChange}
         />
       </footer>
     </section>

@@ -1,6 +1,7 @@
 import './helpers.ts';
 
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 
 import type { PermissionLayer, PermissionVerdict, ToolCall } from '../src/types/core.ts';
@@ -37,13 +38,18 @@ function layer(name: PermissionLayer, rules: PermissionRules): PermissionLayerIn
 function decide(
   toolCall: ToolCall,
   layers: PermissionLayerInput[],
-  options: { effect?: ToolEffect; knownTools?: ReadonlySet<string> } = {},
+  options: {
+    effect?: ToolEffect;
+    knownTools?: ReadonlySet<string>;
+    pathResolver?: (candidate: string) => string;
+  } = {},
 ): PermissionVerdict {
   return evaluate({
     call: toolCall,
     effect: options.effect ?? 'mutate',
     layers,
     knownTools: options.knownTools ?? CODE_TOOLS,
+    ...(options.pathResolver === undefined ? {} : { pathResolver: options.pathResolver }),
   });
 }
 
@@ -182,6 +188,99 @@ describe('glob matching', () => {
 
     const verdict = decide(broken, [layer('project', { write: { '**': 'allow' } })]);
     assert.equal(verdict.action, 'deny', 'a map rule with nothing to match must not apply');
+  });
+});
+
+describe('a path rule matches the file, not the spelling', () => {
+  // Everything below turns on one fact: the file tools resolve their argument
+  // before touching disk (`ctx.resolvePath`, then the same containment check the
+  // write itself uses), so all of these spellings name *one* file. A rule matched
+  // against the raw argument would govern the string instead of the file —
+  // `{"secrets/**": "deny"}` would refuse `secrets/key.txt` and allow
+  // `./secrets/key.txt`, and the write would land in the denied directory.
+  const denied: PermissionRules = { write: { 'secrets/**': 'deny', '*': 'allow' } };
+
+  it('refuses every spelling of a denied file', () => {
+    for (const spelling of [
+      'secrets/key.txt',
+      './secrets/key.txt',
+      'src/../secrets/key.txt',
+      './/secrets/key.txt',
+      'secrets/./key.txt',
+      'secrets//key.txt',
+    ]) {
+      const verdict = decide(call('write', { path: spelling }), [layer('project', denied)]);
+      assert.equal(
+        verdict.action,
+        'deny',
+        `${spelling} resolves to the same file as secrets/key.txt`,
+      );
+    }
+  });
+
+  it('spells one file one way on disk, which is why the verdict has to agree', async () => {
+    const { resolveInScope } = await import('../src/security/fsScope.ts');
+    const target = resolveInScope('projects', 'demo/secrets/key.txt');
+
+    for (const spelling of ['./secrets/key.txt', 'src/../secrets/key.txt', './/secrets/key.txt']) {
+      assert.equal(
+        resolveInScope('projects', `demo/${spelling}`),
+        target,
+        `${spelling} must be the file the rule refused`,
+      );
+    }
+  });
+
+  it('still allows what the rule allowed, and still denies what it did not', () => {
+    const scoped: PermissionRules = { write: { 'src/**': 'allow', '*': 'deny' } };
+
+    assert.equal(
+      decide(call('write', { path: 'src/./a.ts' }), [layer('project', scoped)]).action,
+      'allow',
+      'normalising must not turn a spelling of an allowed file into a refusal',
+    );
+    assert.equal(
+      decide(call('write', { path: '../outside/a.ts' }), [layer('project', scoped)]).action,
+      'deny',
+      'a leading .. cannot be popped, so it cannot reach a rule written for the workspace',
+    );
+  });
+
+  it('matches an absolute path once the agent supplies its own resolver', async () => {
+    // The engine does not know which root a run is confined to, so this is the
+    // seam: the caller hands over the same resolver its file tools use, reduced to
+    // a workspace-relative path (patterns are authored relative to the project).
+    // Absolute spellings matter because the tools accept them — `resolveInScope`
+    // takes an absolute candidate as long as it is inside the scope.
+    const { resolveInScope } = await import('../src/security/fsScope.ts');
+    const workspace = resolveInScope('projects', 'demo');
+    const pathResolver = (candidate: string): string =>
+      path.relative(workspace, resolveInScope('projects', candidate)).split(path.sep).join('/');
+
+    const absolute = path.join(workspace, 'secrets', 'key.txt');
+    assert.equal(
+      decide(call('write', { path: absolute }), [layer('project', denied)], { pathResolver }).action,
+      'deny',
+    );
+
+    // Without the seam a relative pattern cannot match an absolute spelling at
+    // all. Asserted rather than left implicit: this is why the Code adapter must
+    // pass a resolver, and a caller that quietly stops passing one fails here
+    // instead of silently reopening the hole the case above closes.
+    assert.equal(
+      decide(call('write', { path: absolute }), [layer('project', denied)]).action,
+      'allow',
+    );
+  });
+
+  it('falls back to the lexical form when the resolver refuses the path', () => {
+    const verdict = decide(call('write', { path: './secrets/key.txt' }), [layer('project', denied)], {
+      pathResolver: () => {
+        throw new Error('scope violation');
+      },
+    });
+
+    assert.equal(verdict.action, 'deny', 'a refused path is the tool\'s refusal to report, not an allow');
   });
 });
 

@@ -116,6 +116,9 @@ export function createTemporaryChat(input: {
     // which kind of chat it was handed.
     pinned: false,
     archived: false,
+    // A temporary chat has no parent and can never be one: `forkChat` refuses to
+    // branch from it, because the copy would persist what this chat exists not to.
+    forkedFrom: null,
     createdAt: now,
     updatedAt: now,
     lastOpenedAt: now,

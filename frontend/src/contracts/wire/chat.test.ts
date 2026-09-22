@@ -1,15 +1,18 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  chatContextSchema,
   chatRecordSchema,
   chatSseDoneSchema,
   chatSsePausedSchema,
   chatSseResumedSchema,
   chatSseTokenSchema,
   chatSseUsageSchema,
+  forkChatResponseSchema,
   messageRecordSchema,
   messagesPageSchema,
   openChatResponseSchema,
+  resumeInNewSessionResponseSchema,
   runStateSnapshotSchema,
 } from './chat';
 
@@ -66,6 +69,77 @@ describe('chat wire schemas', () => {
     expect(chatRecordSchema.safeParse(chat).success).toBe(true);
     expect(messageRecordSchema.safeParse(message).success).toBe(true);
     expect(runStateSnapshotSchema.safeParse(run).success).toBe(true);
+  });
+
+  it('accepts a fork response and requires the paused count', () => {
+    const branch = { ...chat, id: 'c2', title: 'First (fork)' };
+    const copy = { ...message, id: 'm2', chatId: 'c2' };
+    const payload = { chat: branch, messages: [copy], forkedFrom: 'c1', pausedPartials: 1 };
+    expect(forkChatResponseSchema.safeParse(payload).success).toBe(true);
+
+    // The count is how a surface explains a copied message that was mid-stream.
+    // Optional would mean the UI could not tell "none paused" from "not said".
+    const missing: Record<string, unknown> = { ...payload };
+    delete missing.pausedPartials;
+    expect(forkChatResponseSchema.safeParse(missing).success).toBe(false);
+    expect(forkChatResponseSchema.safeParse({ ...payload, pausedPartials: -1 }).success).toBe(false);
+    expect(forkChatResponseSchema.safeParse({ ...payload, forkedFrom: null }).success).toBe(false);
+  });
+
+  it('accepts the context read and requires the window provenance', () => {
+    const context = {
+      chatId: 'c1',
+      modelId: 'gpt-test',
+      window: { tokens: 8192, source: 'default', assumed: true },
+      estimatedTokens: 7000,
+      ratio: 7000 / 8192,
+      messageCount: 12,
+      needsNewSession: true,
+    };
+    expect(chatContextSchema.safeParse(context).success).toBe(true);
+
+    // `assumed` is not decoration: most gateways report no context length, so
+    // this flag is how a surface knows whether it is showing a limit or a guess.
+    // Defaulting it would turn a guess into a measurement.
+    const noFlag: Record<string, unknown> = { ...context, window: { tokens: 8192, source: 'default' } };
+    expect(chatContextSchema.safeParse(noFlag).success).toBe(false);
+    expect(
+      chatContextSchema.safeParse({ ...context, window: { tokens: 8192, source: 'guesswork', assumed: true } }).success,
+    ).toBe(false);
+  });
+
+  it('accepts a resume response and keeps the receipt and the counts', () => {
+    const resumed = { ...chat, id: 'c2', title: 'First (continued)' };
+    const receiptRow = { ...message, id: 'm3', chatId: 'c2', role: 'system', content: '…left behind…', seq: 1 };
+    const payload = {
+      chat: resumed,
+      messages: [receiptRow, { ...message, id: 'm4', chatId: 'c2', seq: 2 }],
+      source: { id: 'c1', title: 'First' },
+      droppedMessages: 6,
+      pausedPartials: 1,
+      receipt: '…left behind…',
+      assessment: {
+        chatId: 'c1',
+        modelId: 'gpt-test',
+        window: { tokens: 4096, source: 'model', assumed: false },
+        estimatedTokens: 3900,
+        ratio: 3900 / 4096,
+        messageCount: 8,
+        needsNewSession: true,
+      },
+    };
+    expect(resumeInNewSessionResponseSchema.safeParse(payload).success).toBe(true);
+
+    // Every one of these is load-bearing: the counts say what was left behind,
+    // the receipt is the note the new session opens with, and the assessment is
+    // the numbers the decision was made from. Optional would mean the surface
+    // could not say any of it.
+    for (const key of ['receipt', 'droppedMessages', 'source', 'assessment', 'pausedPartials']) {
+      const missing: Record<string, unknown> = { ...payload };
+      delete missing[key];
+      expect(resumeInNewSessionResponseSchema.safeParse(missing).success).toBe(false);
+    }
+    expect(resumeInNewSessionResponseSchema.safeParse({ ...payload, droppedMessages: -1 }).success).toBe(false);
   });
 
   it('rejects an unknown tool name', () => {

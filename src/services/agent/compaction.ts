@@ -123,21 +123,48 @@ export interface ContextWindow {
 export const DEFAULT_CONTEXT_TOKENS = 8_192;
 
 /**
+ * What Ollama loads a model with when nothing says otherwise.
+ *
+ * Ollama's own FAQ: *"By default, Ollama uses a context window size of 4096
+ * tokens"*, overridable per server (`OLLAMA_CONTEXT_LENGTH`), per model (a
+ * Modelfile `num_ctx`) or per request, and recent builds tier the default by
+ * available VRAM. Verified against those docs on 2026-09-21, which is why this
+ * rung exists as a separate number rather than sharing the gateway default: the
+ * two failures are not equally bad.
+ *
+ * A gateway that rejects an over-long prompt fails loudly, so guessing a little
+ * high there costs one retry. **Ollama does not reject — it truncates the input
+ * in silence** and answers from what is left, so guessing high means the model
+ * quietly answers a different question. Guessing low only compacts earlier than
+ * necessary, which is the cheap error. The escape hatch for a bigger window is
+ * the same one every provider has: declare `maxContextTokens`.
+ */
+export const OLLAMA_DEFAULT_CONTEXT_TOKENS = 4_096;
+
+/**
  * Resolve the window through a ladder, most authoritative first: an explicit
  * override, then what the provider reported, then the conservative default.
  *
  * A non-positive or non-finite value at any rung is treated as absent rather
  * than honoured — a gateway reporting `context_length: 0` means "I did not tell
  * you", and taking it literally would compact every conversation to nothing.
+ *
+ * `fallback` is how a caller says the bottom rung is not the same for every
+ * provider: the local runner's own default is smaller than a gateway's
+ * (`OLLAMA_DEFAULT_CONTEXT_TOKENS` is 4 096 against 8 192) and, unlike a
+ * gateway, it truncates silently rather than refusing. The rung keeps its
+ * `source: 'default'` and `assumed: true`, because it is still a guess — just
+ * the right guess for that endpoint.
  */
 export function resolveContextWindow(input: {
   model?: ModelInfo | undefined;
   override?: number | undefined;
+  fallback?: number | undefined;
 }): ContextWindow {
   if (usable(input.override)) return { tokens: input.override, source: 'override', assumed: false };
   const reported = input.model?.contextLength;
   if (usable(reported)) return { tokens: reported, source: 'model', assumed: false };
-  return { tokens: DEFAULT_CONTEXT_TOKENS, source: 'default', assumed: true };
+  return { tokens: usable(input.fallback) ? input.fallback : DEFAULT_CONTEXT_TOKENS, source: 'default', assumed: true };
 }
 
 function usable(value: number | undefined): value is number {

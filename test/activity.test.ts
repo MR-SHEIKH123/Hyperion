@@ -24,7 +24,9 @@ import type { Server } from 'node:http';
 
 const { createApp } = await import('../src/http/app.ts');
 const { getDb } = await import('../src/db/adapter.ts');
-const { finishTaskRun, startTaskRun } = await import('../src/db/taskRuns.ts');
+const { finishTaskRun, startTaskRun, updateTaskRunState } = await import('../src/db/taskRuns.ts');
+const { finishSubagentRun, startSubagentRun } = await import('../src/db/subagents.ts');
+const { parkSummary } = await import('../src/services/agent/parkMessages.ts');
 const { createScheduledTask, finishRun, startRun } = await import(
   '../src/services/cowork/scheduledTasks.ts'
 );
@@ -47,6 +49,13 @@ interface ActivityEntryJson {
   title: string;
   detail: string | null;
   link: { kind: string; chatId?: string; key?: string; version?: number } | null;
+  spend: {
+    requests: number;
+    tokensIn: number;
+    tokensOut: number;
+    costUsd: number | null;
+    priced: boolean;
+  } | null;
 }
 
 interface ActivityPageJson {
@@ -102,13 +111,74 @@ after(async () => {
  * would order arbitrarily — an ordering test that passed or failed on machine
  * speed is worse than none. The row is otherwise exactly what production writes.
  */
+/**
+ * Park a run the way `parkRun` does, through the same writer.
+ *
+ * A park is not a terminal transition, which is why it does not go through
+ * `finishTaskRun` — `updateTaskRunState` is what the loop's park path calls, and
+ * the reason column carries a **token** here because that is what production
+ * writes. (This fixture used to pass a sentence — "waiting for your approval" —
+ * which no writer in the tree ever produced and which the feed printed verbatim,
+ * hiding the fact that it was not translating the token vocabulary at all.)
+ */
+function seedParkedRun(options: {
+  runId: string;
+  tool: 'code' | 'cowork' | 'design';
+  startedAt: number;
+  pauseReason: string;
+}): void {
+  startTaskRun({ runId: options.runId, taskId: `task-${options.runId}`, tool: options.tool });
+  updateTaskRunState(options.runId, 'blocked', { pauseReason: options.pauseReason });
+  getDb()
+    .prepare('UPDATE task_runs SET started_at = ? WHERE run_id = ?')
+    .run(options.startedAt, options.runId);
+}
+
+/**
+ * Write a delegated child through its real lifecycle writers, then pin its clock.
+ *
+ * `finish` omitted leaves the row `running`, which is a state this table really
+ * sits in while a child works — the feed has to be able to say that too.
+ */
+function seedSubagent(options: {
+  parentTaskId: string;
+  parentRunId?: string;
+  sequence: number;
+  prompt: string;
+  startedAt: number;
+  finish?: { state: 'complete' | 'error' | 'stopped'; summary?: string; errorMessage?: string };
+}): string {
+  const childTaskId = `child-${options.sequence}`;
+  const row = startSubagentRun({
+    ...(options.parentRunId === undefined ? {} : { parentRunId: options.parentRunId }),
+    parentTaskId: options.parentTaskId,
+    childTaskId,
+    sequence: options.sequence,
+    prompt: options.prompt,
+  });
+
+  if (options.finish) {
+    finishSubagentRun(row.id, options.finish.state, {
+      ...(options.finish.summary === undefined ? {} : { summary: options.finish.summary }),
+      ...(options.finish.errorMessage === undefined
+        ? {}
+        : { errorCode: 'internal_error', errorMessage: options.finish.errorMessage }),
+    });
+  }
+
+  getDb()
+    .prepare('UPDATE subagent_runs SET started_at = ? WHERE id = ?')
+    .run(options.startedAt, row.id);
+  return row.id;
+}
+
 function seedTaskRun(options: {
   runId: string;
   tool: 'code' | 'cowork' | 'design';
   startedAt: number;
   chatId?: string;
   finish?: {
-    state: 'complete' | 'error' | 'paused';
+    state: 'complete' | 'error' | 'paused' | 'stopped' | 'interrupted';
     pauseReason?: string;
     code?: string;
     message?: string;
@@ -175,9 +245,57 @@ describe('GET /api/activity — what the app has been doing, in sentences', () =
       runId: 'run-cowork-paused',
       tool: 'cowork',
       startedAt: BASE + 5000,
-      finish: { state: 'paused', pauseReason: 'waiting for your approval' },
+      finish: { state: 'paused', pauseReason: 'approval_required' },
     });
     seedTaskRun({ runId: 'run-code-running', tool: 'code', startedAt: BASE + 7000 });
+    // The two states every reader of `task_runs` learned after this mapping was
+    // written: `stopped` (migration 012, a user stop or a budget ceiling) and
+    // `interrupted` (020, the process disappeared). Both used to render as "is
+    // still running", at the newest end of the feed.
+    seedTaskRun({
+      runId: 'run-code-ceiling',
+      tool: 'code',
+      startedAt: BASE + 8000,
+      finish: { state: 'stopped', pauseReason: 'ceiling_reached' },
+    });
+    seedTaskRun({
+      runId: 'run-cowork-interrupted',
+      tool: 'cowork',
+      startedAt: BASE + 9000,
+      finish: {
+        state: 'interrupted',
+        code: 'internal_error',
+        message: 'The server restarted while this task was running, so it can no longer be resumed.',
+      },
+    });
+    // A third parked shape: a plan waiting for review. It is continuable, so it is
+    // `paused` in this vocabulary and not a third word.
+    seedParkedRun({
+      runId: 'run-code-plan',
+      tool: 'code',
+      startedAt: BASE + 4500,
+      pauseReason: 'plan_ready',
+    });
+
+    // Delegated children. The parent task id is the one `seedTaskRun` wrote for
+    // `run-code-done`, and the parent run id is that run — the same correlation a
+    // real delegation records (`parent_run_id` is optional because a scheduled run
+    // may have none).
+    seedSubagent({
+      parentTaskId: 'task-run-code-done',
+      parentRunId: 'run-code-done',
+      sequence: 1,
+      prompt: 'Review the parser changes and report anything unsafe.\nLine two of the brief.',
+      startedAt: BASE + 2500,
+      finish: { state: 'complete', summary: 'The parser change is safe; two nits in the tokenizer.' },
+    });
+    seedSubagent({
+      parentTaskId: 'task-run-code-done',
+      parentRunId: 'run-code-done',
+      sequence: 2,
+      prompt: 'Draft the migration for the new column.',
+      startedAt: BASE + 6500,
+    });
 
     const task = createScheduledTask({
       name: 'Morning briefing',
@@ -215,21 +333,106 @@ describe('GET /api/activity — what the app has been doing, in sentences', () =
     assert.deepEqual(
       seeded.map((entry) => entry.timestamp),
       [
+        BASE + 9000,
+        BASE + 8000,
         BASE + 7000,
+        BASE + 6500,
         BASE + 6000,
         BASE + 5000,
+        BASE + 4500,
         BASE + 4000,
         BASE + 3000,
+        BASE + 2500,
         BASE + 2000,
         BASE + 1000,
       ],
-      'the two sources were not interleaved by time',
+      'the three sources were not interleaved by time',
     );
 
     assert.deepEqual(
       [...new Set(seeded.map((entry) => entry.kind))].sort(),
-      ['scheduled-task', 'task'],
-      'both sources should be represented',
+      ['scheduled-task', 'subagent', 'task'],
+      'every source should be represented',
+    );
+  });
+
+  test('a stopped run and an interrupted one do not claim to be running', async () => {
+    const page = await feed('?limit=200');
+
+    // The defect this replaces: both of these rendered as `running` with the title
+    // "Code task is still running", because the mapping only knew complete/error/
+    // paused and fell through to running for everything else. A stopped or
+    // interrupted run is the *newest* thing in most feeds — it just ended — so the
+    // wrong answer was also the most visible one.
+    const stopped = entryById(page, 'task:run-code-ceiling');
+    assert.equal(stopped.status, 'stopped');
+    assert.equal(stopped.title, 'Code task was stopped');
+    assert.equal(
+      stopped.detail,
+      'It reached a limit you set — the token budget, the step count or the subagent limit — and stopped with its work preserved.',
+      'a ceiling stop stored a token, and the feed has to translate it rather than print it',
+    );
+
+    const interrupted = entryById(page, 'task:run-cowork-interrupted');
+    assert.equal(interrupted.status, 'interrupted');
+    assert.equal(interrupted.title, 'Cowork task was interrupted');
+    assert.equal(
+      interrupted.detail,
+      'The server restarted while this task was running, so it can no longer be resumed.',
+    );
+
+    // And neither is a failure: the state vocabulary is carried through, not
+    // collapsed into the nearest red word. Spelled as a membership check rather
+    // than a comparison because the union has no overlap with `failed` — a
+    // deliberately impossible comparison is what a typechecker rejects, which is
+    // the rule working in the other direction.
+    assert.equal(
+      ['failed', 'running', 'success'].includes(stopped.status) ||
+        ['failed', 'running', 'success'].includes(interrupted.status),
+      false,
+    );
+  });
+
+  test('a delegated child is an entry of its own, with no spend to show', async () => {
+    const page = await feed('?limit=200');
+
+    const child = page.entries.find(
+      (entry) => entry.kind === 'subagent' && entry.timestamp === BASE + 2500,
+    );
+    assert.ok(child, 'the delegated child did not reach the feed');
+    assert.equal(child.id.startsWith('subagent:'), true);
+    assert.equal(child.status, 'success');
+    assert.equal(child.title, 'Delegated task “Review the parser changes and report anything unsafe.” finished');
+    assert.equal(child.detail, 'The parser change is safe; two nits in the tokenizer.');
+    assert.equal(child.link, null, 'a child has no chat of its own to link to');
+    // Deliberate, not missing: a child's provider requests are logged against the
+    // run that made them — its parent's — so the parent entry on this same page
+    // already counts them. A figure here would either be invented or double-count.
+    assert.equal(child.spend, null);
+
+    const working = page.entries.find(
+      (entry) => entry.kind === 'subagent' && entry.timestamp === BASE + 6500,
+    );
+    assert.ok(working);
+    assert.equal(working.status, 'running');
+    assert.equal(working.title, 'Delegated task “Draft the migration for the new column.” is still running');
+    assert.equal(working.detail, null);
+  });
+
+  test('a park says what it is waiting for, in words rather than in a token', async () => {
+    const page = await feed('?limit=200');
+
+    const plan = entryById(page, 'task:run-code-plan');
+    assert.equal(plan.status, 'paused');
+    assert.equal(plan.title, 'Code task paused');
+    assert.equal(plan.detail, parkSummary('plan_ready'));
+
+    const approval = entryById(page, 'task:run-cowork-paused');
+    assert.equal(approval.detail, parkSummary('approval_required'));
+    assert.equal(
+      page.entries.some((entry) => entry.detail === 'approval_required'),
+      false,
+      'the token vocabulary must not appear in the feed at all',
     );
   });
 
@@ -244,18 +447,13 @@ describe('GET /api/activity — what the app has been doing, in sentences', () =
     assert.equal(entry.detail, null, 'a run that simply worked has nothing to explain');
   });
 
-  test('a failed run explains itself and a paused one says what it is waiting for', async () => {
+  test('a failed run explains itself and a live one says it is running', async () => {
     const page = await feed('?limit=200');
 
     const failed = entryById(page, 'task:run-design-failed');
     assert.equal(failed.status, 'failed');
     assert.equal(failed.title, 'Design task failed');
     assert.equal(failed.detail, 'the renderer ran out of memory');
-
-    const paused = entryById(page, 'task:run-cowork-paused');
-    assert.equal(paused.status, 'paused');
-    assert.equal(paused.title, 'Cowork task paused');
-    assert.equal(paused.detail, 'waiting for your approval');
 
     const running = entryById(page, 'task:run-code-running');
     assert.equal(running.status, 'running');
@@ -319,7 +517,7 @@ describe('GET /api/activity — what the app has been doing, in sentences', () =
     }
 
     assert.equal(cursor, null, 'paging never reached the end');
-    assert.equal(seen.length, 7, 'the walk did not cover every seeded entry exactly once');
+    assert.equal(seen.length, 12, 'the walk did not cover every seeded entry exactly once');
     assert.equal(new Set(seen).size, seen.length, 'an entry appeared on two pages');
   });
 
@@ -341,7 +539,7 @@ describe('GET /api/activity — what the app has been doing, in sentences', () =
     const timestamps = page.entries.filter((e) => e.timestamp >= BASE).map((e) => e.timestamp);
 
     assert.equal(timestamps.includes(BASE + 4000), false, 'the cursor row came back again');
-    assert.deepEqual(timestamps, [BASE + 3000, BASE + 2000, BASE + 1000]);
+    assert.deepEqual(timestamps, [BASE + 3000, BASE + 2500, BASE + 2000, BASE + 1000]);
   });
 
   test('a limit outside the allowed range is refused, naming the field', async () => {

@@ -19,7 +19,10 @@ import { redactSecrets } from '../util/redact.ts';
 import { tryDecrypt } from '../security/keystore.ts';
 import { env } from '../config/env.ts';
 import { zdrFlagFor } from '../services/safety/zdr.ts';
+import { dispatcherFor } from './transport.ts';
 import { DEFAULT_PROVIDER_ZDR } from '../types/core.ts';
+import type { ProxyAgent } from 'undici';
+import { puterCatalogueUrls } from './puter.ts';
 import type {
   ChatMessage,
   CompletionRequest,
@@ -27,6 +30,7 @@ import type {
   ProviderAdapter,
   ProviderRecord,
   StreamChunk,
+  TokenUsage,
   ToolCall,
 } from '../types/core.ts';
 
@@ -108,8 +112,15 @@ function url(base: string, path: string): string {
  *
  * Distinguishing timeout from connection-refused matters: both are health
  * failures, but the messages the user sees are very different diagnoses.
+ *
+ * The provider is a parameter because of Part 1.37: when it has an `egressProxy`,
+ * every request to it is tunnelled through that proxy, and the dispatcher is the
+ * only thing that makes the configured route real. A provider without one passes
+ * no dispatcher at all and keeps using the global fetch exactly as before, so the
+ * unproxied path pays nothing for the feature.
  */
 async function httpFetch(
+  provider: Pick<ProviderRecord, 'egressProxy'>,
   target: string,
   init: RequestInit,
   timeoutMs: number,
@@ -118,8 +129,24 @@ async function httpFetch(
   const timer = AbortSignal.timeout(timeoutMs);
   const signal = externalSignal ? AbortSignal.any([timer, externalSignal]) : timer;
 
+  // Built outside the try so a construction failure is a typed error rather than
+  // a `provider_unreachable` that blames the network for a bad configuration.
+  let dispatcher: ProxyAgent | undefined;
   try {
-    return await fetch(target, { ...init, signal });
+    dispatcher = dispatcherFor(provider);
+  } catch (error) {
+    throw new AppError('provider_error', 'The configured egress proxy could not be initialised', {
+      cause: error,
+      retryable: false,
+    });
+  }
+
+  try {
+    return await fetch(target, {
+      ...init,
+      signal,
+      ...(dispatcher === undefined ? {} : { dispatcher }),
+    } as RequestInit);
   } catch (error) {
     if (externalSignal?.aborted) {
       throw new AppError('aborted', 'Request cancelled', { retryable: false });
@@ -145,18 +172,123 @@ async function httpFetch(
  * serialises `details` verbatim to the client. `redactSecrets` is a second
  * layer for the server-side log, not a substitute for the split.
  */
-async function failFromResponse(response: Response, context: string): Promise<never> {
+/**
+ * `Retry-After` as a number of seconds, or null when absent or unparseable.
+ *
+ * The header has two legal forms — a delta in seconds and an HTTP date — and
+ * gateways use both. A date in the past is a zero, not a negative: the provider
+ * is saying "go ahead", and arithmetic on a negative would produce a deadline in
+ * the past that reads as an expired cooldown anyway, so the two agree by
+ * construction. A value we cannot parse is treated as absent rather than as zero,
+ * so a malformed header falls back to the table instead of disabling the back-off.
+ */
+function parseRetryAfter(value: string | null): number | null {
+  if (value === null) return null;
+  const trimmed = value.trim();
+  if (trimmed === '') return null;
+
+  if (/^\d+$/.test(trimmed)) {
+    const seconds = Number(trimmed);
+    return Number.isFinite(seconds) ? seconds : null;
+  }
+
+  const at = Date.parse(trimmed);
+  if (Number.isNaN(at)) return null;
+  return Math.max(0, Math.round((at - Date.now()) / 1000));
+}
+
+/**
+ * The provider's own error code, when it is a short lowercase identifier.
+ *
+ * Gateways answer 402/429 with a machine-readable code — Puter sends
+ * `subscription_required`, `insufficient_funds`, `too_many_requests` — and that
+ * code is the difference between "your plan does not include this endpoint" and
+ * "your credit is spent", which are the same HTTP status and very different
+ * things to tell a person. It is extracted from the body, so it is exposed only
+ * when it matches a strict pattern: a lowercase identifier cannot carry a key, a
+ * prompt, or any other content, and anything that does not match stays private.
+ */
+const PROVIDER_CODE = /^[a-z][a-z0-9_]{0,63}$/;
+
+function providerCodeFrom(body: string): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body) as unknown;
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== 'object') return null;
+  const record = parsed as Record<string, unknown>;
+  const error = record['error'];
+  const nested =
+    error !== null && typeof error === 'object' ? (error as Record<string, unknown>)['code'] : undefined;
+  const candidate = typeof nested === 'string' ? nested : record['code'];
+  return typeof candidate === 'string' && PROVIDER_CODE.test(candidate) ? candidate : null;
+}
+
+/**
+ * The words for a 402, which is not one condition.
+ *
+ * `payment` is the cooldown class for both, and that is right — do not keep
+ * hammering — but the two causes need different sentences: an exhausted balance
+ * is solved by adding credit, and a plan that does not include the endpoint is
+ * solved by upgrading or by using the vendor's own SDK. Puter is the provider
+ * where this distinction is reachable (it is documented to send both).
+ */
+function paymentMessage(context: string, providerType: string, code: string | null): string {
+  if (providerType === 'puter') {
+    if (code === 'subscription_required') {
+      return `${context}: the Puter plan does not include the OpenAI-compatible endpoint (Puter requires a paid plan for /puterai/openai/v1)`;
+    }
+    if (code === 'insufficient_funds') {
+      return `${context}: the Puter account's monthly usage credit is spent`;
+    }
+    return `${context}: Puter refused the request for a billing or plan reason${code === null ? '' : ` (${code})`}`;
+  }
+  return `${context}: the provider refused the request for a billing reason${code === null ? '' : ` (${code})`}`;
+}
+
+async function failFromResponse(
+  response: Response,
+  context: string,
+  provider?: Pick<ProviderRecord, 'type'>,
+): Promise<never> {
   const body = await response.text().catch(() => '');
   const detail = redactSecrets(body.slice(0, 500));
+  const providerType = provider?.type ?? 'unknown';
 
   // Status alone is safe to expose and is what the frontend actually branches on.
-  const details = { status: response.status };
+  // `Retry-After` joins it because it is a duration, not content: a 429's header
+  // is what tells the cooldown how long the provider wants to be left alone, and
+  // it is the only thing in the response that a rate limit cannot be respected
+  // without. The provider's own code joins them for the reason above.
+  const retryAfterSeconds = parseRetryAfter(response.headers.get('retry-after'));
+  const code = providerCodeFrom(body);
+  const details = {
+    status: response.status,
+    ...(retryAfterSeconds === null ? {} : { retryAfterSeconds }),
+    ...(code === null ? {} : { providerCode: code }),
+  };
   const privateDetails = { body: detail };
 
   // 401/403 are configuration problems: retrying cannot help, and they must NOT
   // count toward the health threshold or a wrong key would evict a live provider.
   if (response.status === 401 || response.status === 403) {
-    throw new AppError('provider_auth_failed', `${context}: provider rejected the API key`, {
+    // The noun matters. "rejected the API key" against a Puter provider sends the
+    // user looking for a key that does not exist; the thing to replace is a token,
+    // and the two ways it goes stale are worth naming in the same breath.
+    const credential =
+      providerType === 'puter' ? 'auth token (it may have expired or been revoked)' : 'API key';
+    throw new AppError('provider_auth_failed', `${context}: provider rejected the ${credential}`, {
+      details,
+      privateDetails,
+      retryable: false,
+    });
+  }
+  if (response.status === 402) {
+    // Non-retryable for the same reason as 401: nothing about the next request
+    // changes the plan or the balance.
+    throw new AppError('provider_error', paymentMessage(context, providerType, code), {
       details,
       privateDetails,
       retryable: false,
@@ -270,12 +402,13 @@ export const openAiAdapter: ProviderAdapter = {
 
   async listModels(provider, signal) {
     const response = await httpFetch(
+      provider,
       url(provider.baseUrl, '/models'),
       { headers: { ...authHeaders(provider), Accept: 'application/json' } },
       15_000,
       signal,
     );
-    if (!response.ok) await failFromResponse(response, 'Listing models');
+    if (!response.ok) await failFromResponse(response, 'Listing models', provider);
 
     const payload = (await response.json().catch(() => null)) as
       | { data?: unknown[]; models?: unknown[] }
@@ -314,6 +447,7 @@ export const openAiAdapter: ProviderAdapter = {
 
   async *stream(provider, request) {
     const response = await httpFetch(
+      provider,
       url(provider.baseUrl, '/chat/completions'),
       {
         method: 'POST',
@@ -349,7 +483,7 @@ export const openAiAdapter: ProviderAdapter = {
       request.signal,
     );
 
-    if (!response.ok) await failFromResponse(response, 'Streaming completion');
+    if (!response.ok) await failFromResponse(response, 'Streaming completion', provider);
 
     let finishReason: string | undefined;
     let sawUsage = false;
@@ -401,6 +535,9 @@ export const openAiAdapter: ProviderAdapter = {
           usage: {
             tokensIn: frame.usage.prompt_tokens ?? 0,
             tokensOut: frame.usage.completion_tokens ?? 0,
+            // `cached_tokens` is a subset of `prompt_tokens` here, so it is kept
+            // beside `tokensIn` rather than added to it — see `TokenUsage`.
+            ...tokenDetails(frame.usage),
           },
         };
       }
@@ -428,8 +565,58 @@ interface OpenAiStreamFrame {
     delta?: { content?: string; tool_calls?: OpenAiToolCallDelta[] };
     finish_reason?: string;
   }[];
-  usage?: { prompt_tokens?: number; completion_tokens?: number };
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    /**
+     * Cache and reasoning accounting, as OpenAI-compatible gateways report it.
+     * Present only when the gateway actually reports it: an absent block must
+     * stay absent rather than becoming a zero, which would read as "measured,
+     * and nothing was cached".
+     */
+    prompt_tokens_details?: { cached_tokens?: number };
+    completion_tokens_details?: { reasoning_tokens?: number };
+  };
   error?: { message?: string };
+}
+
+/**
+ * Lift the optional accounting out of a provider's usage object.
+ *
+ * `undefined` when the gateway said nothing, a number when it did — including a
+ * reported `0`, which is a measurement and therefore different from silence.
+ * Every field is only copied when it is a finite number, so a gateway that sends
+ * `null` or a string lands on "said nothing" rather than on a NaN in a column.
+ */
+function tokenDetails(usage: {
+  prompt_tokens_details?: { cached_tokens?: number };
+  completion_tokens_details?: { reasoning_tokens?: number };
+}): Partial<TokenUsage> {
+  const cached = usage.prompt_tokens_details?.cached_tokens;
+  const reasoning = usage.completion_tokens_details?.reasoning_tokens;
+  return {
+    ...(typeof cached === 'number' && Number.isFinite(cached) ? { cacheReadTokens: cached } : {}),
+    ...(typeof reasoning === 'number' && Number.isFinite(reasoning) ? { reasoningTokens: reasoning } : {}),
+  } satisfies Partial<TokenUsage>;
+}
+
+/**
+ * Cache accounting from an Anthropic-shaped usage block.
+ *
+ * `cache_read_input_tokens` and `cache_creation_input_tokens` are reported
+ * *beside* `input_tokens` rather than inside it. Kept verbatim, and only when
+ * they are finite numbers, so "reported as 0" and "not reported" stay distinct.
+ */
+function anthropicTokenDetails(usage: {
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+}): Partial<TokenUsage> {
+  const read = usage.cache_read_input_tokens;
+  const write = usage.cache_creation_input_tokens;
+  return {
+    ...(typeof read === 'number' && Number.isFinite(read) ? { cacheReadTokens: read } : {}),
+    ...(typeof write === 'number' && Number.isFinite(write) ? { cacheWriteTokens: write } : {}),
+  } satisfies Partial<TokenUsage>;
 }
 
 /** ~4 characters per token. Only used when the provider reports no usage. */
@@ -457,6 +644,119 @@ function reasoningBodyField(
   return { reasoning_effort: request.reasoningEffort };
 }
 
+// --- Puter (OpenAI-compatible surface, Puter's own catalogue) ----------------
+
+/**
+ * Puter, whose chat protocol is stock and whose model catalogue is not.
+ *
+ * `stream` is `openAiAdapter.stream` — assigned, not reimplemented, so "the
+ * protocol is the same one" is a fact about object identity rather than a comment.
+ * What differs is `listModels`: every other OpenAI-compatible provider answers
+ * `GET {base}/models`, and `https://api.puter.com/puterai/openai/v1/models` is not
+ * Puter's catalogue. Puter publishes it unauthenticated at
+ * `/puterai/chat/models/details` (documented, and what the dashboard's own model
+ * list reads), with `/puterai/chat/models` as the fallback.
+ *
+ * That payload is worth the special case for a reason beyond correctness: it
+ * carries **`context`**, the model's context window. Reading it means 1.28's
+ * context ceiling judges a Puter model against its real window
+ * (`source: 'model'`) instead of the assumed 8 192 default — the difference
+ * between "this conversation is nearly full" being a measurement and a guess.
+ *
+ * The catalogue URL is *derived from the configured base URL* rather than fixed: a
+ * provider pointed at a compatibility proxy (`opencode-puter-auth serve --openai`
+ * is one) does not have Puter's path shape, and there the stock `GET {base}/models`
+ * listing is the correct thing, because a proxy offering an OpenAI surface serves
+ * one.
+ */
+export const puterAdapter: ProviderAdapter = {
+  kind: 'puter',
+
+  stream: openAiAdapter.stream,
+
+  async listModels(provider, signal) {
+    const catalogue = puterCatalogueUrls(provider.baseUrl);
+    if (catalogue === null) return openAiAdapter.listModels(provider, signal);
+
+    // The richer endpoint first, the documented summary one second, and the
+    // OpenAI-shaped listing last (a proxy on the same origin may serve that and
+    // not the catalogue). The *first* failure is reported when everything fails:
+    // it is the endpoint that was supposed to work.
+    let firstFailure: unknown = null;
+    for (const endpoint of [catalogue.details, catalogue.summary]) {
+      try {
+        return await puterCatalogue(provider, endpoint, signal);
+      } catch (error) {
+        firstFailure ??= error;
+      }
+    }
+    try {
+      return await openAiAdapter.listModels(provider, signal);
+    } catch {
+      throw firstFailure instanceof Error
+        ? firstFailure
+        : new AppError('provider_error', "Puter's model catalogue could not be read");
+    }
+  },
+};
+
+/**
+ * Read one catalogue endpoint.
+ *
+ * The shape is a bare array in the documentation; `{ models: [...] }` is accepted
+ * too, because a self-hosted Puter deployment may wrap it. Anything else is
+ * refused rather than coerced — an unrecognised payload that parsed into an empty
+ * list would empty the model picker while looking like a provider with no models.
+ */
+async function puterCatalogue(
+  provider: ProviderRecord,
+  endpoint: string,
+  signal?: AbortSignal,
+): Promise<ModelInfo[]> {
+  const response = await httpFetch(
+    provider,
+    endpoint,
+    { headers: { ...authHeaders(provider), Accept: 'application/json' } },
+    15_000,
+    signal,
+  );
+  if (!response.ok) await failFromResponse(response, 'Listing models', provider);
+
+  const payload = (await response.json().catch(() => null)) as unknown;
+  const list = Array.isArray(payload)
+    ? payload
+    : payload !== null && typeof payload === 'object' && Array.isArray((payload as { models?: unknown }).models)
+      ? (payload as { models: unknown[] }).models
+      : null;
+  if (list === null) {
+    throw new AppError('provider_error', 'Model list response was not in a recognized format', {
+      details: { endpoint },
+    });
+  }
+
+  return list
+    .map((entry): ModelInfo | null => {
+      // The summary endpoint answers bare ids where the details one answers
+      // objects, so both shapes are read — an id with no metadata is still a
+      // usable model, and dropping it would empty the picker on the fallback path.
+      if (typeof entry === 'string') return entry === '' ? null : { id: entry };
+      if (entry === null || typeof entry !== 'object') return null;
+      const row = entry as Record<string, unknown>;
+      const id = typeof row.id === 'string' ? row.id : null;
+      if (id === null || id === '') return null;
+      return {
+        id,
+        ...(typeof row.name === 'string' && row.name !== id ? { label: row.name } : {}),
+        // Puter's own name for the vendor behind the model ("claude", "openai").
+        ...(typeof row.provider === 'string' ? { ownedBy: row.provider } : {}),
+        // `context`, where every other gateway here says `context_length`. This is
+        // the field the 1.28 ceiling reads.
+        ...(typeof row.context === 'number' && row.context > 0 ? { contextLength: row.context } : {}),
+      };
+    })
+    .filter((model): model is ModelInfo => model !== null);
+}
+
 // --- Ollama ----------------------------------------------------------------
 
 /**
@@ -472,12 +772,13 @@ export const ollamaAdapter: ProviderAdapter = {
 
   async listModels(provider, signal) {
     const response = await httpFetch(
+      provider,
       url(provider.baseUrl, '/api/tags'),
       { headers: { Accept: 'application/json' } },
       10_000,
       signal,
     );
-    if (!response.ok) await failFromResponse(response, 'Listing local models');
+    if (!response.ok) await failFromResponse(response, 'Listing local models', provider);
 
     const payload = (await response.json().catch(() => null)) as
       | { models?: { name?: string; model?: string; details?: { parameter_size?: string } }[] }
@@ -497,6 +798,7 @@ export const ollamaAdapter: ProviderAdapter = {
 
   async *stream(provider, request) {
     const response = await httpFetch(
+      provider,
       url(provider.baseUrl, '/api/chat'),
       {
         method: 'POST',
@@ -519,7 +821,7 @@ export const ollamaAdapter: ProviderAdapter = {
       request.signal,
     );
 
-    if (!response.ok) await failFromResponse(response, 'Streaming local completion');
+    if (!response.ok) await failFromResponse(response, 'Streaming local completion', provider);
 
     const body = response.body;
     if (!body) throw new AppError('provider_error', 'Ollama returned an empty stream body');
@@ -594,11 +896,29 @@ interface OllamaStreamFrame {
  * The local opencodex proxy (`ocx start`, default http://127.0.0.1:10100/v1).
  *
  * Its `/models` response is OpenAI-shaped, so model listing is delegated to
- * `openAiAdapter.listModels` verbatim. Completions are NOT: opencodex accepts
- * `POST /responses` (the OpenAI *Responses* API) and Anthropic `/messages`, but
- * it does NOT accept `/chat/completions` inbound — the chat-completions
- * compatibility advertised by opencodex is on its OUTBOUND side, towards the
- * upstream vendors it routes to. So `stream` is a separate implementation.
+ * `openAiAdapter.listModels` verbatim. Completions use the *Responses* API
+ * (`POST /responses`), because that is the proxy's native data plane — the one
+ * Codex itself speaks, and the one that carries reasoning effort, richer frames
+ * and the upstream routes opencodex is built around.
+ *
+ * **This comment used to claim opencodex "does NOT accept `/chat/completions`
+ * inbound", and that claim was wrong.** Verified against the project's own docs
+ * on 2026-09-21: opencodex advertises `POST /v1/chat/completions` as a
+ * compatibility surface, explicitly "translates Chat Completions into its
+ * internal Responses path", and its troubleshooting section says a 404 on chat
+ * means running an older build that lacked the surface. What is true is narrower
+ * and was the real point: chat-completions is a *translation* layer rather than
+ * the proxy's own protocol, so this adapter speaks Responses natively instead of
+ * asking opencodex to translate for us. (A storefront that offers both does not
+ * make the front door the only door.)
+ *
+ * One consequence of the same docs, worth knowing here rather than discovering
+ * at a 401: on a **non-loopback** bind opencodex requires its own admission
+ * token in `x-opencodex-api-key`, and treats `Authorization` as the *upstream*
+ * identity. A key stored on this provider travels as `Authorization: Bearer`,
+ * which is right for loopback (where the proxy asks for nothing) and is not the
+ * admission token a remote bind wants — so this type is for a proxy on this
+ * machine, and a remote one belongs behind the proxy/egress controls of 1.37.
  *
  * Differences from chat-completions that this adapter absorbs:
  *   - `messages` becomes `input` items whose content is a typed part array
@@ -640,6 +960,7 @@ export const openCodexAdapter: ProviderAdapter = {
       }));
 
     const response = await httpFetch(
+      provider,
       url(provider.baseUrl, '/responses'),
       {
         method: 'POST',
@@ -665,7 +986,7 @@ export const openCodexAdapter: ProviderAdapter = {
       request.signal,
     );
 
-    if (!response.ok) await failFromResponse(response, 'Streaming completion');
+    if (!response.ok) await failFromResponse(response, 'Streaming completion', provider);
 
     let finishReason: string | undefined;
     let sawUsage = false;
@@ -708,6 +1029,13 @@ export const openCodexAdapter: ProviderAdapter = {
           usage: {
             tokensIn: usage.input_tokens ?? 0,
             tokensOut: usage.output_tokens ?? 0,
+            // Anthropic-style cache accounting: reads and writes are reported
+            // apart from the uncached prompt, and both are kept as their own
+            // columns. Nothing is summed into `input_tokens`, because a gateway
+            // that *does* include the cached part would then be double-counted —
+            // the two conventions exist in the wild and the safer reading is the
+            // literal one.
+            ...anthropicTokenDetails(usage),
           },
         };
       }
@@ -735,7 +1063,12 @@ interface ResponsesStreamFrame {
   delta?: string;
   error?: { message?: string; type?: string; code?: string };
   response?: {
-    usage?: { input_tokens?: number; output_tokens?: number };
+    usage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      cache_read_input_tokens?: number;
+      cache_creation_input_tokens?: number;
+    };
     incomplete_details?: { reason?: string };
     error?: { message?: string; type?: string; code?: string };
   };
@@ -745,8 +1078,11 @@ interface ResponsesStreamFrame {
 
 /**
  * Exhaustive on purpose: the previous ternary let any unrecognized type fall
- * through to the OpenAI adapter, which would have handed opencodex a
- * `/chat/completions` request it does not accept.
+ * through to the OpenAI adapter, which is a guess about a protocol nobody
+ * verified. When opencodex arrived it spoke the Responses API, and Puter later
+ * turned out to need a provider-aware failure classifier — both cases where a
+ * silent default would have been a request built for the wrong protocol, with
+ * the resulting 400/402 blamed on the provider.
  *
  * Keep it exhaustive with no `default`. That is what makes adding a provider
  * type a compile error here rather than a silent mis-route at runtime.
@@ -761,9 +1097,16 @@ export function adapterFor(provider: ProviderRecord): ProviderAdapter {
     // OpenAI-shaped GET /v1/models, so the stock adapter is correct as-is. It
     // needs no credential unless COLI_API_KEY is set, and `authHeaders()`
     // already omits Authorization entirely when there is no stored key.
+    // Colibri serves an OpenAI-shaped `/v1/models`, so the stock adapter is the
+    // whole story.
     case 'colibri':
     case 'remote':
       return openAiAdapter;
+    // Puter (1.38) streams the stock protocol with its token as a bearer
+    // credential, but its model catalogue is Puter's own endpoint rather than
+    // `{base}/models` — see `puterAdapter`.
+    case 'puter':
+      return puterAdapter;
   }
 }
 
@@ -800,6 +1143,8 @@ export async function detectLocalProvider(baseUrl = env.ollamaUrl): Promise<Dete
     models: null,
     modelsFetchedAt: null,
     modelsError: null,
+    egressProxy: null,
+    maxContextTokens: null,
     zdr: DEFAULT_PROVIDER_ZDR,
     createdAt: 0,
     updatedAt: 0,

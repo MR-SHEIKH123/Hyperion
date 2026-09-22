@@ -114,6 +114,19 @@ export function registerCancellable(
 }
 
 /**
+ * The live run for a task, if this process is running one.
+ *
+ * A reader, not a signal: `cancelRun` both answers this question and aborts the
+ * run, which makes it the wrong thing to call when the only question is whether
+ * an action is available. The recovery report (1.31) asks that question — "can
+ * this interrupted run be resumed, or would a re-run be refused because the task
+ * is already live?" — and asking it must not stop the run.
+ */
+export function liveRunFor(tool: AgentTool, taskId: string): string | null {
+  return byTask.get(taskKey(tool, taskId))?.runId ?? null;
+}
+
+/**
  * Ask the live run for a task to stop, if there is one.
  *
  * Returns the run id that was signalled, or `null` when nothing live owns this

@@ -18,6 +18,8 @@ import { reconcileOrphanedTaskRuns } from './db/taskRuns.ts';
 import { reconcileOrphanedRuns } from './orchestrator/runState.ts';
 import { startBackupScheduler, stopBackupScheduler } from './services/backup/schedule.ts';
 import { startTaskScheduler, stopTaskScheduler } from './services/cowork/scheduler.ts';
+import { expireWaitingApprovals } from './services/agent/approvalWait.ts';
+import { scanOrphanedWorktrees } from './services/code/worktree.ts';
 import { seedDefaultServers } from './services/mcp/defaults.ts';
 import { startMcpSupervisor, stopMcpSupervisor } from './services/mcp/supervisor.ts';
 import { restoreActiveProject } from './services/projects/active.ts';
@@ -72,6 +74,11 @@ function bootstrap(): void {
     log.warn('reconciled orphaned task runs from a previous process', { count: orphanedTaskRuns });
   }
 
+  // A wait can end while nothing is running — a deadline passes on a machine that
+  // is off — so the sweep is here as well as on the cleanup timer, and it is the
+  // reason a prompt cannot outlive the process that would have reaped it.
+  expireWaitingApprovals();
+
   // Beside the reconciliation above because it answers the same question for the
   // filesystem: what did a previous process leave behind? The worktree registry is
   // in-memory, so a park from a dead process has no entry here and this pass finds
@@ -80,6 +87,26 @@ function bootstrap(): void {
   void reapParkedWorktrees().catch((error: unknown) => {
     log.warn('boot worktree reap failed', { error: String(error) });
   });
+
+  // And the same question for directories rather than holds (1.31): the worktree
+  // registry is in-memory, so everything on disk at boot belongs to no task this
+  // process knows about. The scan only reports — nothing here deletes — and its
+  // result is what the attention queue reads instead of spawning git inside a
+  // synchronous read. Runs before the server accepts work so the first
+  // `GET /api/attention` has an answer.
+  void scanOrphanedWorktrees()
+    .then((scan) => {
+      if (scan.orphans.length > 0) {
+        log.warn('worktree directories from a previous process were found', {
+          count: scan.orphans.length,
+          holdingWork: scan.holding,
+          unchecked: scan.unchecked,
+        });
+      }
+    })
+    .catch((error: unknown) => {
+      log.warn('boot worktree scan failed', { error: String(error) });
+    });
 
 
   ensureSkillDirs();

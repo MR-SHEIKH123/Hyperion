@@ -522,11 +522,17 @@ Each of these will waste your time exactly once:
 
 1. The PyPI distribution is **`graphifyy`** with a double y. Other `graphify*`
    packages on PyPI are unaffiliated.
-2. **There is no `graphify-mcp` console script.** The server runs as a module —
+2. **The server is reachable three ways, and the seeded entry uses the module
+   form on purpose.** `graphifyy` ships two console scripts — `graphify` (the CLI,
+   and `graphify ./repo --mcp` starts the stdio server too) and `graphify-mcp`
+   (which is `graphify.serve`'s entry point) — plus the module itself:
    `python -m graphify.serve graphify-out/graph.json`, or equivalently with an
-   explicit `--graph graphify-out/graph.json`. The bare `graphify` command is the
-   CLI (though `graphify ./repo --mcp` also starts the stdio server, which is
-   handy for a quick check by hand).
+   explicit `--graph graphify-out/graph.json`. **An earlier revision of this list
+   claimed there was no `graphify-mcp` console script**, which was wrong; the
+   seeded MCP entry still spells it as `<venv>/bin/python -m graphify.serve <graph>`
+   because an MCP entry has no working directory and that venv is deliberately
+   never on `PATH`, so the absolute interpreter is what has to be named either
+   way.
 3. **A graph must exist before serving.** It is a positional argument to `serve`,
    not something the server discovers or builds on demand.
 
@@ -935,8 +941,11 @@ streaming expert tensors from disk instead of keeping them in VRAM.
 Colibrì serves a genuine OpenAI-compatible surface — `GET /v1/models` and
 `POST /v1/chat/completions` — so `adapterFor()` routes it to the same
 `openAiAdapter` as `remote`. This is the opposite of `opencodex`, which needed
-its own adapter because it speaks the Responses API inbound and rejects
-`/chat/completions`. Do not add a Colibrì adapter "for symmetry"; it would be
+its own adapter because it speaks the **Responses API** as its data plane. (An
+earlier revision of this paragraph said opencodex *rejects* `/chat/completions`;
+the project's own docs describe that endpoint as a translating compatibility
+surface it does serve, so the reason is the native protocol, not an absent one —
+verified 2026-09-21.) Do not add a Colibrì adapter "for symmetry"; it would be
 duplicated code with its own drift.
 
 No API key is expected. `authHeaders()` already omits the header when no key is
@@ -1621,6 +1630,31 @@ there in the same commit.**
 Subscription endpoint URLs are truncated in logs, because an endpoint is itself a
 capability: anyone holding it can push to that device.
 
+### What leaves in a notification, and how much of it *(S19)*
+
+The payload carries a task's name and its run summary — model output about the
+user's own data. Three facts make that acceptable, and each is a place a future
+change could quietly stop being true:
+
+* **It is encrypted to the browser, not to the push service.** `web-push` encrypts
+  the payload with the subscription's own keys (`aes128gcm`), so the service
+  relays ciphertext; VAPID is authentication, not the privacy layer.
+* **Nothing logs it.** `sendPush` logs a reason and counts, never a body, and the
+  endpoint appears truncated even in failure logs.
+* **The device decides what to show.** The summary does reach a lock screen, which
+  is a deliberate product choice — "tell me what happened while I was away" — and
+  the place a user would most reasonably ask for a shorter form.
+
+**Bound to the transport.** A push message is capped at 4,096 octets — the size a
+push service must accept — and `buildPushBody` clamps each text field well under
+that (title 240 bytes, body 600, url 512, tag 128, cut on a character boundary).
+Before it existed, a summary longer than the cap produced a message the service
+refused; the rejection is not 404/410, so the subscription was deliberately kept
+and **no notification arrived, silently, for exactly the runs with the most to
+report**. A notification is a pointer to the app, not the report: the tray
+truncates anyway, and the clamp says so with an ellipsis rather than pretending
+the text ended.
+
 ### 404 and 410 delete the subscription; nothing else does
 
 A `404` or `410` from the push service means the browser threw the subscription
@@ -1716,6 +1750,44 @@ The unwritable destination is simulated by replacing the directory with a
 largely ignores them on directories, so a chmod-based test would pass on CI and
 silently do nothing locally.
 
+## A backup exported without keys carries no plaintext credential *(S18)*
+
+The export has always excluded `secret.key`, and the comment beside that decision
+states the guarantee: *a leaked backup exposes conversations but not credentials*.
+`mcp_config.json` was included unconditionally and broke it — `registry.ts::toEntry`
+materialises a remote server's token into the file as a literal
+`Authorization: Bearer ...` header, so the default archive contained a working
+credential in the clear, in the artifact most likely to be copied to a sync
+folder or a USB stick.
+
+**Why the fix is structural rather than a redaction pass.** Nothing in the file's
+format marks which value is a secret: the same slot holds a workspace path
+(`args`) or a token (`headers.Authorization`), and `env` values are whatever the
+user put there. A redaction pass would be a guess that reads as a guarantee —
+the worst kind of control. The rule is instead: **the file travels only with
+`includeKeys`**, the same switch that ships the key which makes its tokens
+decryptable in the first place.
+
+**Nothing is lost that a restore could use.** The registry's authority is the
+database, not the file: `listServers()`, the process manager and
+`GET /api/mcp/servers` all read the table, and `POST /api/mcp/sync` regenerates
+the file from it. The servers therefore travel in the archive as rows. Their
+`token_enc` travels as ciphertext and is useless without a key the default export
+also leaves out — which is exactly why the plaintext header next to it must not
+travel either. A restore that is given no `mcp_config.json` entry writes none,
+leaving the file already on the machine untouched rather than downgrading it.
+
+The manifest says so in words. `contents.mcpConfig` is `false`, and the
+human-readable `warning` names the omitted file, since a user comparing two
+archives should be able to see what a default export decided to leave behind
+without reading this document. With `includeKeys: true` the file is included
+verbatim and the warning is the key warning instead: full fidelity is available,
+it is just opt-in.
+
+Pinned by `test/backupsecrets.test.ts`, which asserts against the archive's own
+bytes — a token that appears anywhere in the zip fails the test, whatever the
+route it took to get there.
+
 ## Health summary and activity feed (added in 1.17)
 
 
@@ -1782,6 +1854,64 @@ have nothing to do with whether the process is alive, so the probe reads only
 `src/http/health.ts` when `/summary` was added, and `test/activity.test.ts`
 asserts its exact response shape for that reason — a supervisor polling it would
 not survive a silent change during a refactor.
+
+### The feed's third source was write-only for four migrations *(1.17's clause, landed late)*
+
+`subagent_runs` (migration 015) records one delegated Code child per row — the
+parent task and run, the child's task id, the sequence, the prompt, and how it
+ended — and it is written by the code agent's delegation path (`startSubagentRun`
+before the child runs, `finishSubagentRun` in every terminal branch including the
+aborted one). Nothing read it outside its own module. The table answered a
+question nobody asked, and the feed's own header said delegation was absent
+because "there is no table and no writer" — true when written, false from the
+moment that writer landed. `getSubagentRun` and `listSubagentRuns` still have no
+caller; the feed reads the table directly, the way it reads the two it already
+had.
+
+Three things about how it joins:
+
+- **A `subagent` entry is a third kind, not a second `task`.** A client that
+  branches on `kind` — the whole point of the field — would otherwise be told a
+  child is an interactive run it can open, which it is not.
+- **No `link` and no `spend`, deliberately.** A child has no chat (linking the
+  parent's would make two entries look like one place to read one transcript),
+  and its provider requests are logged against the **parent's** run id, because
+  `childContext` hands the child the parent's `llm` and that wrapper closes over
+  the parent's identity. So the child's spend is inside the parent's entry on the
+  same page. Two documents claimed otherwise (`docs/API.md`'s `spend` paragraph
+  and the `RecordUsageInput` docstring) and both were corrected rather than left
+  as a plausible-sounding reason for a field that is genuinely absent.
+- **The title is the first line of the prompt, clipped to 80 characters.** The
+  alternatives are a uuid and a sequence number. The full prompt stays in the
+  table for anything that needs it.
+
+### Two states the feed used to call "still running" *(added in 1.31)*
+
+`taskStatus` mapped `complete`, `error` and `paused` and sent everything else to
+`running`. Migration `012` had already introduced `stopped` (the user pressed
+Stop, the run was cancelled, or a budget ceiling ended it) and migration `020`
+had introduced `interrupted` (the process disappeared; reconciliation says so in
+a sentence). Neither was in the mapping, so both rendered as **"… task is still
+running"** — and not in some old corner of the feed: a run that just ended is the
+newest thing in it. A user who stopped a runaway task and then looked at the feed
+was told it was still going.
+
+They map to `stopped` and `interrupted`, which are now part of the feed's status
+vocabulary alongside `failed`. Collapsing either into `failed` is the mistake
+migration `012` argued against in the other direction: a ceiling stop and a
+restart are not failures of the work, and a feed that says they are trains the
+user to ignore it. Collapsing them into `success` would invent an outcome.
+
+### A park renders as a sentence, not as its token *(added in 1.31)*
+
+`task_runs.pause_reason` holds a token (`plan_ready`, `approval_required`,
+`ceiling_reached`) and two readers print it. The attention queue was fixed to
+translate it when `parkMessages.ts` landed; the feed was not, so the same park
+read as "Cowork task paused" with the detail `approval_required`. The feed now
+reads the same module — `parkSummary` for a park, `stopSummary` for the
+`ceiling_reached` stop, of which a user pressing Stop needs no explanation.
+`test/activity.test.ts` asserts the token appears nowhere in a response body,
+which is the version of this rule that keeps holding when a third reader arrives.
 
 ### The activity feed is not the debug console
 
@@ -2177,6 +2307,44 @@ the write does not exist.
 The session ends when it is deleted, when its idle timer expires, or when the
 process exits — and process exit is a real, intended ending, not a leak of state.
 
+### Memory is the seventh writer, and it is refused too *(S20)*
+
+The rule above is enforced by a guard in the storage layer, and the reason given
+for that placement is exact: *every writer must pass through it.* Memory was a
+writer that did not. After a completed turn the orchestrator handed the exchange
+to `rememberTurn`, which asked mem0 to extract facts and wrote them to
+`~/Hyperion/memory/` — durable, retrievable, injected into later turns, and
+carrying the private chat's id as metadata on each one.
+
+Nothing about that path is the chat table, so the storage guard never saw it, and
+nothing about it looks like a transcript, so it did not read as a write. The user
+was told the conversation was not being recorded; the transcript was not, and the
+*facts distilled from it* were — which is the same promise, kept in letter only.
+
+The guard therefore lives in `rememberTurn`, before the backend is even loaded:
+
+```ts
+if (isTemporaryChat(meta.chatId)) return 'temporary';
+```
+
+**Returned, not void.** `rememberTurn` reports `'queued' | 'disabled' |
+'temporary' | 'empty'`, so the decision is observable and a future caller cannot
+re-open the hole by ignoring a `void`. `test/memoryincognito.test.ts` asserts the
+temporary case and that the memory directory stays untouched, that a saved chat
+is still queued (the guard is about the chat, not about everything), and that the
+toggle and the emptiness check still come first.
+
+**Recall is not skipped, deliberately.** An incognito turn may still be given
+memories to read: reading records nothing new, and the promise is about what is
+written. Spending is not skipped either — `usage_log` takes an anonymous row,
+which is the one write whose absence would be a bypass.
+
+**Checked while here, and clean:** the other stores a turn can reach either cannot
+see a temporary id or refuse it — `usage_log` nulls it deliberately,
+`task_runs`' `linkedChatId` stores NULL for an id with no row, and the only asset
+write on a tool path (`design.brand_propose`) passes no chat id at all, so
+`attachments.chat_id` stays NULL.
+
 ### Incognito usage is recorded anonymously, and this is load-bearing
 
 A temporary turn writes a real `usage_log` row: real tokens, real cost, with
@@ -2339,24 +2507,64 @@ opt-in, not something discovered by being interrupted mid-sentence.
 looks like prose passes straight through. Nothing may be built on this as though
 it were a guarantee.
 
-### Only a positively-identified remote provider is gated
+### "Local" is verified against the URL, not taken from the type's word for it
 
-`classifyProviderType` maps `local` and `colibri` to `local`, `remote` and
-`opencodex` to `remote`, and everything absent to `unknown`. The gate fires on
-`remote` only.
+The gate accepts a *subject* — the provider's type **and** the base URL it will be
+called at — and `egressClassFor` decides from both. `classifyProviderType` still
+exists, but only for rows: it maps `local`/`colibri` to `local` and
+`remote`/`opencodex` to `remote`, and it cannot see a URL, which is exactly the
+half of the question that was missing.
 
-Both surprising cases are surprising in a way that matters. **`opencodex` is
-remote**: it is a local *proxy* that routes to upstream vendors, so a payload
-handed to it leaves the machine (proven from `002_opencodex_provider_type.sql`
-and its adapter, which speaks the OpenAI Responses API to a gateway).
-**`colibri` is local**: it sounds like a hosted service but serves a model on
-this machine. A frontend inferring egress from the type string would get both
-backwards, which is why `GET /api/providers/active` serves `egress` rather than
-letting the client compute it.
+**A type that claims locality is checked.** `normalizeBaseUrl` accepts any http(s)
+host, so nothing stopped a Colibrì box — or an Ollama server — on another machine
+from being registered, enabled and used. Until this was fixed, all four surfaces
+that answer "did these bytes leave" said no:
+
+  - `GET /api/providers/active` served `egress: "local"`, the value the UI renders
+    as "stays on this machine"
+  - the credential scan was skipped, because `isEgress(type)` was false, so a
+    prompt carrying a key went out unremarked
+  - `zdrStatusFor` answered `local_no_egress` — "retention by a third party is not
+    a question that arises" — which is a value that *satisfies* a `require` policy
+  - the exposure summary stamped the row `local`, understating egress permanently
+
+One provider, one URL, four false statements. The rule now: **only a URL that
+parses to a loopback host is this machine.** `localhost`, anything under
+`.localhost` (RFC 6761), `::1`, and the whole 127/8 block. Deliberately no DNS — a
+name that merely resolves to loopback (`127.0.0.1.nip.io`) is still a name handed
+to a resolver, and the answer can change underfoot.
+
+**A declared remote is never downgraded, and an unverifiable claim is not believed
+either.** `opencodex` at 127.0.0.1 stays `remote` — it is a local proxy that
+forwards to upstream vendors, and a `remote` provider may be anything at all;
+calling either one local would skip the scan. A local-typed provider with an
+absent or unparseable URL is `remote` too: an unreadable address is not evidence
+of locality. Understating egress is the one direction this module refuses to fail
+in. A type this build does not recognise stays `unknown`, whatever its URL —
+not knowing what a provider *is* cannot be improved by looking at its address.
 
 `unknown` is not gated, because warning about a provider we cannot classify would
 train the user to dismiss the prompt. But `unknown` is never reported *as* local
 either — see the exposure bucket below.
+
+### The class is stamped, so history cannot be restated
+
+`usage_log.provider_egress` (migration `019`) records the class **at write time**,
+for the same reason `013` records the type: a provider can be re-pointed or
+deleted, and the summary has to be a record of what happened rather than a
+re-derivation from whatever `providers` says today.
+
+Rows written before `019` have no stamp and fall back to the type mapping they
+were written under. That is a **permanent, recorded understatement** for any
+pre-`019` local-typed provider that pointed off this machine: the URL was never
+stored, so there is nothing to re-decide it with, and a backfill would only
+restate the old judgement in SQL. It is named here rather than hidden, and the
+class it was lived under is what those rows keep.
+
+No backfill, and no second copy of the mapping in SQL. `classifyProviderType`
+stays the single definition of the type half; `rowEgressClass` is the one place
+the stamped value is preferred over it, and a stamped value this build does not
+recognise falls back rather than inventing a bucket.
 
 ### The gate runs before the user turn is persisted
 
@@ -2385,9 +2593,9 @@ gate does not re-run — by then the request is already in flight and there is n
 user present to acknowledge anything.
 
 This is a known limit, not an oversight. What compensates is the usage row: both
-`recordUsage` calls stamp the provider type that **actually served** the turn, so
-the exposure summary reflects where the bytes really went even in the case the
-gate could not intervene. A summary built from the *intended* provider would
+`recordUsage` calls stamp the **egress class** of the provider that actually
+served the turn, so the exposure summary reflects where the bytes really went even
+in the case the gate could not intervene. A summary built from the *intended* provider would
 quietly under-report exactly the situation the user most wants to know about.
 
 **Narrowed, not closed, by 1.26.** Zero data retention set to `require` removes
@@ -2561,8 +2769,9 @@ plaintext round-trip would be a credential leak waiting for one paste.
 
 `openAiAdapter` serves both the remote `remote` type and the local `colibri` type, so
 keying the flag off the adapter would send a retention header to a local runtime that
-has no retention policy. `zdrFlagFor` asks `classifyProviderType` instead, which keeps
-one definition of what leaves the machine.
+has no retention policy. `zdrFlagFor` asks `egressClassFor` instead — as does
+`zdrStatusFor`, which must not answer `local_no_egress` for a local-typed provider
+pointing somewhere else — which keeps one definition of what leaves the machine.
 
 Merge order is also load-bearing: the flag is spread **before** `Authorization`,
 `Content-Type` and `Accept`, and before `model`/`messages`/`stream` in the body, so a
@@ -2672,6 +2881,39 @@ the second one arrives, so the function is named for the condition instead.
 The wording differs per reason and that is deliberate: `redaction_blocked` invites the
 user to review and approve, while `zdr_blocked` must not — there is nothing to
 approve, and the block lifts only when a setting or a recorded provider fact changes.
+
+## A park says why, and the sentence is written where it is read *(added in 1.31)*
+
+`parkRun` wrote the state and stopped there. `task_runs.pause_reason` stayed null
+for every park, which was invisible in two places because both had been written
+*expecting* a reason: the Attention Center's parked items read
+`pause_reason ?? <a generic sentence>` — so the generic sentence was what every
+parked run showed — and the unattended-run notification worded itself from
+`result.ok`, so a scheduled run that parked to ask a question was announced as
+**failed**. That is the mistake `012` argued against for `stopped`: a notification
+that cries failure for a pause teaches people to ignore it.
+
+The reason now travels with the state, as a **token** (`plan_ready`,
+`redaction_blocked`, `ceiling_reached` is *not* a park, …), and the translation to
+a sentence lives in `services/agent/parkMessages.ts` at the point of display. Two
+decisions worth keeping:
+
+- **The column keeps tokens.** Every other writer already writes one
+  (`cancelled`, `ceiling_reached`, `approval_denied`), and a column that carries
+  prose half the time is a column no reader can switch on. Storing the sentence
+  would have been the smaller change and the worse one.
+- **A bare transition clears nothing.** `updateTaskRunState(runId, state)` still
+  moves only the state, so a run that becomes `ready_for_review` cannot lose an
+  earlier, still-true reason. Only a caller that *states* a reason rewrites the
+  column, and the map is a total `Record<ParkReason, string>` so a new reason is a
+  compile error until somebody writes its sentence.
+
+The wording is per reason on purpose, because the action is: `redaction_blocked`
+invites the user to review a flagged message, `zdr_blocked` must not (nothing can
+be approved), an approval prompt means one decision is all that is needed while a
+`ceiling_reached` stop means the same rule would trip again, and
+`context_exhausted` cannot be continued at all — the same conversation would refill
+the window — so it points at a fresh task.
 
 ## Stopping a run is not the same as losing the client (groundwork for 1.24)
 
@@ -3226,7 +3468,13 @@ them alike would park healthy runs or, worse, ignore a real refusal.
 ### The context window is a ladder, and an assumed number says so
 
 `resolveContextWindow` prefers an explicit override, then the model's reported
-`contextLength`, then `DEFAULT_CONTEXT_TOKENS` (8192) with `assumed: true`.
+`contextLength`, then a default with `assumed: true` — 8192 for an OpenAI-shaped
+gateway, **4096 for `local`**, because Ollama's own documented default is 4096 and
+it truncates an over-long prompt silently instead of refusing it. The rung is
+still `assumed` either way: it is a guess, and the honest one for that endpoint.
+`maxContextTokens` on the provider is how a user replaces the guess with a number —
+the local runner is exactly the case that needs it, since a Modelfile `num_ctx` or
+`OLLAMA_CONTEXT_LENGTH` changes the real window and nothing on the wire reports it.
 
 A reported `0`, a negative number, or `NaN` all count as **no answer** rather than
 as a window of that size. Gateways do report `context_length: 0` for models they
@@ -3487,6 +3735,117 @@ Wire names stay dotted — `wigolo.search` is what the server answers to and wha
 by replacing dots. A key lives in a JSON object key and a front-matter scalar, so
 it gets a spelling that survives both; renaming the wire name to match would break
 dispatch for no benefit.
+
+### A path rule matches the file, not the spelling the model chose
+
+A rule governs a *file*, and a file can be named more than one way. The file tools
+resolve their argument before touching disk — `ctx.resolvePath`, then the same
+containment check the write itself performs — so `secrets/key.txt`,
+`./secrets/key.txt`, `src/../secrets/key.txt` and the absolute path are one file.
+A rule matched against the raw argument would govern the string instead:
+`{"write":{"secrets/**":"deny","*":"allow"}}` would refuse the first spelling and
+allow the rest, and the bytes would land in exactly the directory the user denied.
+
+So a path subject is canonicalized before it is matched (`canonicalPathSubject`),
+in two passes:
+
+* **Lexical** — backslashes become separators, `.`/`..` collapse, duplicate
+  separators fold, a trailing slash goes. No filesystem, and it closes every
+  *relative* respelling.
+* **The caller's resolver** — `EvaluateInput.pathResolver`, which the Code adapter
+  supplies as `ctx.resolvePath` on both sides of a `path.relative`. Patterns are
+  authored relative to the workspace and `resolvePath` answers absolutely, so the
+  caller is the only one that can do the subtraction. This is what closes an
+  absolute or symlinked spelling, because that is realpath work and only the caller
+  knows which root the run is confined to.
+
+Only path tools get this treatment — `read`, `write`, `restore`, derived from the
+same table that says which argument is a glob subject. A `bash` subject is a command
+line, and running one through a path normaliser would rewrite the command
+(`cat a/../b` → `b`), which is a rule matching something its author did not write.
+
+**An agent that adds a tool in that table also has to pass a resolver**, or its path
+rules are matched lexically only — which is still better than the raw argument, and
+still not enough for an absolute or symlinked spelling. Today that is Code and
+nothing else: Cowork's tools are `cowork.*` and MCP wire names, Design's are
+`design.*`, and none of them has a path subject. Tomorrow's tool has one job beyond
+registering itself.
+
+A resolver that *refuses* the path (it escapes the scope) is not an error here: the
+tool refuses it with its own coded error moments later, so the lexical form stands
+and a permission check never fails for a different reason than the tool would.
+
+This is the same class as a permission **key** that silently fails to match the tool
+it was written for (S12's territory): the rule is well-formed, the user believes it
+applies, and the operation it was meant to stop proceeds. `test/permissions.test.ts`
+pins the spellings; `test/codepermissionpaths.test.ts` pins the adapter wiring, since
+a relative pattern cannot match an absolute argument without it — and an engine test
+alone would stay green if that wiring were dropped.
+
+### A path is not used through a symlink
+
+`fsScope` answers by canonicalising: `resolveInScope` follows symlinks and returns the
+real location, tolerating a missing tail so that a file which does not exist yet can
+still be checked. That is the right answer to its own question, and it is a snapshot.
+An agent that can create symlinks inside the directory it is allowed to write to can
+change the answer afterwards — and because the answer was "inside the scope", the
+change is invisible to every check that already ran.
+
+Two checks now run at the point of use, from `src/security/toctou.ts`, on both seams an
+agent reaches: the file tools (`files.ts::locate`, so `write`, `read` and `restore` all
+get it) and the working directory handed to a command (`containAgentCwd`, which
+`executeCommand` uses).
+
+* **No traversal through a symlinked directory** — `assertNoSymlinkedTraversal` walks
+  the components of the path *as spelled*, `lstat`ing each, and refuses a symlink even
+  when it currently resolves back inside the boundary. It has to run **before** the
+  resolver, because canonicalisation is what erases the evidence: once a resolver has
+  answered, an inward link and a real directory are the same path, and the check would
+  be dead code that reads like a defence.
+* **Canonical boundary revalidation** — `assertStillInside` re-resolves the resolved
+  path *now* (`pathContains`, which follows symlinks on both sides and tolerates a
+  missing tail) against the **task's** boundary rather than the scope. Two parallel Code
+  tasks share the `projects` (or `worktrees`) scope and are not each other's workspace;
+  the scope-wide resolver cannot express that, and this check is what keeps the pair
+  independent rather than merely both-contained.
+
+Both refusals are **403 `scope_violation`** with `details.reason` — `intermediate_symlink`
+(naming the offending `component`) or `resolves_outside` — because the user's next move
+differs: "name the directory it points at instead" versus "that file is outside what
+this task owns". The traversal refusal says the first half out loud in its message.
+
+**Three policy decisions, all deliberate:**
+
+1. **A symlink *at the target* is allowed.** The rule is about the components on the way
+   to the file, and a symlinked *file* is an ordinary thing to write. If it points
+   outside the boundary, check 2 refuses it anyway.
+2. **An inward link is refused too.** That costs the project which intentionally
+   symlinks `docs -> shared/docs`: a model that spells a path through the link is
+   refused, and its retry is mechanical — the canonical spelling of the same file
+   succeeds, and the refusal names the directory to use. Refusing the class is the
+   point: whether a link is *about to be* re-pointed is not a decidable question at use
+   time, and a check that allowed inward links would have to answer it.
+3. **A refusal stops the task** instead of being handed back to the model as tool
+   output. That matches what the file tools already do for `not_found` and for a stale
+   `expectedSha256` (`writeCodeFile` throws, `runTool` rethrows, `runCodeTask` reports
+   `ok: false` with the coded error), and a boundary that was just refused is the one
+   error that must not read as a retry prompt.
+
+**What this does not fix**, stated so it is not mistaken for a closed hole: the window
+between the check and the syscall is irreducible from the pre-check side — they are two
+operations. What is closed is the *unbounded* window, because a path is no longer
+trusted from the moment the task context was built. An escape now needs a race won in
+microseconds rather than a symlink planted minutes earlier, and the traversal refusal
+removes the pre-planted hook that race would need.
+
+`test/toctou.test.ts` (11 cases) drives real runs on a real filesystem — a scripted Code
+run replaces a real directory with a symlink between turns and then writes through it,
+which is what succeeded before this change — plus the primitives' edge cases: a missing
+tail, `..`, a symlinked file, an outward *file* link, an inward *directory* link, and a
+sibling whose name shares a prefix with the boundary. The outward-link case is a
+regression guard rather than a fix: `locate`'s lexical prefix comparison already refused
+it, as `bad_request`, and the claim pinned there is that it is now also refused as the
+boundary violation it is.
 
 ### A write that looks like a credential is downgraded to `ask`
 
@@ -4051,3 +4410,1453 @@ When a drift is intentional, re-record — `HYPERION_RECORD_GOLDEN=1
 node --test test/goldenruns.test.ts` — and review the fixture diff like
 any other change. Hand-editing a fixture to make a failing run pass defeats
 the purpose: the diff review is the check.
+
+## Per-task cost attribution *(added in 1.29, Master Plan v4 §6.2)*
+
+Every provider request a task makes is recorded once, in
+`orchestrator/agentContext.ts` — the one object every task run passes through,
+whether a route, a continuation or the scheduler started it. Chat runs do not
+build one, so they keep recording through `orchestrator/chat.ts` and nothing is
+counted twice. The alternative considered and rejected was having each agent
+record its own spend: three call sites that can drift, and a fourth agent would
+have to remember to add one.
+
+### Two keys, because "this task" and "this run" are different questions
+
+`usage_log.task_id` and `usage_log.run_id` (migrations 017 and 018) both name an
+execution and neither is redundant:
+
+* **`task_id`** attributes spend to the *work*. A delegated child inherits its
+  parent's task id (`loop.ts` omits `runId` at depth 1), so a task total includes
+  what its subagents spent — which is the number that answers "what did this
+  request cost me", and the number the daily spend cap is compared against.
+* **`run_id`** names the *execution*. The activity feed renders one entry per
+  `task_runs` row and the state route answers about one run, so this is what makes
+  a per-entry cost possible.
+
+So a task total is never the sum of its runs' totals: it is that sum plus the
+child rows that carry no run id. `TaskUsage.runs` is a `COUNT(DISTINCT run_id)`
+rather than a count of rows for the same reason.
+
+`run_id` carries **no foreign key** to `task_runs`, deliberately: `startTaskRun`
+uses `INSERT OR REPLACE` when an attempt restarts, so a cascading relation would
+delete the spend of exactly the attempt being replaced. A spend row records
+something a provider was actually asked, which must outlive the bookkeeping row
+it is attributed to; a dangling id is the survivable error, and the honest one.
+017 refuses a cascade on `task_messages` for the same reason.
+
+### Absent usage is not zero usage, and unpriced is not free
+
+A provider that reported no token counts leaves **no row**, rather than a row of
+zeroes: "unknown tokens" and "no tokens" are different facts, and a zero in a
+total is believed. A request that fails *after* reporting usage is recorded
+`partial`, because the provider may well have billed it.
+
+On the read side the rule `usage.ts` has always kept applies per task and per run:
+`costUsd` is `null` unless a price matched, `priced` says whether the figure is
+the whole bill, and `unpricedRequests` counts what could not be measured. A task
+with nothing recorded reports `requests: 0` with `costUsd: null` — a client that
+renders that as "$0.00" is wrong, and the field is shaped so the mistake is
+visible rather than convenient.
+
+### A global price is one row per model, enforced by the schema
+
+`model_prices` is keyed `(model_id, provider_id)`, and SQLite treats NULLs as
+distinct in a unique index — so the old `ON CONFLICT(model_id, provider_id)`
+upsert never fired for the catch-all row (`provider_id IS NULL`, "all providers"),
+and saving one twice inserted a duplicate while the lookup kept returning the
+older. That is finding S15 in the register, and the repair is both a partial
+unique index and a conflict target that names it. The general lesson is worth
+keeping in view: a uniqueness claim that involves NULLs is not enforced by the
+obvious constraint, and a silent duplicate read back as "the" value is a wrong
+number rather than a failure.
+
+## A row count is a whole number within a bound *(S17)*
+
+`limit` is the only query value whose *type* SQLite refuses to coerce. Every
+other number arrives in a comparison, where `2.5` compares perfectly well, so
+`asNumber` is the right parser for it. A limit is different in both directions,
+and neither failure is visible at the call site:
+
+```
+LIMIT 2.5  ->  SQLite raises "datatype mismatch"; the client gets a 500
+               internal_error quoting the driver, and error_log gains a row
+               that claims the server broke
+LIMIT -1   ->  SQLite reads a negative limit as *no limit* and returns the
+               whole table, so "-1 rows" silently means "everything"
+```
+
+So every list route takes its limit from `queryLimit(req, name, { fallback,
+max })`, and an out-of-range value is a 400 naming the field — with the bound in
+the message when the value is simply too large.
+
+**Refused, not clamped.** `LIMIT` is captured in a service layer several of
+these routes already clamped inside (`gallery.ts` caps at 1000, `cleanup.ts` at
+500, `memory/index.ts` at 200), and clamping is the wrong answer at the
+boundary: a caller handed 200 rows after asking for 5000 concludes the table
+holds 200. The internal clamps stay — they also guard the agent-side callers
+that never pass through HTTP — but they are a backstop, not the contract.
+
+The consequence worth stating plainly: **the bound is part of the API**, so
+raising one is a documented change rather than an implementation detail. Nine
+routes carry one today (`chat` 500, `chat/:id` 500, `chat/:id/messages` 500,
+`storage/assets` 1000, `storage/cleanup/log` 500, `errors` 500,
+`design/assets/approved` 500, `cowork/.../history` 500, `memory` 200), and
+`test/listlimits.test.ts` drives all nine — adding a list route that skips
+`queryLimit` fails there.
+
+## Point-of-action privacy *(added in Prompt 1.39, item B)*
+
+The egress class, the retention story, the standing ZDR requirement and the
+pre-send redaction-check flag are now rendered **where the send happens** — the
+composer's own line — not only in Settings. Same data, different placement: the
+decision the facts inform is made at the composer, and a fact disclosed three
+screens away from its consequence is disclosed too late to be part of the
+decision.
+
+**The frontend derives no verdict.** `PrivacyIndicator` shows the recorded status
+and the standing requirement side by side: "zero-data-retention not applied ·
+zero-data-retention required". It does not say *met*, *unmet*, *satisfied* or
+*eligible*, because that judgement is the backend's to make and it is made
+server-side (`zdr.ts` reasons over its own status list, and its comment says why
+the single definition lives there). A frontend that re-implemented the satisfying
+rule would keep answering after the rule changed — and would be answering a
+question the send path already answers, in the place where being wrong costs the
+user their data rather than an error message.
+
+**A status the UI cannot label is a contract failure, not a fallback.**
+`activeProviderResponseSchema` enumerates `egress` (`local`/`remote`/`unknown`)
+and `zdr.status` (the seven statuses in `types/core.ts`) and `zdr.requirement`
+(`off`/`prefer`/`require`); `zdr` is required rather than optional, because the
+route always sends it and a missing retention story must not be read as an absent
+one. An unknown value makes the response an `invalid_response` instead of
+rendering one badge for "we do not know this value" and "the provider retains
+your data" — the same reasoning as the enumerated `healthStatus` and provider
+type, now applied where the label has privacy semantics.
+
+**What has no data source, and therefore no UI.** The same item lists proxy
+profile, attachment/URL egress and Pulse source tier. None of the three exists in
+this backend (`grep -r 'proxyProfile\|attachmentEgress\|pulse'` finds nothing),
+so the composer shows no control for them: an unlabelled toggle or a permanently
+"unknown" chip would read as a limitation of the provider rather than of the
+feature. When any of them gets a backend field, it is rendered from that field or
+not at all — never defaulted.
+
+## The development state harness *(added in Prompt 1.39, item A4)*
+
+`/__dev/states` renders the hard-to-trigger states with production components and
+no provider or model calls (`HarnessRouter.test.tsx` asserts `fetch` is never
+called). The rule that makes it useful is the one about honesty: **every fixture
+either names the surface that produces it or says plainly that nothing does.**
+
+- Real states carry their source: the Code-lane refusal is `busy` (409,
+  retryable, `details.running/limit/queued`) or a queued waiter depending on
+  concurrency mode; the spending cap is `spending_cap_reached` (429, autonomous
+  work only); the backup diff is `POST /api/backup/inspect`; MCP disconnection is
+  `GET /api/mcp/status`; "no provider active" is `/api/providers/active` returning
+  `provider: null`.
+- States the contract does not have say so in the card: **interrupted** is not a
+  `TaskRun` state (a run is `stopped` or `error`, and the frontend derives
+  "interrupted" from the transport — see the task machine), **provider cooldown**
+  is not a state at all (an outage arrives as a run `paused` with a reason, then
+  failover), and **design preview failure** has no preview to fail because the
+  Design tool has no frontend yet.
+- The dangerous-command confirmation renders the production `Dialog` as a
+  primitive preview and is labelled as one — the Code approval surface does not
+  exist yet, and a harness that faked the surrounding task view would hide that
+  exactly as well as hiding the dialog would.
+
+A fixture list that only contains implemented states lets "we never built it"
+read as "nothing to render". The second kind of entry is the reason the file
+exists.
+
+## The attention queue is an inbox, not a report *(added in 1.39 A1)*
+
+`GET /api/attention` exists because three surfaces were all answering a version of
+"what is going on" and none of them answered "what is waiting on me". `GET
+/api/health/summary` is a *capability* verdict — a request sent right now cannot
+succeed — and a parked approval is not that: the permission engine is working
+exactly as designed and the run is parked on purpose. `GET /api/activity` is
+history, chronological and complete, and a finished task stays in it forever
+because that is what history is for. The queue is the third thing, and its defining
+rule is that **an item exists only while something is unfinished**.
+
+Four decisions that follow from that, each of which a future change could undo
+without noticing:
+
+1. **Live state only.** A run in `error` is not an item — a failure the user
+   already saw fail is not waiting on them, and putting it in the queue would
+   rebuild the feed with worse ordering. The exception is an interruption: a run
+   the server left mid-flight is a thing to restart, so it appears as
+   `interrupted`. That is the `interrupted` state itself since migration `020`,
+   and the pair that preceded it (`error` with `error_code: 'internal_error'`) is
+   still reported, because every existing database holds rows in that shape and a
+   queue that went quiet on them would drop the items that waited longest.
+2. **One item per thing, not one per symptom.** A `ready_for_review` run that
+   produced a plan becomes `plan_ready` and not both items, because the plan is
+   *why* it wants review and the user has one decision to make.
+3. **Ordering is data.** Items are grouped by kind in the order the source fixes
+   (a decision outranks a notification) and oldest-first inside a kind, because a
+   queue that reordered by recency would bury the prompt that waited longest.
+   `counts` and `total` are derived from `items`, so a badge cannot disagree with
+   the list under it.
+4. **An unreadable source is reported, not omitted.** `sources` lists every
+   category with `ok`/`empty`/`unavailable` and a reason when it is unavailable. A
+   silently missing category is indistinguishable from a category that is fine,
+   and this queue is read to decide what to do next rather than to admire a
+   dashboard.
+
+Two sources are honest about how they are detected. **Scheduled runs** need no
+window: `scheduled_tasks.last_status` is the scheduler's own verdict and a later
+success clears it. **Backups** do — a backup is a request, not a job, so there is
+no run record at all and a failure is visible only in `error_log`; the item is
+therefore a failed `/api/backup` request in the last 24h, and `sources[].reason`
+says exactly that. If a backup run record is ever added, that source should become
+the scheduled-run kind rather than keeping the window.
+
+`resolve` is the *call* that answers an item (`POST
+/api/{tool}/tasks/{taskId}/approve`, `POST /api/chat/resume` with the `runId`) and
+never a frontend route: the shell owns its own URL space, and a backend that
+invented paths for a UI it cannot see would have to be changed every time a route
+moved. Items that can only be acted on in prose (a scheduled failure is re-run from
+the Cowork tool; a cap is answered in Settings) carry no `resolve` rather than a
+guessed one.
+
+`test/attention.test.ts` (8 cases) drives the real app over a socket and writes
+every row with the writer production uses — `recordApproval`, `createRun` /
+`pauseRun` / `reconcileOrphanedRuns`, `startTaskRun` / `finishTaskRun` /
+`recordStep`, `createScheduledTask` / `finishRun`, `logError` — including the two
+assertions that are about absence: a plain failed run must not appear, and
+resolving an approval must remove exactly one item.
+
+## The workspace frame: regions, folding, geometry *(added in Prompt 1.39, item A3)*
+
+Code, Cowork and Design are the same *kind* of surface: a task rail, one main
+surface, a progress stream, an inspector, a version timeline, a composer and a
+status line. Three separate layouts would have drifted on exactly the parts a user
+learns once — where the rail is, what the status line means, which key resizes a
+panel — so `frontend/src/workspaces/AgentWorkspace.tsx` owns the eight regions as
+a *frame*, and an occupant supplies their contents. The occupant's definition
+(`AgentWorkspaceDefinition`) may omit the optional regions; the layout is valid
+either way, so a tool with no version history does not render an empty box.
+
+The frame is the **case**, and what it owns is the interesting part:
+
+- **Geometry is clamped, and every path shares one clamp.** `MIN_WIDTH` 240 (the
+  same floor the stylesheet calls `--workspace-panel-min`), `MAX_WIDTH` 520, and
+  the pointer drag, the keyboard step (±16 px per arrow key) and the stored initial
+  layout all go through it. A stored layout is clamped on read rather than trusted:
+  a bad saved width must not be able to collapse the surface or push the inspector
+  off the screen.
+- **A drag reports once, on release.** The pointer path moves the column on every
+  pointer-move event — the frame must follow the pointer — but it notifies
+  `onLayoutChange` only when the drag ends, because a resize is one decision and the
+  persistence layer should not see eighty writes for one gesture. The right-hand
+  separator sits on the column's *outer* edge, so dragging it left grows the column;
+  a move or a release with no pointer-down before it is ignored, since browsers
+  deliver stray moves to whatever is under the cursor.
+- **Pointer capture is an optimisation, not the mechanism.** `setPointerCapture`
+  keeps a fast drag alive when the pointer outruns the 9px handle, but it can throw
+  (`InvalidPointerId` for a pointer that is not active) and some environments have
+  no implementation at all, so a missing or refusing API is tolerated and the drag
+  continues uncaptured. Throwing on pointer-down would take the whole panel with it.
+- **A folded panel is absent, not hidden.** Folding renders the region without its
+  body, so nothing inside it is focusable and nothing in the accessibility tree
+  reaches it, and the strip that remains still says which panel it is (vertically,
+  because 44 px is not enough width for a horizontal label). A CSS `display: none`
+  would leave the content in the tab order.
+- **Three regions can never fold.** The main surface (a tool *is* its surface), the
+  composer (hiding where the next instruction is given is how a user concludes the
+  surface is read-only) and the status line (task state must not be hideable while a
+  run is parked). An occupant's `collapsible` list can only **narrow** that set — it
+  cannot remove a region from the frame, so an occupant that forgets the field does
+  not accidentally make the task rail unfoldable.
+- **A fully folded side column becomes a strip**: 44 px, and its separator is not
+  rendered at all, because a handle that resizes nothing is worse than no handle.
+  Each column remembers its own width while folded and returns to it on expand.
+- **A deep link arrives where it promised.** `focusPanel` returns `false` when the
+  occupant never supplied that region — an honest answer a caller can fall back from
+  — and when the region *is* supplied but folded away it expands the fold first and
+  focuses once the region exists. Focusing a node that is not in the document either
+  fails silently or, worse, appears to succeed.
+- **The state the CSS reads is on the DOM**: `data-left` / `data-right` /
+  `data-progress` are `open` / `folded` / `absent`, so a layout rule never has to
+  recompute the fold set in its head. Under 900 px the grid becomes a stacked column
+  with a sticky composer and the resize handles are not rendered at all: a pointer
+  resize of a stacked column has no meaning, and a keyboard-reachable separator that
+  moves nothing would be a lie.
+- **Persistence belongs to the hook, not the occupant.** The first occupant owned
+  its own translation of `panelLayouts[tool]` into frame fields, which is forty lines
+  of store plumbing that the second occupant would have copied with one value
+  changed; `useWorkspaceLayout` owns it now (see the next section).
+
+`AgentWorkspace.test.tsx` (22 cases) covers the three occupants, omitted regions,
+fold-and-return, the non-foldable three, `collapsible` narrowing, unknown stored
+ids, deep-link-into-a-folded-panel, keyboard steps, clamping, the once-per-drag
+report, stray-move rejection, double-click reset and a capture-less environment;
+`useWorkspaceLayout.test.tsx` covers the store side. Mutation red-checks, all
+killed: a folded panel hidden instead of removed (2 red), the main surface made
+foldable (2), focus no longer expanding first (1), every pointer move reported (2),
+a folded column keeping full width (1), the clamp removed (2), the pointer never
+released (1), a stored panel id trusted (1), the debounce window collapsed to zero
+(1), the unmount flush dropped (1), and another feature's stored field dropped from
+the write (1).
+
+## What the shell is allowed to remember *(added in Prompt 1.39, item A5)*
+
+Workspace restoration is a promise about *presentation*, and it is worth stating
+what that excludes, because the pressure to remember more will only grow. The
+persisted state may hold: the last tool, which views were open and selected per
+tool, the selected model per tool, panel layouts, the last version viewed per
+artifact, unsent drafts, navigation hints, the onboarding draft, and where the
+reader was in a scrolling surface. It may not hold credentials, keys, tokens,
+passphrases or attachment content — not by convention but by construction:
+`assertPersistenceSafe` walks the whole object recursively and throws on any key
+whose normalized form names a secret (`apiKey`, `token`, `passphrase`, …), so the
+write never happens, and the draft schema admits attachment **metadata** only, so
+even a caller that tried could not store bytes. Both are pinned by tests, including
+the case that matters most: a rejected write leaves the rest of the browser's
+storage untouched.
+
+The rules the pieces share:
+
+1. **A draft is text the user typed, and nothing else.** Losing an unsent prompt to
+   a reload is the failure this exists to prevent, so the text is kept — debounced,
+   because rewriting the whole state on every keystroke would put storage on the
+   typing hot path, and flushed on unmount, because navigating away is exactly when
+   the last characters would otherwise be lost. A draft that is empty or only
+   whitespace is removed rather than stored: a saved blank is indistinguishable from
+   a draft the user deliberately cleared, and it would come back as a phantom.
+2. **A reading position is an anchor, not a number.** The remembered value is the id
+   of the row at the top of the viewport plus how far above that row's top edge sits
+   — a raw `scrollTop` means a different place after a resize, a font change or a
+   streamed message that grew above it. Restoring happens before paint so a reopened
+   conversation does not flash at the end and jump, and if the anchored row is no
+   longer loaded the anchor is **dropped** rather than guessed at, with the view
+   falling back to the end.
+3. **Following the tail is conditional.** New content moves the view only while the
+   viewport is already at the end. Anyone reading back through a transcript is not
+   asking to be pulled to the bottom by the next streamed token, and following
+   resumes only when they return to the end themselves.
+4. **A layout is remembered per tool, and written as one whole record.** Panel
+   widths and folded panels are stored under `panelLayouts[tool]`, so Code's folded
+   inspector is not Cowork's; the generic `sizes` record (rather than two named
+   fields) is what lets the frame grow a panel without a migration. Writes are
+   debounced — folding three panels in a row is one stored layout, not three — and
+   flushed on unmount, because navigating away is exactly when the last change would
+   otherwise be lost. A stored panel id the build does not recognise is **dropped on
+   read** rather than cast into the union: it costs the user one fold, which is
+   recoverable, where a crash on load is not. The write carries every other field of
+   the project record across unchanged, since the store replaces the record
+   wholesale — a spread that dropped a field would silently erase another feature's
+   memory.
+5. **The last tool is a visit, not a side effect of resizing.** `lastTool` is what the
+   shell's entry route reads, so it has to mean *the tool the user was in* — it is
+   written when a frame occupant mounts, through the same carried-fields write, and
+   skipped when the record already names that tool (React's strict mode mounts twice,
+   and a route transition remounts). Restoring it is deliberately narrow: only the
+   **index** route consults it, so a typed or linked URL is never rewritten, and only a
+   tool with a real surface is restored — Chat and Code today. A record naming a
+   placeholder (`settings`, `design`) falls back to Chat and is **kept**, because the
+   user was in that tool and the value starts working the day its surface lands.
+   Reading the memory does not rewrite it: the entry route is a read of one field.
+
+Finally, a refused write is not an application failure. A browser in private mode,
+a full quota or a blocked origin throws on `setItem`; the store catches it, keeps
+the value in memory for the session and says nothing, because a feature that
+remembers where you were should not be able to break where you are. What it must
+not do is pretend: nothing is retried and nothing is reported as saved.
+
+`frontend/src/state/persistence/` holds the store, the schema and the three hooks
+(`usePersistedDraft`, `useScrollAnchor`, `useWorkspaceLayout`), and
+`frontend/src/shell/EntryRedirect.tsx` is the one reader of `lastTool`;
+`frontend/src/tools/chat/drafts.ts` owns the draft keys, so the key space is one
+place rather than a convention spread over call sites.
+
+## `interrupted` is its own state, not another flavour of error *(Prompt 1, item 1.31; migration `020`)*
+
+Boot reconciliation has to demote a run that was mid-flight when the process died
+— a row still saying `running` is a lie the state endpoint would repeat forever.
+It used to write `error` with `error_code: 'internal_error'`, which was the
+closest word the vocabulary had and the wrong one. Migration `012` made exactly
+this argument for `stopped`, and it applies twice over here:
+
+| candidate | why it is not the right word |
+| --- | --- |
+| `error` | nothing about the task failed. The process running it went away. And this state arrives on *every* unclean shutdown, so a vocabulary that calls it an error teaches users to ignore errors. |
+| `paused` | promises a resume. A task run has none: the agent loop that could continue it is gone, and Chat's resume path does not exist for Code/Cowork/Design. `012` rejected `paused` for the same reason. |
+| `interrupted` | says the third true thing: the run ended because something outside it stopped the process. Terminal, not resumable, and the cause still rides in `error_code` (`internal_error`), so a reader that only knows the old shape loses nothing. |
+
+Three consequences worth keeping:
+
+- **History is not rewritten.** Rows written before `020` keep `state = 'error'`
+  with `error_code: 'internal_error'`, and readers that must keep showing them as
+  interrupted (the attention queue does) recognise that pair explicitly. There is
+  no data migration that rewrites the past into the new vocabulary.
+- **The frontend has a case for it.** `interrupted` is in the wire enum, in
+  `TaskViewState`, and in the state banner — a switch that met an unknown state
+  would have returned `undefined`, so the mapping is asserted to be total.
+- **The state is the constraint's, not the application's.** `task_runs.state` is
+  a `CHECK`, so `020` rebuilds the table (the procedure `010` documents); a
+  migration test applies it to a pre-`020` database and asserts both directions —
+  the pre-`020` schema refuses `interrupted`, and after the migration an unknown
+  word is still refused.
+
+Item 1.31 is a list, and by 2026-09-21 every clause but one is built: the state
+half, the `orphaned_worktree` check ("An orphaned worktree is reported, never
+reclaimed"), the recovery read and its screen for Code ("An interrupted run says
+what it left…"), the unattended-run notification, the park reason and the
+interactive-wait timeout ("An unanswered prompt expires, and the task does not").
+This paragraph named the first four as missing until it was re-checked against the
+tree, which is the failure mode it exists to prevent.
+
+**The one clause left is "the Design environment", and it is recorded as blocked
+rather than guessed at.** The phrase appears in exactly one place in this
+repository — the register's digested table of the owner-supplied increments — and
+nowhere else: not in `docs/SPEC.md`'s Design deep-dive, not in the Design agent's
+module prose, not in any plan. Two readings are possible and neither is buildable
+without the source text. Read as *Design needs a run environment of its own* (a
+filesystem surface like Code's worktree), it is refused by `S-2`, which the owner
+ratified: Design's artifacts are `artifact_versions` rows and its toolset
+contractually excludes `write`/`bash`/`command`, so it has no shared filesystem to
+protect and no environment to provision. Read as *the Design tool's surface in the
+app*, it is Prompt-2 frontend work that this scope excludes by design, and the
+honest state of it is the placeholder plus the entry in
+`frontend/contracts/gaps.md`. Inventing a third reading — say, a container or a
+preview server — would be building a feature the requirement never named, which is
+the one thing an undetermined clause must not produce.
+
+## Provenance is two fields, and both are derived *(Prompt 1.39 A6)*
+
+"What was this built on?" has exactly two answers worth storing, and the item that
+asks for them also says not to store more. Both landed with that shape:
+
+- **The version a version replaced.** `artifact_versions` has no `parent` column,
+  and it does not need one: the parent of version *n* is *n-1*, and the table's own
+  `UNIQUE (artifact_key, version)` is what makes that unambiguous. A column would be
+  a second source of truth for a fact the key already holds, and the first thing to
+  drift after a restore or a hand-edited row. `GET /api/artifacts/versions?key=…`
+  derives it, so `parentVersion: null` means "this is where the artifact started"
+  rather than "the parent is unknown" — which is only true for version 1.
+- **The knowledge sources a run used.** Recorded where the sources are read, before
+  the agent loop starts, and *used* keeps the meaning the prompt already gives it:
+  only sources marked usable are evidence. A source that was consulted and turned
+  out missing, binary or hash-mismatched is deliberately **absent** from the
+  provenance list, because listing it would claim evidence the run never had — the
+  prompt says so in as many words (`not used as evidence`), and the two must not
+  disagree.
+
+Four decisions underneath:
+
+1. **A run's sources, not a task's.** A task can be restarted while its id stays,
+   so the row is keyed `(run_id, source_id)` and cascades with the run. A retried run
+   id replaces its set rather than accumulating — `startTaskRun`'s `INSERT OR
+   REPLACE` clears this table by cascade exactly as it clears `task_steps` — and the
+   writer deletes the run's rows first so the rule holds for any caller, not only
+   the one that re-starts the run before reading.
+2. **No foreign key to `knowledge_sources`.** Label, filename, byte count and
+   digest are copied into the row, so deleting a source later cannot erase the fact
+   that a run used it. That is the opposite of what a cascading reference would do,
+   and it is the point: provenance is a claim about the past.
+3. **The read reports what it read.** `readKnowledgeSource` now returns the digest
+   and length of the bytes it decoded, not only when the source pins a digest.
+   Without it a provenance row could say *which file* but never *which version of
+   it*, which is the half that matters when a source is edited underneath a
+   library that is not versioned.
+4. **A missing digest stays missing.** `sha256: null` and `bytes: null` mean the
+   read did not report them — never zero bytes, and never a hash of nothing.
+
+Both fields are read back through the API and rendered by one component
+(`frontend/src/components/Provenance/`), which the dev harness shows with fixture
+data. What is still missing is a *tool* to host it: the Code/Design task surfaces
+that would put a version timeline under a diff do not exist yet, so the panel is
+reviewable in the harness and unwired in the app — stated here rather than implied
+by a passing test suite.
+
+### A cooldown is not a health verdict (and both are needed)
+
+`health.ts` evicts a provider after two *retryable* failures in a window, and
+excludes non-retryable ones on purpose: a wrong key must not evict a provider that
+is plainly alive. That exclusion left the opposite hole — nothing bounded how
+often a wrong key was retried, so every request in a chat hit the same 401 again,
+and a 429 was answered by the router's own immediate second attempt, which is the
+behaviour a rate limit exists to punish. Prompt 1 addendum 1.36 supplies the
+missing mechanism as a table (401/403 60m, 402 30m, 429 5m + `Retry-After`, 404
+2m, 5xx 1m, network 30s), and `src/providers/cooldowns.ts` is that table.
+
+**The two mechanisms answer different questions, so neither replaces the other.**
+Health is an availability judgement with a threshold, and it is what failover keys
+off. A cooldown is a per-class back-off with no threshold at all: one 401 sets
+one, because a wrong key is not a matter of degree. Conflating them would either
+make a single typo evict a healthy provider (the argument `health.ts` already
+makes) or leave the key being retried forever (the hole 1.36 closes).
+
+Four decisions underneath:
+
+1. **The HTTP status decides the class where there is one.** Classification falls
+   back to the typed error for failures that never had a response — unreachable and
+   timeout are the network class, and a raw throw out of `fetch` (DNS, TLS) is a
+   network fault even though it never became an `AppError`. The status wins because
+   it is what separates "rate limited" from "our request was malformed"; both
+   arrive typed as `provider_error`.
+2. **Other 4xx set no cooldown.** A 400 is this process's bug. Parking the
+   provider for it would hide the bug behind a back-off that reads like the
+   provider's fault. `aborted` never cools anything either: a user cancelling is
+   not a provider event.
+3. **`Retry-After` is honoured only on a 429, only when it asks for longer than
+   the table, and never beyond an hour.** The header is a request, not a verdict:
+   a provider saying "try again in 2s" is not a reason to come back sooner than
+   this process would anyway, and a gateway answering `Retry-After: 86400` must
+   not take a provider out of rotation for a day on the strength of one header.
+   That clamp is what 1.36 calls capped backoff — the cap is the longest judgement
+   this process makes on its own, so no header can outlast it.
+4. **Cooling providers sort last, never out.** The candidate list is reordered, not
+   filtered, for exactly the reason `listFailoverCandidates` gives for unhealthy
+   providers: a provider serving an hour-long auth cooldown is still the right
+   answer when it is the only one that can serve the model, and refusing outright
+   would turn a key the user is about to fix into an outage. Ordering is what makes
+   the choice prefer someone else *when there is someone else* — and the switch is
+   reported as `cooldown` with the class named, so a paused run says "the
+   credentials were rejected", not "401".
+
+Expiry is applied on read (`cooldownFor`), so a stale entry can never be observed
+and there is no janitor to forget to run; and every user action that re-evaluates
+a provider goes through `resetHealth`, which is now the one place both the health
+tracker and the cooldown are forgotten. That is the part of 1.36's "deadlock
+reset" that has a mechanism behind it: nothing here can hold a provider out of
+rotation permanently.
+
+### Enforcement without disclosure was half a feature
+
+The table above was enforced from the day it landed and *reported* nowhere except
+the server log and the switch event: a provider serving an hour-long auth cooldown
+was skipped by the router, and every read of it said exactly what it said about a
+provider that had never been tried. `frontend-contracts.json` carried that as
+`providers.cooldown: partial` and named where the missing half belonged — the
+provider list — and it is there now, as `ProviderPublic.cooldown`.
+
+Three decisions, each of which could have gone the other way:
+
+1. **`until`, not a length.** The router is holding the provider until an instant.
+   A client given `ms` renders "60m" — and keeps rendering it after the hour is up,
+   because it does not know when the clock started. The deadline is the fact; a
+   countdown is arithmetic the client can do on it.
+2. **The sentence is the module's own.** `describeCooldown` already wrote these
+   words for the switch event ("the credentials were rejected — waiting 60m"), and
+   the read returns that same string rather than letting a UI phrase a second
+   version of a decision the router made. This is the `parkSummary` rule again: one
+   event, one wording, wherever it is displayed. The snapshot is taken once, so a
+   cooldown expiring between the facts and the words cannot produce a sentence with
+   nothing behind it.
+3. **It rides every provider read, not a route of its own.** `toPublic` composes it
+   the way it already redacts `egressProxy` — at the one boundary every provider
+   read passes through, so a route added later cannot forget to disclose it. It is
+   the same argument the redaction makes: doing it per route is how a field goes
+   missing on the route nobody thought about.
+
+**Deleting a provider forgets what was concluded about it.** The one gesture that
+makes a cooldown *unreadable* rather than merely stale is removing the row: nothing
+will read that id again, so the tracker entry and the cooldown would sit in the
+process until it exited. `resetHealth` is already the single place both are
+forgotten (editing a key, testing a connection, re-enabling), so the delete route
+calls it — in the route rather than in `deleteProvider`, because `health.ts` imports
+the repository and the reverse import would be a cycle. Found while checking this
+disclosure live: a demo provider was created, failed, and deleted, and its cooldown
+was still there to be read.
+
+**What the disclosure must not say is that the provider is broken.** A cooldown is
+reordering, not removal (`orderByCooldown` sorts cooling providers last rather than
+dropping them, and the only-one-that-can-serve case still uses it), so the chip says
+both halves: why it is being left alone, and that it is used again if nothing else
+can serve the model. `test/cooldownread.test.ts` asserts the read is live (an
+expired cooldown disappears with no write), that a cleared one is gone, and that a
+provider that never cooled sends `null` rather than an absent field — an absent
+field is a client's default, and the default for this fact must not be "not
+cooling" when the answer is unknown.
+
+**What 1.36 names and this does not implement: `ModelSlot`.** The addendum lists
+it with no mechanism, and nothing in this tree resembles a slot abstraction over
+models, so inventing one would be a guess wearing the addendum's name. It is
+recorded in the register as unavailable rather than approximated.
+
+---
+
+## A backup passphrase is not a stored key (1.29)
+
+The archive this app writes is the artifact most likely to leave the machine —
+emailed to yourself, copied to a cloud folder, left on a USB stick — and until
+1.29 the only protection it had was the decision not to include `secret.key`.
+That decision is still right (a leaked archive should expose conversations, not
+credentials) but it is not encryption, and the requirement asked for the real
+thing.
+
+Four decisions underneath the container in `services/backup/crypto.ts`:
+
+1. **Argon2id, because the secret is a human passphrase.** The defense that
+   matters for a guessable input is cost per guess, in memory as well as time.
+   The parameters (64 MiB, 3 iterations, 1 lane) live **in the container header**,
+   not in the code's defaults, so raising the default later cannot make yesterday's
+   archive unopenable and a user on slow hardware can still write something a
+   faster machine reads.
+2. **AES-256-GCM over the whole archive, with the header as additional data.**
+   Authentication is the point: a flipped bit fails the tag and the archive is
+   refused, rather than decrypting into garbage that then *restores* garbage. The
+   header is authenticated so the recorded cost parameters cannot be edited — and
+   the length field is checked before the key is derived, because a truncated
+   upload should not cost a second of Argon2id to discover.
+3. **The passphrase is never stored, anywhere, by design.** Not in the archive, the
+   manifest, the settings table or a log line; there is no column in
+   `restore_audit` it could be written into; and the routes take it in a **body**,
+   never a query string, because a URL ends up in browser history, `Referer`
+   headers and request logs. The consequence is stated where a user will meet it:
+   there is no recovery, and losing the passphrase loses the archive.
+4. **One message for two causes.** The tag covers ciphertext and header together,
+   so "wrong passphrase" and "edited file" are indistinguishable by construction.
+   The refusal says both rather than guessing — while the two cases that *can* be
+   precise (a file that is not our container, a container that is truncated) say
+   what they are.
+
+Scheduled backups are deliberately **not** encrypted: a job that runs with nobody
+present has nowhere to keep a passphrase except the settings table, and a key
+stored beside the lock is not encryption. Protected exports are an explicit user
+action, which is also why they are the only kind the `.hypbak` extension marks.
+Destinations and retention are unchanged — the mirror directory
+(`HYPERION_BACKUP_DEST`) and the automatic-backup retention count are what exist
+today, and neither gained a passphrase setting in this pass.
+
+## A restore is audited, and a restore's own record survives it (1.29)
+
+`restore_audit` (migration `024`) records every attempt: dry runs, refusals and
+real restores. Two properties are structural rather than conventional:
+
+- **The row for a successful restore is written after the swap**, against the
+  reopened handle, so the record lives *inside* the database that restore
+  produced. Written before the swap it would be discarded along with the database
+  it described — which is the one entry a user asks about a week later.
+- **A refusal is recorded too.** The interesting entry is the near-miss: a stale
+  archive someone reached for, or a protected file with no passphrase. It is
+  written on the refusal path, where nothing has been touched, and it is
+  best-effort there — the refusal's own error is the message the user needs, and a
+  failed log write must not replace it.
+
+`ArchiveInspection.diff` is a **count** diff, not a row diff, and that is the
+honest shape: a restore replaces the database rather than merging it, so the
+pre-confirmation question is "does this archive know more or less than I have, and
+where". `onlyInArchive` and `onlyHere` name schema drift, which counts alone
+cannot express — a table on one side only is not "zero rows".
+
+## Plugins: compose, decide, and read (1.34)
+
+The Plugins hub answers two questions that had no home — *who may use this*, and
+*what is this* — and it deliberately owns no third: every fact about a plugin's
+content is read from the registry that stores it (`mcp_servers`, `skills`, the
+Memory plugin's switch). A hub with its own copy of a server's command would
+eventually disagree with the MCP screen beside it.
+
+1. **`enabled` and `availability` are different questions.** `enabled` is the
+   plugin's own switch; `availability` is per tool. Both are reported, and
+   migration `025` stores **deviations only**: no row for (plugin, tool) means
+   available. A default of unavailable would silently change what every existing
+   install can do the moment the hub shipped — and the user, whose tools had just
+   gone quiet, would have nothing to look at.
+2. **`null` deletes.** `PATCH .../availability` with `available: null` removes the
+   row rather than storing a decision that agrees with the default. The two are
+   identical to every reader and different to a user who later changes the
+   default, which is why the API sentence that offers the reset is only true for
+   the deletion. Clearing is asserted by reading the table, not the response.
+3. **`consumers` is a fact about the code.** Cowork is the only tool whose code
+   consumes an MCP server, and only the one it names (`wigolo`); the skills summary
+   reaches the three agent loops; Memory is read by the conversation surfaces and
+   Cowork. The hub states which tools a plugin reaches **today** rather than
+   implying that every switch gates something — an availability toggle wired to
+   nothing is worse than no toggle, because it moves the user's sense of control
+   without moving any behaviour.
+4. **The scan is a reading, not a verdict.** Offline, static, local: transport,
+   command, argument count, whether a credential is stored, how many environment
+   variables are declared, and the flags intake already recorded for a skill. The
+   grade is the worst thing found — `active` (it runs something or was flagged),
+   `inert` (files and instructions, nothing found that acts), `builtin` (Hyperion's
+   own content, which is not scanned by policy, so the grade is about provenance).
+   There is no numeric score, because a number would be precision the reading does
+   not have. The caveat is part of every response, the same way the skill risk
+   report's is.
+5. **A credential is named, never quoted.** The scan says a credential is stored;
+   the value does not appear in the catalogue in either form — the hub *does* hold
+   the stored ciphertext, so "it is encrypted anyway" is not a reason for it to
+   travel. A URL carrying credentials is redacted to `//***@` first.
+6. **The authorisation side is a leaf module.** `services/plugins/availability.ts`
+   imports the database and the tool vocabulary, nothing else, so the consumers
+   (memory, the agent context, Cowork) can honour a decision without importing the
+   catalogue — which imports all three of them. That cycle is not hypothetical;
+   it is the shape that bit the MCP supervisor before.
+
+Still open under 1.34: no frontend Plugins surface (the tool is a placeholder),
+and an override can be recorded for a tool that cannot consume that plugin yet —
+reported through `consumers` rather than hidden.
+
+## browser-use is a seeded MCP server, not a new subsystem (1.35)
+
+The item reads as one sentence and that is the whole point: browser-use is an MCP
+server, and the hub built for 1.34 already hosts MCP servers. So this lands as a
+**fourth seeded default** (`services/mcp/defaults.ts`), with the documented launch
+from browser-use's own docs — `uvx --from 'browser-use[cli]' browser-use --mcp` —
+and three deliberate properties:
+
+1. **Seeded disabled.** Nothing auto-enables itself, and this server needs `uv` on
+   PATH before it can start at all; an entry that fails on every start would sit
+   permanently red and make the whole MCP list look broken. The other two
+   setup-required defaults (wigolo, graphify) are seeded the same way.
+2. **No invented credential.** The browser agent runs its own model loop, so it
+   needs an API key of its own in its environment. A placeholder key would be a
+   credential that cannot work — worse than none, because it looks configured. The
+   seed writes no `env` and no token; the requirement is stated in the note, where
+   the user meets it, and the hub reports the absence rather than a zero-count
+   finding.
+3. **Read as what it is.** The hub's scan gained one evidence-based reading:
+   `mcp.browser-automation`, triggered by `browser-use`, `playwright`,
+   `puppeteer`, `selenium` or `chromedriver` appearing in a local server's command
+   or arguments. It is separate from `mcp.local-command` because the fact that
+   matters is not "this runs here" but "this acts **as you**, on pages this machine
+   is signed in to". The finding names the marker it matched.
+
+Not done, and recorded rather than implied: **no tool consumes it yet.** Cowork
+reads one MCP server by name (`wigolo`), so an availability override for
+browser-use is a real stored decision that no code path consults today — which is
+exactly what `consumers: []` on its hub entry says. Wiring a second server into a
+tool's context is per-tool MCP selection, and that is Prompt-2 work.
+
+## Cache and reasoning accounting: silence is not zero (1.28)
+
+`usage_log` has held `cache_read_tokens`, `cache_write_tokens` and
+`reasoning_tokens` since migration `017`. Nothing wrote them and nothing read
+them: the columns existed and the numbers did not. They are now fed by the
+adapters and rolled up, and the decisions worth keeping are about the *gaps*.
+
+1. **"Said nothing" and "reported zero" are different facts.** The columns are
+   nullable and absent stays NULL; a reported `0` is written as `0`. The rollup
+   answers `null` — displayed as "not reported" — for a bucket where no row
+   measured cache reads, and `0` for a row that measured zero. A dashboard that
+   showed 0% for the first case would be inventing a measurement, which is the
+   failure mode this whole family of fields invites.
+2. **`cacheReadTokens` is never added to `tokensIn`.** OpenAI-compatible gateways
+   report `cached_tokens` as a *subset* of `prompt_tokens`; Anthropic-shaped
+   blocks report the cache fields *beside* an uncached prompt count. One
+   convention is a subset and the other is a sibling, and folding either into
+   `tokens_in` would be wrong for the other — and wrong in the direction that
+   costs money, since `computeCost` prices `tokens_in`. The parts are kept
+   verbatim; the rate is derived, and the derived rate is documented as a floor
+   on the subset convention.
+3. **The rate is capped at 1.** A gateway whose figures imply that more than the
+   whole prompt was cached has a convention mismatch; "106% cached" is not a fact
+   about anything, so the share saturates at all of it. The raw reported counts are
+   preserved as reported — only the derived share is clamped.
+4. **`rowsWithCacheReporting` rides with the rate.** A 40% cache hit rate
+   computed from two rows out of a thousand is a fact about two rows, and a UI
+   that quotes it without the denominator is quoting a coincidence.
+
+The chat SSE `usage` frame carries the optional fields through and **omits** the
+ones the provider did not report, so a client cannot render a zero it was never
+given. Ollama reports no cache accounting at all: local rows stay NULL, and that
+is stated rather than papered over with a zero.
+
+
+### A duration was being measured the whole time, and nothing read it *(added 2026-09-22)*
+
+`usage_log.duration_ms` is not a column that was waiting for a writer. Every caller
+that makes a provider request stamps `Date.now() - startedAt` into it — the chat
+turn on both its paths, the agent context on all three — and the column has been
+populated on every row since the log existed. Nothing read it: no aggregate, no
+route, no document, no screen. It was found the way the activity feed's third
+source was found, by sweeping the schema for a column whose reader count is zero
+rather than by waiting for a symptom.
+
+Three properties, each the same one an optional measure always needs:
+
+1. **Silence is not zero.** A bucket whose rows recorded no duration answers
+   `meanDurationMs: null` with `rowsWithDuration: 0`. A row that reported `0` ms
+   is a measurement and stays one — folding it into the silence would report the
+   fastest provider as unmeasured, which is the more embarrassing direction of the
+   same mistake the cache fields already refuse.
+2. **The failures are inside the figure, on purpose.** The mean covers the `error`
+   and `partial` rows as well as the `ok` ones. Excluding them produces the
+   flattering number — the endpoint that hangs for a minute and then dies would be
+   reported as fast, because only the requests that came back would count — and
+   "how slow is this provider" is precisely the question where the request nobody
+   got an answer from matters most. The row's `status` is stored beside its
+   duration, so a reader that wants latency-of-successful-requests can separate
+   them; nothing this build has does.
+3. **The mean belongs to its bucket, and the denominators ride with it.**
+   `byProvider` divides by the rows in that provider's bucket, and
+   `rowsWithDuration` travels with the mean for the reason
+   `rowsWithCacheReporting` does. `slowestDurationMs` is reported beside them
+   because a mean hides the one request that hung — one number cannot answer both
+   "usually" and "worst".
+
+The exposure summary is the one read that folds its total in JavaScript rather
+than in SQL, and durations are where that shows: the surviving figures are a mean
+and a count, so the total is rebuilt from `mean × count` per class instead of
+averaging the class means, which would have weighted a class with one request the
+same as a class with a hundred. Each mean was rounded to whole milliseconds on the
+way out, so the rebuilt mean can differ from the exact one by less than a
+millisecond — smaller than the measurement, and not worth a third figure on every
+bucket to avoid it. `summarizeUsage`'s own totals are aggregated in SQL and carry
+no such rounding.
+
+**What this deliberately does not do.** `TaskUsage` (§12.4) does not gain a
+duration: that read answers what a task *spent*, and the time a task took is a
+different fact that its run's own timestamps already carry. The provider time
+inside a task is a fact about the providers, which is where it is now reported.
+
+
+## An interrupted run says what it left, and what can be done with it *(added in 1.31)*
+
+The `interrupted` state landed on its own, and a state on its own is only half an
+answer: it tells a person the run ended because the process went away, and nothing
+else. Prompt 1.31's three verbs — *view the partial work*, *resume*, *discard* —
+each already had a mechanism, and none of them had a reader:
+
+- **view** — `task_steps` has recorded every tool call, plan, compaction, approval
+  and model turn since migration `014`, written from inside the agent loop. Until
+  `GET /api/{tool}/tasks/:taskId/recovery` existed, **`listSteps` and
+  `summarizeSteps` had no production caller at all**: the run's history was written
+  and never read. That is not a small thing to find in a tree this size — the read
+  path was the one the item was waiting for, which is why wiring it was the first
+  half of the surface rather than a new feature.
+- **resume** — a **re-run**, not a continuation, and the distinction is the honest
+  part. Continuation replays a stored conversation and applies stored decisions; it
+  only moves a *parked* run (`blocked` / `ready_for_review`), because a parked run
+  still has an agent loop that can pick the conversation up. A killed process left
+  none, so `interrupted` is terminal and `claimParkedRun` must never touch it. What
+  makes the re-run worth doing is the leftover checkout: provisioning the same task
+  id re-attaches the directory still holding its edits (§ below).
+- **discard** — the orphan discard route, on that same directory.
+
+Four properties of the report are deliberate, and the first two are the same rule
+the worktree scan follows in a different place:
+
+- **The list is bounded; the totals are not.** `partial.steps` is the last fifty,
+  `partial.summary` is computed in SQL over every row, and `omitted` states the
+  difference. A bounded list that looked complete would understate a long run — the
+  mirror of `unchecked` counting directories a scan did not inspect.
+- **The worktree answer is live.** The attention queue reports the last completed
+  scan because a scan spawns git per directory; this read asks about **one** task,
+  so it finds the directory by name and risk-checks only that one. "Your
+  uncommitted edits are still there" is a claim about the disk now.
+- **A checkout a live task owns is never offered.** `worktree` is null for a
+  registered directory and `discard.reason` distinguishes *in use right now* from
+  *nothing on disk*. Those are different facts — one of them means your work is
+  somewhere — and a screen that showed both as "nothing to recover" would be worse
+  than one that showed nothing at all.
+- **A live run is a reader's question, not a writer's.** `cancelRun` both answers
+  "is a run live for this task?" and aborts it, which is exactly the wrong shape for
+  a recovery read: asking must not stop anything. `liveRunFor` is that question
+  without the side effect, and `test/recovery.test.ts` pins that a live run is still
+  uncancelled after the read.
+
+The report answers for **any** run rather than 404-ing on a finished one, because
+the state a caller meant to ask about can have moved on between the list and the
+click; `interrupted: false` is the honest answer and a `404` would read as "this
+task never existed". A task with no run at all is still a `404`.
+
+The **screen** landed the same day, for Code: `RecoveryPanel`
+(`frontend/src/components/RecoveryPanel`) is a shared component parameterised by
+tool, and the Code surface mounts it in its main region **only when the selected
+task's run is interrupted** — a merely paused run must not make the panel start
+scanning worktrees on every poll, and a test asserts that read is not made. Two
+verbs are actioned (view partial; discard, in a two-step confirm that sends `force`
+only when the user answers the first question) and one is **reported rather than
+actioned**: resuming is a re-run with the same task id, no surface can start a run
+yet, and the panel names the availability, the reason and the route instead of
+rendering a dead button. `tasks.recovery` is declared `partial` for exactly that,
+and for the fact that Cowork and Design have no surface to mount the panel in. The
+unattended-run notification, the interactive-wait timeout and the Design
+environment remain from the same item.
+
+## An orphaned worktree is reported, never reclaimed *(added in 1.31)*
+
+The worktree registry is in-memory by design — a task id resolves to a directory
+for the life of a process — and the consequence is that a restart turns every
+checkout on disk into an orphan. The module header called that a known limitation;
+what it did not say is that it was silent in two directions at once. A leftover
+directory is indistinguishable from a leak a user should reclaim, and a task
+continued after a restart was handed a **fresh** checkout (`freePath` suffixes past
+anything already on disk), so its previous edits stayed on disk with nothing
+pointing at them.
+
+Four rules, each a way the fix could be worse than the problem:
+
+1. **The check reports and deletes nothing.** A scan that removed what it found
+   would be a cleanup routine wearing a diagnostic's name, and the directory it
+   removed might be the only copy of an afternoon's work. Nothing in the boot pass
+   or `GET /api/storage/worktrees` unlinks anything; removal only ever happens on
+   an explicit request, by name.
+2. **Risk is measured, and unverifiable is not safe.** `git status --porcelain`
+   catches edits never committed; a detached HEAD with no ref pointing at it
+   catches commits that would become garbage. When git cannot answer, the orphan is
+   reported with `checked: false` **and a reason**, never as clean — "I could not
+   look" and "there is nothing there" are different facts, and the destructive path
+   fails closed on the first.
+3. **Coverage is part of the answer.** The scan is bounded (one git spawn per
+   directory), so `unchecked` counts what it did not inspect. A bounded scan whose
+   output looked complete would teach a user to trust a number that is only about
+   the first fifty directories.
+4. **Adoption is what makes the report actionable.** The same pass's finding is
+   reachable: provisioning a task id re-attaches the directory left for it, when —
+   and only when — `--git-common-dir` matches the project's, so a task can never be
+   handed write access to a checkout from a repository the user did not point at. A
+   finding a user cannot act on is a report, and the queue's own rule is that this
+   build does not ship reports.
+
+The queue carries the finding only when it holds work (`orphaned_worktree`), and
+its row links to the owning surface rather than firing the `resolve` call: that call
+deletes a directory, and an inbox row is one stray click from a link someone is
+scanning. Destructive calls belong on the screen that describes them.
+
+The `unchecked` and `checked` fields exist for the same reason `rowsWithCacheReporting`
+exists beside the cache-hit rate: a number without what it covers is a coincidence
+wearing a measurement's clothes.
+
+## An unanswered prompt expires, and the task does not *(added in 1.31)*
+
+`pending_approvals` has carried an `expired` state since 1.27, and the comment above
+the constant explained what it was for: *"a park abandoned past its TTL has its
+approvals closed out rather than left `pending` forever, so 'what is this task
+waiting on?' has an honest answer."* No reaper existed. `closeApprovals` — the only
+writer of the state — runs on a task's **terminal** transition, so it can never
+reach the case the sentence describes: a prompt still waiting. The consequence was
+not merely untidy rows. A prompt that stays `pending` stays listed as something the
+user can act on, and answering it a month later still authorised its call, against a
+conversation and a checkout from a month ago — which is not the object the user was
+looking at when they clicked.
+
+The deadline is `approval_wait_ttl_hours` (default 72 — a long weekend is the scale
+it has to clear; zero and negatives read as the default, the same rule
+`parkedWorktreeTtlHours` uses), and `src/services/agent/approvalWait.ts` is where the
+three things that must agree about it live together: the sweep, the `expiresAt` a
+client is shown, and the interval it is wired to. One module because they are one
+number — a route computing `createdAt + 72h` itself would be wrong for every user who
+changed the setting, and wrong invisibly until a countdown hit zero at the wrong
+moment.
+
+1. **The question expires; the task does not.** `expireStaleApprovals` moves rows, not
+   runs. A parked run whose prompt expired is still parked and still continuable:
+   `POST /continue` without an `approvalId` replays the conversation, the gated call
+   is re-emitted, and the user is asked again against the current checkout. Ending the
+   run on a timer would make the timer the thing that destroyed a recoverable task,
+   and the vocabulary has no honest state for it — `interrupted` means the *process*
+   went away (migration `020`), not that someone failed to reply.
+2. **Only `pending` is a wait.** `allow_session` is a standing rule, `allow_once` is
+   spent by the replay it authorises, and `denied` is an answer. None of them is
+   waiting on anybody, and `closeApprovals` is what clears the session ones at the
+   task's terminal transition because 1.27 §1 scopes them to that task. A sweep that
+   expired them would revoke a permission the user granted, silently.
+3. **An answer beats the reaper.** The update is `WHERE id = ? AND state = 'pending'`,
+   so a decision landing between the candidate read and the write wins and the row is
+   not reported as expired. The read carries the same filter as a narrowing; the two
+   overlap deliberately, and neither is observable on its own — dropping either leaves
+   every non-racy behaviour identical, which the mutation notes record rather than
+   pretend otherwise.
+4. **A restart closes the questions it can no longer take.** Boot reconciliation
+   demotes a `blocked` run to `interrupted` with the message *"the server restarted
+   while this task was waiting for you, so it can no longer receive an answer"* — and
+   then left its approvals `pending`, which is the same bug one layer down: a dead
+   prompt in the task's list and in the Attention Center, whose `resolve` call could
+   only ever fail. The demoted park's approvals are closed in the same pass, session
+   allowances included, because that run has ended and the allowance was scoped to it.
+
+The client half is the part that was actively wrong: `AttentionCenter` ignored
+`applied` and announced **"Allowed …"** for every non-deny answer, including one the
+server had just refused to apply. It now reads the flag, distinguishes `expired`
+(nothing was allowed — continue the task to be asked again) from an already-answered
+prompt, and says which. Announcing an allowance that was not granted is the one
+wording a prompt with a deadline must never produce.
+
+## `implemented` was checked on one side only *(added 2026-09-22)*
+
+The contract ledger's `implemented` status is defined as "a client calls a real
+route" — two halves — and the gate that landed the previous day checked the first
+one: `check-contracts.mjs` asked whether the path exists in the backend snapshot and
+never whether anything in `frontend/src` calls it. Four rows were wrong about the
+half nobody checked. `providers.zdr` named a route with no write gesture anywhere in
+the app (the frontend renders the ZDR status and cannot set the policy).
+`plugins.unified` and `plugins.availability` named the catalogue and the per-tool
+availability route while the Plugins tool is a placeholder with a rail entry and no
+`api/plugins` client at all. `design.preview` named a preview route while the Design
+tool has no surface to render one in. All four are real routes; none of them is a
+contract the frontend has.
+
+The rule that found them matches a path against the frontend's own source, with two
+tolerances that exist because of how the clients are written rather than for
+convenience: a parameter matches anything inside one path segment (the clients pass
+`${encodeURIComponent(id)}`), and the segment after `/api/` may be an interpolated
+tool (`api/tasks.ts` writes `/api/${tool}/tasks/...`, while the ledger spells each
+tool out because that is what the backend mounts). Test files are excluded, and that
+exclusion is load-bearing in a specific way: without it a row could pass on the
+strength of a test asserting the path, which is a claim about the row rather than
+about the app — the same failure shape as the route-pointer pass, one level up.
+
+**The check is one-directional, and that is stated rather than papered over.** It can
+prove that no client mentions a path, which is what makes an `implemented` row false.
+It cannot prove the right client calls it: the method is not compared, so a client
+for the same path with a different verb satisfies it.
+
+Two rows the rule deliberately does not constrain are `route-mismatch` rows whose
+paths genuinely differ — `tasks.continue` and `settings.reload` — because a mismatch
+is a fact about paths and stays true without a caller. That tolerance has a price, and
+the price was paid the next day: `tasks.continue` had **no** client, and because the
+rule only asks about `implemented` rows, the gate could not see it. The gap was found
+by hand, recorded in `frontend/contracts/gaps.md`, and closed on 2026-09-22 by the
+parked-task panel (see the next section). `settings.reload` still has no client, for
+the reason recorded beside it: there is no Settings surface to put the control on.
+
+The lesson is not that the rule is wrong — a `route-mismatch` row is a statement about
+paths, and requiring a client of it would make the status mean two things. It is that
+**a green gate is a statement about what the gate checks**, and a gap list is where the
+things it cannot see have to live by hand.
+
+## A continuation is a stream, and a decision is not one *(added 2026-09-22)*
+
+The frontend could approve a prompt and could not resume the task, so the Code surface
+gained the control that calls `POST /api/{tool}/tasks/:taskId/continue`
+(`tools/code/ParkedTask.tsx` over `api/agentStream.ts` and
+`tools/code/useTaskContinuation.ts`). Three properties of that seam were decided by what
+the route does rather than by what a button would like to do, and each is stated in the
+client because the honest wording depends on it:
+
+1. **An allow and its continuation are one call.** A decision recorded with no run to
+   carry it out is exactly the dead end the queue's `continuable` flag describes, so
+   *Allow once* and *Allow for this session* post `/continue` with the `approvalId` and
+   the decision. The route applies the decision **before** it claims the parked run, so
+   the two are not atomic: a refusal in between (another window already continuing it, a
+   full lane in `reject` mode) leaves the decision recorded and a bare *Continue*
+   finishes the job. The refusals are worded from `details.reason` rather than from the
+   message text, because the reason is the stable part.
+2. **A denial is not a continuation.** `POST /continue` with `decision: "deny"` answers
+   **JSON**, not a stream — there is no agent to start — and finishing the run is the
+   route's own act (`finishDenied`). The panel sends a denial to `/approve` instead,
+   which is idempotent, so a double click cannot turn "I said no" into an error, and it
+   never opens a stream it would have to explain away.
+3. **The terminal event is not the one the session watches for.** The agent protocol
+   carries every frame inside one `agent` event with its own `channel`, so
+   `runStreamSession`'s terminal-event check cannot see a `result`. A continuation that
+   finishes normally therefore closes and **reconciles**: the persisted run is re-read
+   and reported, with its own end reason (`socket-closed`), and a stream that died
+   mid-run is never replayed — a chat turn may be retried, a mutation may not. The
+   panel's closing sentence names the state the server records, including when it
+   disagrees with the frames above it, because the stream was only a view of the run.
+
+The surface also declines to do something a button easily would: with a prompt
+outstanding, a bare continue is refused **in the panel**, with the reason, instead of
+being posted to replay the conversation, re-emit the gated call and park again. And the
+panel renders for `blocked` and `ready_for_review` only — the two states
+`requireContinuable` accepts. The backend's `paused` state is a park with no
+continuation path, and offering the button there would promise something the route
+refuses.
+
+## A claim is not a run *(added 2026-09-22)*
+
+`POST /api/{tool}/tasks/:taskId/continue` takes the parked run's row *before* it waits
+for anything: `claimParkedRun` flips `blocked`/`ready_for_review` to `running` in one
+conditional UPDATE, and that transition is the mutex standing between two clients and
+two agents in one worktree. The claim has to happen before the lane is awaited,
+because a park that stayed parked until a slot opened could be claimed twice — the
+same order `run-task` uses for a fresh run.
+
+The run's *own* row is written later, inside the lane. That leaves a window in which
+the claim exists and the continuation does not, and both ends of the window are
+reachable in normal use:
+
+- **A full lane in `reject` mode.** The lane raises `busy` after the claim, so the
+  response is an SSE error frame and the parked row is left `running`.
+- **A stream abandoned while queued.** The SSE connection is the run's own liveness —
+  `acquireCodeLane` is handed `AbortSignal.any([sse.signal, cancellable.signal])` — so a
+  closed tab aborts the waiter with `aborted`, again after the claim.
+
+Measured against the tree before it was fixed, the consequence was not subtle: the run
+stayed `running` with no process behind it, `requireContinuable` then refused every
+later attempt with `not parked`, and the next boot's reconciliation demoted it to
+`interrupted`. A user who closed a tab lost their park and could only re-run the task
+from scratch.
+
+So the claim is released when the continuation's own run row does not exist. Three
+properties make the release safe rather than a second race:
+
+- **The guard mirrors the claim's.** Only a row still `running` moves, so a
+  continuation that did start — and therefore superseded the park to `complete` — can
+  never be un-started by the failure of a later attempt.
+- **The park is restored from the row read before the claim**, because that is the
+  only place its state and reason still exist: `claimParkedRun` overwrites the state
+  and stores no memory of what it was.
+- **It is conditional on the continuation's row, not on the error.** A failure raised
+  after `startTaskRun` belongs to that run and is recorded on it; only a failure
+  raised before it belongs to the claim.
+
+`releaseParkedRun` is exported from `db/taskRuns.ts` rather than inlined in the route,
+so the guard is testable without a real worktree and a real git repository — the case
+that needs both (a continuation that parks, supersedes, and *then* fails) is exactly
+the one that cannot be produced over HTTP here, and it is the case the guard exists
+for.
+
+## An approval is a ticket, and it is spent once *(S1, added 2026-09-22)*
+
+An approval and the execution it authorises happen at different times, under
+different run ids, in a process that may have restarted in between. `1.27` made the
+*call* durable — `pending_approvals` stores the tool name and the verbatim argument
+string so the continuation replays the question the user actually read — but nothing
+checked that the call about to run **was** that call. The replay is a model turn: it
+re-emits a tool call from a stored transcript under a freshly rebuilt system prompt
+and a freshly read permission stack, and every one of those is an input that can
+differ from the park.
+
+Migration `026` adds that check. `approval_tickets` binds one approved call to the
+execution that carries it out:
+
+| Bound | Read at mint time from | Refusal when it differs |
+| --- | --- | --- |
+| tool name, permission key | the verdict that produced the `ask` | `mismatch` |
+| the argument string, verbatim | the call as the model emitted it | — (see below) |
+| canonical workspace | the agent's `ticketBinding.workspace` | `mismatch` |
+| task id | the run's task | — (see below) |
+| run id | the run that asked | `run_replaced` |
+| parent task id | a delegated child's parent | `mismatch` |
+| permission-config revision | the resolver's own layer stack | `mismatch` |
+
+Three of those need their reasoning stated, because each is a decision rather than a
+lookup.
+
+**The lookup is the question, not the tool.** A ticket is found by
+`(task_id, tool_name, arguments)` — the same key `recordApproval` dedupes on. So a
+command the user never saw does not find a ticket at all: the settlement is
+`absent`, which is not a refusal but the ordinary first-time case, and the run parks
+for a fresh decision about the call actually in front of it. That is how "different
+arguments is refused even with a valid-looking prior approval" is implemented, and it
+is why `arguments` can never appear in a `mismatch`: by construction the stored and
+live strings are equal by the time the comparison runs. Authorising a *different*
+call because a similar one was approved is the failure this table exists to prevent,
+and refusing one because it re-serialised the same JSON differently is a failure of a
+different kind — so the comparison is on the string, not on a parsed shape.
+
+**Run identity means lineage.** A continuation is a new run id by design
+(`http/continuation.ts` writes a second `task_runs` row so the park's step history
+survives), so a ticket minted for the parked run is settled by a run that records it
+as `continued_from` — the column migration `026` adds, rather than a parse of
+`supersede()`'s `pause_reason` string, which is a sentence for a user and one prose
+edit away from refusing every continuation.
+
+**The revision is the stack's own hash, not a counter.** `permissionRevision()` in
+`services/agent/permissions.ts` hashes the *resolved* layers — each layer's name and
+rules, in evaluation order, plus the known tool set — and `createPermissionResolver`
+attaches it to the resolver it returns. A counter in `settings` would need every
+writer of every permission source to remember to bump it, and a project file is
+edited in an editor rather than through this process; a revision nobody bumps is
+worse than none, because it reads as a check. Deriving it from the resolver means it
+cannot disagree with the rules the engine will actually consult. It is deliberately
+strict: any change to the resolved stack invalidates every live ticket, even when
+*this* call's verdict is unchanged, because the user approved a call under a
+configuration and the configuration moved.
+
+**The gate refuses, and the run parks again.** `settleTicket` answers
+`granted | refused | absent`; `dispatchToolCall` runs the tool only on `granted`, and
+the loop parks on both `refused` and `absent`. A refusal is *not* fed back as an
+ordinary refusal the model can retry around: an approval exists and does not cover
+this call, so nobody has agreed to what is about to happen, and continuing would
+quietly drop the requirement that a human agreed. The loop records a fresh
+`pending_approvals` row for the live call and emits `approval_required` with
+`reason: 'approval_invalid'`, so a client can tell a stale approval from a first ask.
+`allow_session` settles to `standing` and is spent by the first matching execution;
+later calls are authorised by the session *rule*, which the engine re-reads every
+call, and the ticket remains as the record that the approved call ran.
+
+**Nothing is exempted for a caller that cannot bind.** `ticketBinding` is supplied by
+the agent, because only the agent knows where its tools point; a run that supplies
+none gets no ticket minted and none settled — exactly the pre-`S1` behaviour. That is
+the honest fallback rather than a comparison against a value the run invented, and it
+is why the three agents pass it (`code` names the worktree root and, for a delegated
+child, the parent task; `cowork` and `design` name their containment root).
+
+`test/approvaltickets.test.ts` — **23 cases**: each bound field refused on its own
+with the field named in the refusal, the spent/denied/expired/never-decided states,
+lineage acceptance, dedupe on the question, the void-by-task rule, and the loop-level
+cases that park a real run, approve it, replay it as a continuation, and assert both
+that the approved call runs and that each changed field re-parks instead.
+
+## A running command has an owner *(S3, added 2026-09-22)*
+
+A single-shot `executeCommand` used to be a process nobody owned: spawned inside the
+executor's promise, its pid handed to `killProcessTree` and forgotten, its output
+existing only as the string the promise resolved with. `services/terminal/registry.ts`
+registers every execution the terminal starts, for its lifetime, with what it is and
+who may touch it.
+
+| Field | Value |
+| --- | --- |
+| `id` | `proc_<uuid>`, minted by the registry — never accepted from a caller |
+| ownership token | 32 CSPRNG bytes, hex, minted with the id and returned once |
+| `pid` | the OS pid, or null when the spawn produced none |
+| `taskId`, `runId`, `sessionId` | who asked; null where there is no task, run or human session |
+| `workspace` | the canonical cwd the command runs in |
+| `command` | verbatim, as the caller asked for it |
+| `startedAt`, `finishedAt` | the entry's own clocks, not the caller's |
+| `state` | `running → completed \| failed \| aborted`, one way |
+| output | bounded buffers, stdout and stderr separately |
+
+**Every read, status and abort requires the token**, compared with
+`tokensMatch` (`security/tokens.ts`) — a length-mismatch is answered without
+comparing, and equal lengths go through `timingSafeEqual`, so the comparison cannot
+be measured byte by byte. `list()` strips the token, which is precisely the situation
+the token exists for: somebody holding an id and nothing else. A wrong token and a
+nonexistent id get the same `not_found` and the same sentence, because "this id
+exists but is not yours" is the one fact a caller without the token should not learn.
+
+**Terminal states are one-way, and `aborted` covers both ways an execution is
+terminated rather than finished.** The close event that follows a kill says nothing
+new, so `finish` after `abort` is a no-op; a timeout records `aborted` with
+`timedOut: true` and exit code `124` rather than `failed`, so a killed process is
+never reported as one that decided to exit badly. Aborting an entry that already
+finished returns `false` rather than raising: the caller asked for it to be over and
+it is, and failing on that race would be a spurious error.
+
+**The output lives in the entry.** The executor's own `OutputBuffer` moved into the
+registry and the executor reads it back through the token it was handed at
+registration — one truth about what a running command has printed, and the buffers a
+status read will see are the buffers the terminal is filling. The 256 KiB per-stream
+bound and its truncation marker are unchanged.
+
+**Finished entries are retained, bounded, oldest first; running ones are never
+evicted.** A registry that never forgets is a leak, and one that forgets immediately
+cannot answer "what ran, and what happened to it?".
+
+**No HTTP surface.** S3 asked for the pattern on what exists, not for a daemon or a
+management API, so there is no route that lists or aborts processes: the registry is
+wired into every single-shot execution, `abort` has one production caller (the
+`AbortSignal` path, which is what a cancelled command or a shut-down server uses), and
+`read`/`status` are exercised by the tests and available to whoever builds the next
+supervisor surface. A session id travels with an entry when a human session launched
+it (S17), which is how the same record answers "what was typed by a person".
+
+`test/processregistry.test.ts` — **18 cases**: minting, the token gate on every
+operation including `append`, identical answers for a foreign token and an absent id,
+one-way lifecycle, both streams bounded independently, list-without-tokens,
+copy-on-read, the retention bound, and a second suite that runs real child processes
+through the terminal module and checks pid, task, run, workspace, command, timestamps,
+the three terminal states and the "nothing ran, nothing tracked" cases.
+
+## The human bypass is a session, not a flag *(S17, added 2026-09-22)*
+
+A person typing a command into a terminal they opened is the authority for that
+command: confirming what you just typed is a prompt with one answer, so the
+permission engine's `ask`/`deny` evaluation does not govern a human's direct input.
+What that exemption needs is evidence, and a flag the client sends is not evidence —
+it is the exemption itself. So the evidence is a session the server opened, and the
+exemption is granted only to a request that can authenticate it.
+
+**The session.** `POST /api/terminal/sessions` mints an id (`tsess_<uuid>`) and a
+32-byte token, both server-side, and returns the token exactly once;
+`POST /api/terminal/sessions/:sessionId/close` ends it and **destroys the token**
+rather than marking a row, so a closed session cannot be reopened by presenting the
+same string; `GET /api/terminal/sessions` lists the live sessions and never a token.
+Authentication is `tokensMatch` on every command that claims the exemption, and a
+successful authentication is what renews the session — a session that is being used
+is alive, and one that is not expires after 15 idle minutes. There is also an
+absolute eight-hour cap, because a stolen token that is in use is otherwise renewable
+forever. Sessions are in memory deliberately: a terminal session is the presence of a
+person at a keyboard in this process's lifetime, and persisting it would let a restart
+resume a "live" session nobody is in front of.
+
+**The route.** `POST /api/code/execute-command` reads the id and the token from
+`x-hyperion-session` and `x-hyperion-session-token` — headers, where a credential
+belongs, and never a body field. No value in the body can grant a bypass: `human`,
+`bypass`, `sessionId` and `sessionToken` in the request body are ignored, which is
+pinned by a test.
+
+- **Authenticated** → the command is exempt from the permission engine. It is
+  *not* exempt from anything else: the capability gate (`assertCommandAllowed`,
+  including the network-egress rule), containment (`containAgentCwd`, tightened to
+  the session's task when there is one), the output bound, and the audit line below
+  all still apply, and the response says `bypass: 'human_session'` so a caller — and a
+  test — can tell an exempted command from an evaluated one.
+- **Not authenticated** → the command goes through normal permission evaluation:
+  `services/terminal/authority.ts` evaluates it as the `bash` tool over the `act`
+  baseline plus the project's own rules (`.hyperion/permissions.json`), so a rule the
+  user wrote for shell access governs shell access. `deny` is a `403
+  permission_denied` naming the layer; `ask` is a `409 approval_required` naming the
+  rule, because there is no run to park for a route-level command, and the remedies
+  are to change the rule or to run it from a live session. This is the only direction
+  the change moves: a command that was refused before is still refused, and one that
+  ran before still runs when nothing narrows it.
+
+**The audit line** is written before the command runs — the authorisation is the
+interesting fact, not the outcome — with the session id, the task, the cwd, and the
+command passed through `redactSecrets` and clipped, because this line outlives the
+session and a credential typed as an argument must not be what a reader finds there.
+The execution itself is recorded in the process registry with its `sessionId`, which
+is the durable half of the same trail.
+
+**Two honest limits, recorded rather than papered over.** There is **no rate limiter
+in this build** to still apply — nothing in the backend limits command frequency, so
+the bypass neither adds nor removes one (the output bound does apply, and is tested).
+And the browser terminal this is for **does not exist**: no frontend module calls
+these three routes, which is why they are `deferred-frontend` in the route snapshot
+and recorded as a gap. They are here because a token that no server mints is not a
+mechanism, and the command route is where the exemption is claimed today.
+
+`test/terminalsessions.test.ts` — **16 cases**, over real HTTP against a real project
+with real rules: minting and one-time token disclosure, close-by-owner-only, identical
+answers for an unknown id and a wrong token, the exempted command running under a
+project `deny` while the same command without a session is refused with the layer
+named, `ask` refusing with `approval_required`, idle expiry inside the absolute cap
+and the cap itself, a token from another session, a body field claiming a bypass,
+containment outside the scope, task ownership against a real worktree, the capability
+gate switching a bypassed command off, and the output bound.
+
+## A run's project is stamped when it starts, and never derived *(added 2026-09-22)*
+
+**Who depends on this:** `GET /api/projects/:id/tasks` and the switch warning a
+frontend builds on it; every `startTaskRun` call site (the Code run route, the
+Cowork scheduled runs, the Design run route, and continuation), which must not
+have to pass the project and must not be able to disagree with it.
+
+`task_runs.project_id` (migration `027`) answers "where was this run working?".
+The obvious cheaper answer — read `active_project_id` at read time — is wrong for
+the same reason the column exists: the setting moves. A run begun in project A
+and still running after the user opens project B is work in A, and a switch
+warning that attributed it to B would tell the user they were leaving nothing
+behind at the exact moment they were.
+
+**The value is read where the row is written.** `startTaskRun` reads
+`activeProject()?.id ?? null` itself rather than taking a field from its caller.
+The two facts then come from one source: the project stamped on the row and the
+project whose directory the run's path resolution resolved against. A caller
+that passed its own answer could disagree with where the work happened, and a
+future call site that omitted the field would produce a run the listing cannot
+see — the failure mode of this whole read is silent invisibility, not an error.
+
+**NULL is a real state and is never backfilled.** It means "no project": the run
+started with nothing open (the default projects root is not a project row), or
+the row predates `027` and no scope was ever recorded. `activeTaskRuns(null)`
+returns exactly that half, and the listing reports its length as
+`unattributedActive` beside the per-project list — a client can then say
+"something else is running" instead of presenting a partial answer as the whole
+one. Guessing from the current setting would be worse than the absence, so
+nothing is guessed, and old rows only leave that count by finishing.
+
+**Deleting a project un-attributes its runs rather than dropping them.** The
+column is `ON DELETE SET NULL`, matching `deleteProject`'s rule that deregistering
+a project never destroys the user's files; it does not destroy the record of what
+ran either. The consequence is deliberate: a run whose project came off the list
+appears in `unattributedActive`.
+
+**The listing is tasks, not runs, and its states come from a typed partition.**
+A task id is reused across attempts and a continuation is a new run id, so only
+the latest run per `(tool, taskId)` is listed — the same run
+`GET /api/{tool}/tasks/:taskId/state` answers with, with the ordering (including
+the `rowid` tie-break) mirrored in `latestRunForTask`. `ACTIVE_RUN_STATES` and
+`TERMINAL_RUN_STATES` are `Record`s over `TaskRunState`, so adding a state fails
+the build until it is classified; a hand-maintained "everything except these"
+filter would silently drop one, and an empty listing is not a bug anybody
+reports. `blocked` and `ready_for_review` are active on purpose: a run parked on
+an approval has not ended, and it is the one most worth naming before the user
+navigates away from it.
+
+`test/projecttasks.test.ts` — **13 cases** (stamping, non-re-attribution across a
+switch, the active-state set, latest-run-per-task, the unattributed half, and the
+route itself including the deregistered-project case); `test/migration027.test.ts`
+— **3 cases** (a pre-`027` database built from the migration files on disk: legacy
+rows survive with NULL, `ON DELETE SET NULL` under enforced foreign keys, and a
+`project_id` naming no project is refused).
+
+## The frontend's schemas are checked against the backend that exists *(added 2026-09-22)*
+
+**Who depends on this:** every module in `frontend/src/contracts/wire/`, and every
+surface built on them. The frontend parses each response with a zod schema at the
+network boundary; a schema that disagrees with the backend is not a type error and
+not a test failure — it is an `invalid_response` thrown in a browser, in whichever
+surface is built on that module first.
+
+That is not hypothetical. `wire/projects.ts` required an `updatedAt` the backend has
+never sent. Nothing called the module, so nothing noticed: `tsc` was green, the
+frontend suite was green, and `npm run contracts` was green, because the static
+snapshot checks the **route** side of the boundary (does the path exist, is the row's
+status true) and not the shape.
+
+Two checked halves now, and neither is sufficient alone:
+
+- **`frontend/scripts/check-contracts.mjs`** (`npm run contracts`) — the snapshot:
+  routes, contract statuses, route pointers, SSE declarations, gaps.
+- **`frontend/scripts/check-wire.mjs`** (`npm run wire`) — the live parse: it boots
+  the real app against a throwaway `HYPERION_HOME`, seeds deep fixtures, and runs the
+  frontend's own schemas over the responses the routes really send.
+
+Three rules make the second one evidence rather than ceremony:
+
+1. **A collection must have a row in it.** An empty feed, an empty approval queue and
+   a run with no steps all parse, so every check that can be populated asserts it was;
+   a schema validated against `[]` proves nothing.
+2. **A vocabulary must be observed, not assumed.** An enum narrowed to one option
+   still parses a one-value fixture and then refuses a real response in production.
+   Every `PauseReason` (six), message role (four), message status (four) and task-run
+   state (eight, a vocabulary widened four times) is asserted to have appeared in a
+   real response in the run.
+3. **Coverage is reported, not implied.** Every exported schema is either cited by a
+   check, listed as validated inside one, or listed with the reason it cannot be
+   exercised — and a schema in none of those three fails the run, so a new wire module
+   has to be given a fixture or a stated reason rather than quietly skipped.
+
+The seven `chatSse*` payloads are driven too, rather than excused: a loopback
+provider streams a real completion (`open`, `token`, `usage`, `done`), a real
+failover pauses and resumes the run, and a real refusal — the redaction gate, enabled
+for one request — produces the run's `error` frame. The frames are parsed by the
+frontend's actual decoders, not only by its schemas, and that is what caught the
+defect below.
+
+Its limits are in the script and not left to be found later: the attention kinds and
+the agent channels are printed rather than required, because producing all of them
+needs fixtures the script has none of (a failed scheduled run, a disconnected MCP
+server, a parked approval, a compaction). Neither direction of mismatch is symmetric
+in cost — a schema missing a field the backend sends fails loudly on first use, while
+an enum *narrower* than the backend is the quiet one, which is why the value-level
+assertions exist.
+
+### The defect it found: a frame shape, and the terminal event
+
+Widening the check to real streams paid for itself immediately. On the task routes
+(`POST /api/{tool}/run-task`, `…/continue`) a failed run is reported as
+
+```
+event: error
+data: {"runId":null,"code":"scope_violation","message":"…","retryable":false}
+```
+
+because `sendError` (`src/orchestrator/sse.ts`) is the only writer of that event, and
+it writes the run's error — the same shape the chat stream carries. The frontend's
+agent decoder (`frontend/src/api/sse/events.ts`) read the same frame with
+`errorEnvelopeSchema`, which expects `{error:{code,message,retryable,details?}}`. Every
+real frame therefore decoded as `invalid_payload` and was dropped.
+
+That would be a lost log line anywhere else. Here it was worse, because `error` is the
+**only terminal event name** the agent protocol has: the session watches for it, and a
+run that failed never terminated the way the session expected — it fell through to
+reconciliation, which reports the persisted state and nothing about *why*. So the
+`code` and `message` a user needs ("path escapes the projects scope") never reached
+the surface, and `agentFrames.describe` — the function that renders the red line in
+the run log — was reading `event.data.error.code` off a payload that never has an
+`error` key. It type-checked because the *type* said envelope; it was only reachable
+from a hand-built fixture in a test.
+
+The fix is one schema in one place (`chatSseErrorSchema`, already validated against
+the chat stream's own `error` frame), plus the consumer, plus two decoder tests that
+now assert both halves of the rule: the flat frame decodes, and the envelope — which
+belongs to a pre-stream refusal — does not. `docs/API.md` §12 now records the frame
+and its example.
+
+It is the same failure mode as `wire/projects.ts`: both halves of the frontend agreed
+with each other and disagreed with the backend, and nothing in either suite ever
+looked at the wire. The difference was the blast radius — a module with no caller
+waiting to be written versus a terminal event that stops being terminal.
+
+It runs as a script rather than as a test in either suite, and that is a constraint
+rather than a preference: the frontend's `tsc` cannot include backend sources (they
+import with `.ts` extensions, which its config forbids), and the backend's Node test
+runner cannot import frontend sources (they import without extensions, which Node
+does not resolve). `frontend/scripts/*.mjs` is the one place both resolve, which is
+where the contract check already lived.

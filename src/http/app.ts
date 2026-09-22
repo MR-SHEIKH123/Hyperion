@@ -23,13 +23,16 @@ import { healthRouter } from './health.ts';
 import { mcpRouter } from './mcp.ts';
 import { memoryRouter } from './memory.ts';
 import { projectsRouter } from './projects.ts';
+import { pluginsRouter } from './plugins.ts';
 import { providersRouter } from './providers.ts';
 import { pushRouter } from './push.ts';
 
 import { resourcesRouter } from './resources.ts';
+import { attentionRouter } from './attention.ts';
 import { settingsRouter } from './settings.ts';
 import { skillsRouter } from './skills.ts';
 import { storageRouter } from './storage.ts';
+import { terminalRouter } from './terminal.ts';
 import { usageRouter } from './usage.ts';
 
 import type { Express } from 'express';
@@ -47,12 +50,15 @@ export function createApp(): Express {
 
   app.use('/api/health', healthRouter);
   app.use('/api/activity', activityRouter);
+  app.use('/api/attention', attentionRouter);
 
   app.use('/api/providers', providersRouter);
   app.use('/api/chat', chatRouter);
   app.use('/api/mcp', mcpRouter);
   app.use('/api/skills', skillsRouter);
+  app.use('/api/plugins', pluginsRouter);
   app.use('/api/storage', storageRouter);
+  app.use('/api/terminal', terminalRouter);
   app.use('/api/usage', usageRouter);
   app.use('/api/backup', backupRouter);
   app.use('/api/settings', settingsRouter);

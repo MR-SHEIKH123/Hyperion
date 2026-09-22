@@ -85,9 +85,24 @@ function newStream(): InstanceType<typeof SseStream> {
 
 // --- fixtures --------------------------------------------------------------
 
-/** A provider shape for the pure functions, with no database row behind it. */
-function subject(type: ProviderType, support: ZdrSupport, extra: Partial<ProviderRecord['zdr']> = {}) {
-  return { type, zdr: { ...DEFAULT_PROVIDER_ZDR, support, ...extra } };
+/**
+ * A provider shape for the pure functions, with no database row behind it.
+ *
+ * The URL matters, because the egress class is derived from the type *and* the
+ * address it will be called at: a `local` or `colibri` provider is only local if
+ * that address is this machine, so a subject that is meant to be local is given
+ * a loopback URL and one that is meant to be remote is not. (The case where a
+ * local-typed provider points elsewhere is `test/egressclass.test.ts`.)
+ */
+function subject(
+  type: ProviderType,
+  support: ZdrSupport,
+  extra: Partial<ProviderRecord['zdr']> = {},
+  baseUrl = type === 'local' || type === 'colibri'
+    ? 'http://127.0.0.1:11434/v1'
+    : 'https://provider.test/v1',
+) {
+  return { type, zdr: { ...DEFAULT_PROVIDER_ZDR, support, ...extra }, baseUrl };
 }
 
 /** Records the headers and body of every request, then answers it plausibly. */

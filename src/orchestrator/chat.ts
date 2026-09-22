@@ -128,6 +128,11 @@ function mapSwitchReason(reason: SwitchReason): PauseReason {
       return 'capability_mismatch';
     case 'health_failure':
       return 'provider_failure';
+    // A cooldown is a failure being respected, not a decided move: the provider
+    // did fail, and the user's next question is what to fix. `provider_failure`
+    // is the reason that says so.
+    case 'cooldown':
+      return 'provider_failure';
     // Nothing failed: the run moved because the standing policy barred the
     // provider it started with. `provider_switch` is the reason that says the
     // move was decided rather than forced.
@@ -189,7 +194,9 @@ export async function sendMessage(input: SendMessageInput, sse: SseStream): Prom
   const intendedProvider = input.providerId ? findProvider(input.providerId) : getActiveProvider();
   assertOutboundSafe({
     messages: requestMessages,
-    providerType: intendedProvider?.type ?? null,
+    // The whole record, not just its type: a provider that declares itself local
+    // is only local if that is where the request will actually go.
+    provider: intendedProvider,
     ...(input.acknowledgeSensitive === true ? { acknowledged: true } : {}),
     enabled: redactionCheckEnabled(),
   });
@@ -328,6 +335,11 @@ export async function sendMessage(input: SendMessageInput, sse: SseStream): Prom
   // Success.
   const tokensIn = outcome.usage?.tokensIn ?? 0;
   const tokensOut = outcome.usage?.tokensOut ?? 0;
+  // Cache and reasoning accounting (1.28) rides along exactly as reported:
+  // `undefined` when the provider said nothing, so the column stays NULL.
+  const cacheReadTokens = outcome.usage?.cacheReadTokens;
+  const cacheWriteTokens = outcome.usage?.cacheWriteTokens;
+  const reasoningTokens = outcome.usage?.reasoningTokens;
 
   updateMessage(assistant.id, {
     content,
@@ -360,6 +372,9 @@ export async function sendMessage(input: SendMessageInput, sse: SseStream): Prom
     zdrRequirement: requirementAtStart,
     tokensIn,
     tokensOut,
+    cacheReadTokens,
+    cacheWriteTokens,
+    reasoningTokens,
     status: 'ok',
     durationMs: Date.now() - startedAt,
   });
@@ -377,6 +392,12 @@ export async function sendMessage(input: SendMessageInput, sse: SseStream): Prom
       data: {
         tokensIn,
         tokensOut,
+        // Optional on the wire, and omitted rather than zeroed: a client that
+        // shows "cache 0%" for a provider that reports no cache accounting would
+        // be inventing a measurement.
+        ...(cacheReadTokens === undefined ? {} : { cacheReadTokens }),
+        ...(cacheWriteTokens === undefined ? {} : { cacheWriteTokens }),
+        ...(reasoningTokens === undefined ? {} : { reasoningTokens }),
         costUsd: computeCost(input.modelId, outcome.provider.id, tokensIn, tokensOut),
       },
     });

@@ -50,6 +50,26 @@ import type { SecretKind } from '../../util/redact.ts';
 export type EgressClass = 'local' | 'remote' | 'unknown';
 
 /**
+ * A provider as far as egress is concerned: what it declares itself to be, the
+ * URL it will actually be called at, and any proxy the bytes go through first.
+ *
+ * All three are needed. The type alone cannot answer the question this module
+ * exists to answer, because two of the four types — `local` and `colibri` —
+ * *claim* locality and nothing used to check the claim against where the bytes
+ * go. And the URL alone is not enough once a proxy is configured: a request to
+ * `127.0.0.1:11434` through a proxy in another country never touches this
+ * machine's loopback at all, so "local" would be false for exactly the reason
+ * 019 exists (Part 1.37).
+ */
+export interface EgressSubject {
+  type: ProviderType | null | undefined;
+  /** Absent, null or unparseable is treated as "not this machine". */
+  baseUrl?: string | null;
+  /** The provider's configured egress proxy, if any. Credentials are allowed. */
+  egressProxy?: string | null;
+}
+
+/**
  * Map a provider type onto its egress class.
  *
  * `opencodex` is remote. It is easy to assume otherwise from the name — it is a
@@ -57,6 +77,11 @@ export type EgressClass = 'local' | 'remote' | 'unknown';
  * talks to it over HTTP at a base URL the user supplies, which may be anywhere.
  * `colibri` is the mirror image: a local runtime whose replies take minutes, so
  * its distinct type is about scheduling, not about where the bytes go.
+ *
+ * `puter` is remote for the plain reason the others are not: the service is
+ * hosted, and the only thing that makes it a separate type is the *credential*
+ * (an expiring session token, not a vendor key). Egress does not care about
+ * that, so it is filed with `remote` rather than given a rule of its own.
  */
 export function classifyProviderType(type: ProviderType | null | undefined): EgressClass {
   switch (type) {
@@ -65,6 +90,11 @@ export function classifyProviderType(type: ProviderType | null | undefined): Egr
       return 'local';
     case 'remote':
     case 'opencodex':
+    // Puter is a hosted service: remote by declaration, and no URL could change
+    // that. Listed with the type rather than after the URL check, because the
+    // type *is* the answer here — a Puter provider reached over a tunnel is still
+    // Puter (Part 1.38).
+    case 'puter':
       return 'remote';
     default:
       // Covers both null (provider deleted) and a type this build does not know,
@@ -74,9 +104,182 @@ export function classifyProviderType(type: ProviderType | null | undefined): Egr
   }
 }
 
-/** True when a request to this provider type leaves the machine. */
-export function isEgress(type: ProviderType | null | undefined): boolean {
-  return classifyProviderType(type) === 'remote';
+/**
+ * Whether a *hostname* names this machine.
+ *
+ * Deliberately literal: `localhost`, anything under `.localhost` (RFC 6761),
+ * the IPv6 loopback, and the 127/8 block. No DNS resolution — a name that
+ * happens to resolve to loopback (`127.0.0.1.nip.io`) is still a name handed to
+ * a resolver, and the answer can change under us; treating it as local would be
+ * a locality claim this process cannot check.
+ */
+export function isLoopbackHost(hostname: string): boolean {
+  const host = hostname
+    .toLowerCase()
+    .replace(/\.$/, '')
+    .replace(/^\[|\]$/g, '');
+  if (host === 'localhost' || host.endsWith('.localhost')) return true;
+  if (host === '::1' || host === '0:0:0:0:0:0:0:1') return true;
+
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (!v4) return false;
+  const octets = v4.slice(1).map(Number);
+  if (octets.some((part) => part > 255)) return false;
+  // The whole /8, not just .1: 127.0.0.2 is this machine too.
+  return octets[0] === 127;
+}
+
+function isLoopbackUrl(url: string | null | undefined): boolean {
+  if (typeof url !== 'string' || url.trim() === '') return false;
+  try {
+    return isLoopbackHost(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The egress class of a provider whose record is in hand. **Prefer this over
+ * `classifyProviderType`**: the type-only mapping cannot see the URL, and for a
+ * local-typed provider that is the whole question.
+ *
+ * A type that claims locality is verified against the URL, because the claim is
+ * only true when that URL is this machine. Anything else — a LAN address, a
+ * hostname, an unreadable URL — is `remote`, and every surface that asks
+ * (the credential scan, the retention policy, the exposure summary) then says so.
+ *
+ * A declared *remote* type is never downgraded, not even pointed at 127.0.0.1.
+ * `opencodex` is a local proxy that forwards to upstream vendors and a `remote`
+ * provider may be anything at all; calling either local would *skip* the scan,
+ * and understating egress is the one direction this module refuses to fail in.
+ *
+ * A type this build does not recognise stays `unknown` whatever its URL: not
+ * knowing what a provider is cannot be improved by looking at its address.
+ */
+export function egressClassFor(provider: EgressSubject | null | undefined): EgressClass {
+  const declared = classifyProviderType(provider?.type ?? null);
+  if (declared !== 'local') return declared;
+  if (!isLoopbackUrl(provider?.baseUrl)) return 'remote';
+  // Both the type and the URL say this machine — but a proxy the traffic has to
+  // reach first can still take it off the machine, and saying `local` then would
+  // be the same class of mistake 019 fixed, one hop further out.
+  return proxyLeavesMachine(provider) ? 'remote' : 'local';
+}
+
+/** True when a request to this provider leaves the machine. */
+export function isEgress(provider: EgressSubject | null | undefined): boolean {
+  return egressClassFor(provider) === 'remote';
+}
+
+// --- egress proxy (Part 1.37) ----------------------------------------------
+
+/**
+ * A per-provider proxy, parsed and canonicalised.
+ *
+ * `url` is the value the transport dials and may contain credentials. Everything
+ * else here is what the rest of the process is allowed to see: `authority` is
+ * `host:port` with no userinfo, and it is what gets stamped into the audit
+ * column, compared for the local/remote question, and shown to the user.
+ */
+export interface EgressProxy {
+  /** The URL as configured, minus a trailing slash. Credentials included. */
+  url: string;
+  scheme: 'http' | 'https';
+  host: string;
+  port: number;
+  /** `host:port`, never credentials. The only form a read path may use. */
+  authority: string;
+  /** True when the configured URL carried a userinfo component. */
+  hasCredentials: boolean;
+  /** The URL as it may be shown or exported: `user:***@host:port` at most. */
+  redacted: string;
+}
+
+/**
+ * Parse a configured proxy URL.
+ *
+ * Throws `bad_request` rather than returning null for anything unusable, because
+ * every caller of this function is a write path: silently storing a proxy the
+ * transport cannot dial would produce exactly the failure 1.37 warns about — a
+ * provider that looks local, is reported as proxied, and is neither.
+ *
+ * Only `http` and `https` are accepted. A SOCKS URL would be a *different*
+ * transport, and accepting one that `undici` cannot dial would turn a typo into
+ * "traffic went direct while the user believed it did not" — the one direction
+ * this module refuses to fail in.
+ */
+export function parseEgressProxy(raw: string | null | undefined): EgressProxy | null {
+  if (raw === null || raw === undefined) return null;
+  const trimmed = raw.trim();
+  if (trimmed === '') return null;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new AppError('bad_request', `Could not read the egress proxy URL "${trimmed}"`);
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new AppError(
+      'bad_request',
+      `The egress proxy must be an http or https URL; "${parsed.protocol}//" is not supported`,
+    );
+  }
+  if (parsed.hostname === '') {
+    throw new AppError('bad_request', 'The egress proxy URL has no host');
+  }
+
+  const scheme = parsed.protocol === 'https:' ? 'https' : 'http';
+  const port = parsed.port === '' ? (scheme === 'https' ? 443 : 80) : Number(parsed.port);
+  const hasCredentials = parsed.username !== '' || parsed.password !== '';
+  const authority = `${parsed.hostname}:${String(port)}`;
+
+  return {
+    // A path on a proxy URL is meaningless to a CONNECT tunnel and would be
+    // silently ignored, so it is dropped here rather than stored and ignored.
+    url: `${scheme}://${hasCredentials ? `${parsed.username}:${parsed.password}@` : ''}${authority}`,
+    scheme,
+    host: parsed.hostname,
+    port,
+    authority,
+    hasCredentials,
+    // Only the *user* survives, and only so a reader can tell the proxy is
+    // authenticated: which account it authenticates as is a fact about the path
+    // the traffic takes, while the password is a credential and is never echoed.
+    redacted: `${scheme}://${hasCredentials ? `${parsed.username}:***@` : ''}${authority}`,
+  };
+}
+
+/** Parse without throwing: for read paths that must not fail on a stale row. */
+export function tryEgressProxy(raw: string | null | undefined): EgressProxy | null {
+  try {
+    return parseEgressProxy(raw);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The proxy as it may be shown or exported.
+ *
+ * Computed at parse time, from the parsed URL, rather than by string surgery on
+ * the dial URL later: a redactor that runs on a string has to find the password
+ * again, and every way of finding it is a way of missing it.
+ */
+export function redactEgressProxy(proxy: EgressProxy): string {
+  return proxy.redacted;
+}
+
+/**
+ * Whether a configured proxy sends traffic off this machine.
+ *
+ * Same literal loopback test as a provider URL, for the same reason: a proxy
+ * hostname that merely resolves to loopback is still a name handed to a resolver.
+ */
+export function proxyLeavesMachine(provider: EgressSubject | null | undefined): boolean {
+  const proxy = tryEgressProxy(provider?.egressProxy);
+  return proxy !== null && !isLoopbackHost(proxy.host);
 }
 
 // --- detection -------------------------------------------------------------
@@ -162,7 +365,13 @@ export function describeKinds(kinds: readonly SecretKind[]): string {
  */
 export interface OutboundGateInput {
   messages: readonly ChatMessage[];
-  providerType: ProviderType | null | undefined;
+  /**
+   * The provider the request is about to go to — its type *and* its URL. A type
+   * that claims locality is only local if that URL is this machine, so passing
+   * the type alone would wave through exactly the case this gate is for. Null
+   * means we cannot say, and an unclassifiable provider is not gated.
+   */
+  provider: EgressSubject | null | undefined;
   /** The user has seen the finding and asked to send anyway. */
   acknowledged?: boolean;
   /** False when the feature toggle is off; the scan is then skipped entirely. */
@@ -172,8 +381,10 @@ export interface OutboundGateInput {
 export function assertOutboundSafe(input: OutboundGateInput): SensitiveReport | null {
   if (!input.enabled) return null;
   // A local model is not egress. Scanning it would cost time and produce
-  // warnings about text that never left the machine.
-  if (!isEgress(input.providerType)) return null;
+  // warnings about text that never left the machine — which is why "local" has
+  // to be established from the URL and not taken from the type's word for it.
+  const providerClass = egressClassFor(input.provider);
+  if (providerClass !== 'remote') return null;
 
   const report = scanForSensitive(input.messages);
   if (!report.flagged) return report;
@@ -192,7 +403,7 @@ export function assertOutboundSafe(input: OutboundGateInput): SensitiveReport | 
       details: {
         kinds: report.kinds,
         hits: report.hits,
-        providerClass: classifyProviderType(input.providerType),
+        providerClass,
       },
     },
   );

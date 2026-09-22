@@ -31,6 +31,7 @@ import {
   type Project,
 } from '../db/projects.ts';
 
+import { activeTaskRuns, isActiveRunState, type ActiveTaskRunState } from '../db/taskRuns.ts';
 import { defaultProjectRoot, pathContains, safeFilename } from '../security/fsScope.ts';
 import {
   activeProjectRoot,
@@ -244,6 +245,81 @@ projectsRouter.post(
     requireProjectOr404(id);
 
     res.json({ project: switchActiveProject(id), activeRoot: activeProjectRoot() });
+  }),
+);
+
+/**
+ * GET /api/projects/:id/tasks — what is still unfinished in this project.
+ *
+ * This is the read a project switch is warned by: opening another project moves
+ * every scoped tool's directory and drops the per-task worktree assignments, so
+ * a user who switches away from running work does not stop it — they lose sight
+ * of it. The client asks this before opening the other project and can say what
+ * is being left behind, by name, instead of a generic "some tasks are running".
+ *
+ * Three shapes are worth stating outright.
+ *
+ * **It lists tasks, not runs.** A task id can be run more than once, and only the
+ * latest run for each `(tool, taskId)` is reported, mirroring
+ * `GET /api/{tool}/tasks/:taskId/state` — so `tasks[0].runId` is the run a client
+ * would watch, and the count is tasks rather than rows.
+ *
+ * **Active means unfinished, not busy.** `blocked` and `ready_for_review` are
+ * included: a run waiting on an approval has not ended, and it is the one most
+ * worth mentioning before somebody navigates away from it. Terminal runs are
+ * excluded — the point is what is still going, not a history.
+ *
+ * **Coverage is part of the answer.** `unattributedActive` counts the runs that
+ * are active but name no project — started with nothing open, or written before
+ * migration `027` recorded a scope. They are never folded into whichever project
+ * happens to be open, because that would be the listing inventing an answer; they
+ * are counted here so a client can say "something else is running" rather than
+ * presenting the per-project number as the whole truth. For rows written from
+ * `027` on this count only stays non-zero while nothing is open.
+ *
+ * `active` says whether this project is the one the tools are scoped to right
+ * now, which is what decides whether the warning is "you are leaving this" or
+ * "you are switching back to this".
+ */
+projectsRouter.get(
+  '/:id/tasks',
+  wrap((req, res) => {
+    const project = requireProjectOr404(pathParam(req, 'id'));
+    const tasks = activeTaskRuns(project.id);
+
+    // Every key is present even at zero: a client branch on `counts.blocked`
+    // should not have to distinguish "none" from "not said". The `Record` type
+    // over the active states is also what makes a new state a compile error
+    // here rather than a counter that silently never increments.
+    const counts: Record<ActiveTaskRunState, number> = {
+      running: 0,
+      paused: 0,
+      blocked: 0,
+      ready_for_review: 0,
+    };
+    for (const run of tasks) {
+      // Narrowed rather than asserted: the query filters by the same set, and a
+      // counter that trusted that would be one SQL edit away from counting a
+      // terminal run as active.
+      if (isActiveRunState(run.state)) counts[run.state] += 1;
+    }
+
+    res.json({
+      project,
+      active: activeProject()?.id === project.id,
+      tasks: tasks.map((run) => ({
+        tool: run.tool,
+        taskId: run.taskId,
+        runId: run.runId,
+        state: run.state,
+        pauseReason: run.pauseReason,
+        chatId: run.chatId,
+        startedAt: run.startedAt,
+        updatedAt: run.updatedAt,
+      })),
+      counts: { total: tasks.length, ...counts },
+      unattributedActive: activeTaskRuns(null).length,
+    });
   }),
 );
 

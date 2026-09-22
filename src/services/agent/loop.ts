@@ -64,6 +64,16 @@
 import { finishTaskRun, updateTaskRunState } from '../../db/taskRuns.ts';
 import { CEILING_REASON } from '../limits/budget.ts';
 import { recordApproval } from '../../db/approvals.ts';
+import { getTaskRun } from '../../db/taskRuns.ts';
+import {
+  mintTicket,
+  settleTicket,
+  type TicketBinding,
+  type TicketField,
+  type TicketRefusal,
+  type TicketSettlement,
+} from '../../db/approvalTickets.ts';
+import { approvalWaitTtlMs } from './approvalWait.ts';
 import { snapshotConversation } from '../../db/taskMessages.ts';
 import { nextStepNumber, recordStep } from '../../db/taskSteps.ts';
 import { taskIterationCeiling } from '../../db/settings.ts';
@@ -127,10 +137,23 @@ export interface ToolRunner {
  */
 export interface PermissionResolver {
   (input: { call: ToolCall; effect: ToolEffect }): PermissionVerdict;
+  /**
+   * The revision of the layer stack this resolver evaluates (S1), set by
+   * `createPermissionResolver`. Optional because a bespoke resolver — a test's
+   * stub, a caller that decided not to use the engine — has no stack to revise, and
+   * the loop then has no revision to bind a ticket to rather than binding a lie.
+   */
+  revision?: string;
 }
 
 /** Why a dispatch attempt did not run the tool. */
-export type RefusalReason = 'ask_mode' | 'plan_mode' | 'permission_denied' | 'approval_required';
+export type RefusalReason =
+  | 'ask_mode'
+  | 'plan_mode'
+  | 'permission_denied'
+  | 'approval_required'
+  /** A prior approval existed and no longer covers this call (S1). */
+  | 'approval_invalid';
 
 export interface DispatchResult {
   ran: boolean;
@@ -143,6 +166,8 @@ export interface DispatchResult {
 
 export interface ModeGateInput {
   runId?: string;
+  /** The task this run belongs to. Part of what a ticket binds (S1). */
+  taskId?: string;
   mode: AgentMode;
   policy: ToolPolicy;
   run: ToolRunner;
@@ -153,6 +178,42 @@ export interface ModeGateInput {
   permissions?: PermissionResolver;
   /** Recorded on the step row alongside the verdict's provenance. */
   profile?: string;
+  /**
+   * What an approval ticket binds beyond the call itself (S1).
+   *
+   * Supplied by the agent because only the agent knows them: the canonical
+   * workspace the run is contained to, and — for a delegated child — the parent
+   * task it belongs to. Omitting it keeps the gate exactly as it was before
+   * tickets existed, which is what every caller that has no approvals to honour
+   * wants.
+   */
+  ticket?: TicketContext;
+}
+
+/**
+ * What the agent tells the loop about where it runs, so a ticket can bind it (S1).
+ */
+export interface TicketBindingContext {
+  /** The canonical cwd/worktree identity this run's calls execute in. */
+  workspace: string;
+  /** The parent task, when this run was delegated by one. */
+  parentTaskId?: string;
+}
+
+/** The live facts a ticket is checked against, minus the call being dispatched. */
+export interface TicketContext {
+  /** The canonical cwd/worktree identity of this run. */
+  workspace: string;
+  /** The parent task, for a delegated child's call. */
+  parentTaskId?: string | undefined;
+  /** The effective permission-config revision, as re-read for this run. */
+  revision: string;
+  /**
+   * Whether the live run is the one a ticket was minted for, or a continuation of
+   * it. A function because the lineage lives in `task_runs` and the caller has the
+   * row; the loop only knows its own run id.
+   */
+  runAccepts: (ticketRunId: string | null) => boolean;
 }
 
 /**
@@ -201,6 +262,21 @@ export async function dispatchToolCall(input: ModeGateInput): Promise<DispatchRe
     }
 
     if (verdict.action === 'ask') {
+      // Continuation is the only path that reaches here with a decision already
+      // behind it: the run was parked on this exact call, the user answered, and
+      // the replay recomputed the same verdict. The ticket is what turns that
+      // recomputation into a *bound* authorisation (S1).
+      const settled = settleAgainstTickets(input, call, verdict);
+      if (settled.kind === 'granted') return await runTool(input, effect, verdict);
+      if (settled.kind === 'refused') {
+        // The call does not run, and the model is told what moved rather than that
+        // something is "invalid": the usual cause is its own re-generated call, and
+        // the fix available to it is to ask again with the call it actually wants.
+        const output = ticketRefusalSentence(call.name, settled.refusal ?? 'mismatch', settled.fields ?? []);
+        recordGateStep(input, 'approval', 'approval_invalid', verdict);
+        return { ran: false, output, refusedBecause: 'approval_invalid', verdict };
+      }
+
       const output =
         `Paused: \`${call.name}\` needs the user's approval (${describeVerdict(verdict)}). ` +
         `The call has been recorded and the task is waiting on a decision. Stop here; ` +
@@ -414,7 +490,12 @@ export function parkRun(
 ): void {
   const state = PARK_STATE[reason];
   if (runId !== undefined) {
-    updateTaskRunState(runId, state);
+    // The reason travels with the state as of 1.31. Before this the row said
+    // *that* a run was parked and never *why*, so the Attention Center showed a
+    // generic sentence where the specific one existed, and an unattended run had
+    // nothing to tell the user beyond "failed". The token (not a sentence) is what
+    // goes in the column; `parkMessages.ts` owns the wording.
+    updateTaskRunState(runId, state, { pauseReason: reason });
     recordStep({ runId, step: nextStepNumber(runId), kind: 'note', ok: false, detail: `${reason}: ${detail}` });
   }
   ctx.emit('task_parked', { ...(runId === undefined ? {} : { runId }), state, reason, detail });
@@ -545,6 +626,19 @@ export interface AgentLoopInput {
    * sees when asking why a call was refused.
    */
   profile?: AgentProfile;
+  /**
+   * Where this run's calls execute, for the approval tickets they bind (S1).
+   *
+   * Only the agent knows this: the loop is told a `ToolRunner` and a policy, and
+   * neither says which directory the tools will actually touch. When it is absent
+   * — a headless run, a test that dispatches one call — no ticket is minted and
+   * none is settled, which is exactly the pre-S1 behaviour: `ask` parks, the
+   * decision arms the pending approval, and the replay runs.
+   *
+   * The permission-config revision comes from `permissions.revision` instead, so
+   * that the binding can only ever describe the stack the engine really consults.
+   */
+  ticketBinding?: TicketBindingContext;
   /**
    * Decides each call. Omitting it keeps the pre-1.27 mode gate exactly — see
    * `PermissionResolver`.
@@ -689,6 +783,10 @@ export async function runAgentLoop(
   const ceiling = input.iterationCeiling ?? taskIterationCeiling();
   const guard = new RepeatGuard(input.repeatLimit);
   const plan: PlannedAction[] = [];
+  // Resolved once, for the same reason the permission stack is: a ticket binds
+  // *this* run's identity, and re-reading the run row mid-loop would let a
+  // superseded run keep authorising calls under its successor's id (S1).
+  const ticket = ticketContext(input);
 
   /** Snapshot, then park. Every stopping point goes through here. */
   const park = (reason: ParkReason, detail: string): void => {
@@ -764,7 +862,7 @@ export async function runAgentLoop(
         // wrong — the common case is a tool that legitimately returns the same
         // answer twice — and terminating discards everything before the
         // repetition. `loop_detected` is now what a *denial* lands on.
-        const approval = recordPendingApproval(input, call, undefined, 'doom_loop');
+        const approval = recordPendingApproval(input, ticket, call, undefined, 'doom_loop');
         park(
           'doom_loop',
           `\`${call.name}\` was called ${guard.count(call)} times with identical arguments`,
@@ -787,6 +885,7 @@ export async function runAgentLoop(
 
       const result = await dispatchToolCall({
         runId: input.runId,
+        ...(input.taskId === undefined ? {} : { taskId: input.taskId }),
         mode: input.mode,
         policy: input.policy,
         run: input.run,
@@ -794,6 +893,7 @@ export async function runAgentLoop(
         plan,
         ...(input.permissions === undefined ? {} : { permissions: input.permissions }),
         ...(input.profile === undefined ? {} : { profile: input.profile.name }),
+        ...(ticket === undefined ? {} : { ticket }),
       });
       feedback.push({ call, output: result.output, ran: result.ran });
 
@@ -801,17 +901,28 @@ export async function runAgentLoop(
       // remaining calls in the batch would run work the user has not yet agreed
       // to, and would leave the conversation in a state the continuation cannot
       // reproduce — the approved call has to be the next thing that happens.
-      if (result.refusedBecause === 'approval_required') {
-        const approval = recordPendingApproval(input, call, result.verdict);
+      //
+      // A ticket that no longer covers the call stops the run for the same reason
+      // and then some: an approval exists, but not for *this* call, so nobody has
+      // agreed to what is about to happen. Treating it as an ordinary refusal and
+      // letting the model carry on would quietly drop the requirement that a
+      // human agreed — the run parks, asks afresh about the call actually in
+      // front of it, and the model is told why (S1).
+      if (result.refusedBecause === 'approval_required' || result.refusedBecause === 'approval_invalid') {
+        const invalidated = result.refusedBecause === 'approval_invalid';
+        const approval = recordPendingApproval(input, ticket, call, result.verdict);
         park(
           'approval_required',
-          `\`${call.name}\` needs approval${result.verdict === undefined ? '' : ` (${describeVerdict(result.verdict)})`}`,
+          invalidated
+            ? `\`${call.name}\` no longer matches the approval behind it, so it needs a fresh decision`
+            : `\`${call.name}\` needs approval${result.verdict === undefined ? '' : ` (${describeVerdict(result.verdict)})`}`,
         );
         ctx.emit('approval_required', {
           ...(input.runId === undefined ? {} : { runId: input.runId }),
           ...(approval === null ? {} : { approvalId: approval.id }),
           tool: input.tool,
           toolName: call.name,
+          ...(invalidated ? { reason: 'approval_invalid' } : {}),
           ...(result.verdict === undefined
             ? {}
             : {
@@ -837,6 +948,101 @@ export async function runAgentLoop(
 }
 
 /**
+ * The live facts a ticket is checked against, or `undefined` when the run cannot
+ * supply them (S1).
+ *
+ * Both halves have to come from the run itself: the workspace from the agent (only
+ * it knows where the tools point) and the revision from the resolver (only it knows
+ * which stack the engine will read). A run that supplies neither gets no ticket
+ * checking at all — the honest pre-S1 behaviour — rather than a comparison against
+ * a value the run invented.
+ */
+function ticketContext(input: AgentLoopInput): TicketContext | undefined {
+  const binding = input.ticketBinding;
+  const revision = input.permissions?.revision;
+  if (binding === undefined || revision === undefined) return undefined;
+  // Lineage is read from the run row rather than passed in, because that is where
+  // the continuation writes it: a caller-supplied "I am a continuation of X" would
+  // be a claim, and this is the check (S1).
+  const continuedFrom = input.runId === undefined ? null : (getTaskRun(input.runId)?.continuedFrom ?? null);
+  return {
+    workspace: binding.workspace,
+    ...(binding.parentTaskId === undefined ? {} : { parentTaskId: binding.parentTaskId }),
+    revision,
+    runAccepts: (ticketRunId) =>
+      // A headless run has no id to compare, so the task key is the whole identity.
+      ticketRunId === null || ticketRunId === input.runId || ticketRunId === continuedFrom,
+  };
+}
+
+/**
+ * The live binding for a call: the same fields a ticket stores, read from the
+ * context in front of us (S1).
+ */
+function liveBinding(
+  call: ToolCall,
+  permissionKey: string,
+  identity: { taskId: string | undefined; runId: string | undefined; ticket: TicketContext },
+): TicketBinding {
+  return {
+    toolName: call.name,
+    permissionKey,
+    arguments: call.arguments,
+    workspace: identity.ticket.workspace,
+    taskId: identity.taskId ?? '',
+    runId: identity.runId ?? null,
+    parentTaskId: identity.ticket.parentTaskId ?? null,
+    revision: identity.ticket.revision,
+  };
+}
+
+/**
+ * Ask the ticket store about a call the engine wants a decision for.
+ *
+ * `absent` is the ordinary case — no ticket, so the caller parks exactly as it did
+ * before this existed — and it is also what a *different* call under the same tool
+ * gets: the store is keyed by the question the user was asked, so a command they
+ * never saw is not authorised by one they did.
+ *
+ * A caller with no ticket context settles nothing. That is the pre-S1 path, kept
+ * deliberately: an agent that cannot say where it runs must not have its approvals
+ * compared against a workspace it did not name.
+ */
+function settleAgainstTickets(
+  input: ModeGateInput,
+  call: ToolCall,
+  verdict: PermissionVerdict,
+): TicketSettlement {
+  const ticket = input.ticket;
+  if (ticket === undefined) return { kind: 'absent' };
+  return settleTicket({
+    live: liveBinding(call, verdict.key, { taskId: input.taskId, runId: input.runId, ticket }),
+    runAccepts: ticket.runAccepts,
+  });
+}
+
+/** The sentence the model reads when an approval no longer covers the call. */
+function ticketRefusalSentence(toolName: string, refusal: TicketRefusal, fields: readonly TicketField[]): string {
+  const head = `Refused: the approval for \`${toolName}\` does not cover this call. `;
+  switch (refusal) {
+    case 'not_approved':
+      return `${head}It was recorded but never decided, so nothing has been authorised yet.`;
+    case 'denied':
+      return `${head}The user declined it, and a declined call does not become allowed by being repeated. Only a change to the permission rule alters the answer.`;
+    case 'already_consumed':
+      return `${head}That approval has already been spent on one execution — a single approval authorises a single call. Ask again with a fresh request.`;
+    case 'expired':
+      return `${head}The prompt outlived its deadline before this call ran. Ask again; the user will be asked afresh.`;
+    case 'run_replaced':
+      return `${head}It was approved for a different run, and this one does not continue it. Ask again from this run.`;
+    case 'mismatch':
+      return `${head}The approved call was \`${fields.length === 0 ? 'not the same call' : fields.join(', ')}\` different${
+        fields.length === 0 ? '' : ' from this one'
+      }. Ask again with the call you want to run.`;
+  }
+}
+
+/**
  * Persist the call a run stopped on, and never let that write end the run.
  *
  * Returns `null` when there is nothing durable to hang it off — no `taskId` — or
@@ -845,8 +1051,42 @@ export async function runAgentLoop(
  * failure as a running task would be the worse lie. The absence is logged, because
  * a park with no approval row is exactly what the continuation route has to refuse.
  */
+/**
+ * Mint the ticket for an approval, when there is anything to bind it to.
+ *
+ * Only a permission verdict mints one: a doom-loop park is a repetition problem
+ * with no `ask` behind it, and a ticket there would authorise a call the user was
+ * never asked about. The write is swallowed for the same reason the approval's is
+ * — the park has already happened, and a storage failure must not turn a question
+ * the user can answer into an exception they cannot.
+ */
+function mintForApproval(
+  input: AgentLoopInput,
+  ticket: TicketContext | undefined,
+  approvalId: string,
+  call: ToolCall,
+  verdict: PermissionVerdict | undefined,
+): void {
+  if (verdict === undefined || verdict.action !== 'ask' || ticket === undefined) return;
+  const live = liveBinding(call, verdict.key, { taskId: input.taskId, runId: input.runId, ticket });
+  try {
+    mintTicket({
+      approvalId,
+      tool: input.tool,
+      binding: live,
+      expiresAt: Date.now() + approvalWaitTtlMs(),
+    });
+  } catch (error) {
+    log.warn('could not mint an approval ticket', {
+      approvalId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 function recordPendingApproval(
   input: AgentLoopInput,
+  ticket: TicketContext | undefined,
   call: ToolCall,
   verdict: PermissionVerdict | undefined,
   reason?: string,
@@ -859,7 +1099,7 @@ function recordPendingApproval(
     return null;
   }
   try {
-    return recordApproval({
+    const approval = recordApproval({
       ...(input.runId === undefined ? {} : { runId: input.runId }),
       taskId: input.taskId,
       tool: input.tool,
@@ -874,6 +1114,8 @@ function recordPendingApproval(
           : { reason }
         : { reason: describeVerdict(verdict) }),
     });
+    mintForApproval(input, ticket, approval.id, call, verdict);
+    return approval;
   } catch (error) {
     log.warn('could not record a pending approval', {
       toolName: call.name,

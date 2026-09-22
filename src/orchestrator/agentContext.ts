@@ -9,6 +9,9 @@
  */
 import { executeCommand as runCommand } from './agents.ts';
 import { complete as routerComplete, stream as routerStream } from '../providers/router.ts';
+import { recordUsage } from '../db/usage.ts';
+import { zdrRequirement } from '../db/settings.ts';
+import { zdrStatusFor } from '../services/safety/zdr.ts';
 import { resolveInScope } from '../security/fsScope.ts';
 import { containAgentCwd } from '../services/code/worktree.ts';
 import {
@@ -17,13 +20,14 @@ import {
   saveArtifactVersion as persistArtifactVersion,
   writeCodeFile,
 } from '../services/code/files.ts';
-import { skillsSummary } from '../services/skills/registry.ts';
+import { skillsAvailableTo } from '../services/plugins/consumers.ts';
 import { createLogger } from '../util/logger.ts';
 import type { SseStream } from './sse.ts';
 import type {
   AgentContext,
   CommandResult,
   CompletionRequest,
+  ProviderRecord,
   StreamChunk,
   TokenUsage,
   ToolName,
@@ -61,6 +65,16 @@ export function createAgentContext(input: AgentContextInput): AgentContext {
   const { tool, chatId, modelId, sse, taskId, runId, cancelSignal } = input;
   const log = createLogger(`agent:${tool}`);
 
+  /**
+   * The ZDR policy as it stood when this run started.
+   *
+   * Captured once, here, rather than re-read per request — the same reasoning as
+   * `orchestrator/chat.ts`. The log has to hold the rule a request was judged
+   * against, and a policy changed mid-run must not retroactively restate the
+   * requests already made under the old one.
+   */
+  const zdrRequirementAtStart = zdrRequirement();
+
   // Disconnect *or* cancellation, whichever comes first. `sse.signal` is backed
   // by one controller created with the stream, so reading it once here is the
   // same signal the getter used to return. Without a cancelSignal this is that
@@ -82,43 +96,141 @@ export function createAgentContext(input: AgentContextInput): AgentContext {
     sse.emit('agent', { channel: event, tool, chatId, ...data });
   };
 
+  /**
+   * Log one provider request's spend against its task and its run (v4 §6.2).
+   *
+   * Called from the two places a request is actually made — `llmStream` and
+   * `llmComplete` — so nothing reaching a provider goes unrecorded, and the
+   * context is the right seam for it: it is the one object every task run passes
+   * through, whether the run was started by a route, by a continuation, or by the
+   * scheduler. Chat runs do not build one, so they keep recording through
+   * `orchestrator/chat.ts` and nothing is counted twice.
+   *
+   * Where a delegated child's spend lands is worth stating precisely, because two
+   * documents described it wrongly. The child does not build a context of its own
+   * (`childContext` hands it the parent's `llm`, and these wrappers close over the
+   * `taskId` and `runId` of the run that built *this* context), so a child's
+   * requests are logged against the **parent's task id and the parent's run id**.
+   * The task total therefore includes delegated work — that much was documented and
+   * is true — and so does the parent *run*'s figure, which the feed's per-entry
+   * `spend` reports and which the API docs said excluded it. A child's own spend is
+   * consequently not separable from its parent's today, which is why a `subagent`
+   * entry in the activity feed carries no spend rather than a share of one.
+   * Migration 018 explains why task and run are two keys.
+   *
+   * Never throws. `recordUsage` swallows its own failures, and this must not be
+   * the thing that turns a finished request into a failed run.
+   */
+  const recordRequestUsage = (input: {
+    provider: ProviderRecord;
+    usage: TokenUsage;
+    status: 'ok' | 'partial';
+    durationMs: number;
+  }): void => {
+    recordUsage({
+      chatId,
+      tool,
+      modelId,
+      providerId: input.provider.id,
+      providerName: input.provider.name,
+      // Read off the provider that actually served, not the one aimed at: a
+      // mid-run failover can move the request to a provider of a different egress
+      // class, and the log has to say where the bytes went.
+      providerType: input.provider.type,
+      zdrStatus: zdrStatusFor(input.provider),
+      zdrRequirement: zdrRequirementAtStart,
+      tokensIn: input.usage.tokensIn,
+      tokensOut: input.usage.tokensOut,
+      // The same optional accounting the chat path records (1.28): undefined
+      // stays NULL, a reported zero stays a zero.
+      cacheReadTokens: input.usage.cacheReadTokens,
+      cacheWriteTokens: input.usage.cacheWriteTokens,
+      reasoningTokens: input.usage.reasoningTokens,
+      status: input.status,
+      durationMs: input.durationMs,
+      taskId,
+      runId: runId ?? null,
+    });
+  };
+
   const llmStream = async function* (
     request: CompletionRequest,
   ): AsyncGenerator<StreamChunk, void, unknown> {
     const signal = request.signal ?? stopSignal;
-    for await (const event of routerStream({ ...request, signal })) {
-      switch (event.type) {
-        case 'token':
-          yield { type: 'token', text: event.text };
-          break;
-        case 'usage':
-          yield { type: 'usage', usage: event.usage };
-          break;
-        case 'tool_call':
-          yield { type: 'tool_call', call: event.call };
-          break;
-        case 'done':
-          yield { type: 'done', finishReason: event.finishReason };
-          break;
-        case 'provider':
-          emit('provider', {
-            providerId: event.provider.id,
-            providerName: event.provider.name,
-            modelId: event.modelId,
-            attempt: event.attempt,
-          });
-          break;
-        case 'switched':
-          emit('switched', {
-            from: event.from.id,
-            to: event.to.id,
-            reason: event.reason,
-            message: event.message,
-          });
-          break;
-        default:
-          break;
+    const startedAt = Date.now();
+    // Accumulated rather than overwritten: a request is one row, and an adapter
+    // that reports usage in more than one chunk reported it for one request.
+    let observed: TokenUsage | null = null;
+    let provider: ProviderRecord | null = null;
+
+    try {
+      for await (const event of routerStream({ ...request, signal })) {
+        switch (event.type) {
+          case 'token':
+            yield { type: 'token', text: event.text };
+            break;
+          case 'usage':
+            observed =
+              observed === null
+                ? event.usage
+                : {
+                    tokensIn: observed.tokensIn + event.usage.tokensIn,
+                    tokensOut: observed.tokensOut + event.usage.tokensOut,
+                  };
+            yield { type: 'usage', usage: event.usage };
+            break;
+          case 'tool_call':
+            yield { type: 'tool_call', call: event.call };
+            break;
+          case 'done':
+            yield { type: 'done', finishReason: event.finishReason };
+            break;
+          case 'provider':
+            provider = event.provider;
+            emit('provider', {
+              providerId: event.provider.id,
+              providerName: event.provider.name,
+              modelId: event.modelId,
+              attempt: event.attempt,
+            });
+            break;
+          case 'switched':
+            emit('switched', {
+              from: event.from.id,
+              to: event.to.id,
+              reason: event.reason,
+              message: event.message,
+            });
+            break;
+          default:
+            break;
+        }
       }
+    } catch (error) {
+      // A request that failed part-way is still a request the provider may have
+      // billed, so whatever it reported before the failure is recorded as
+      // `partial` — and only when it reported something. Zero tokens is written
+      // for a request whose usage was never reported: "unknown tokens" must not
+      // enter the log as "no tokens", which is the same line `usage.ts` draws
+      // between unpriced and free. The failure itself is the run's row to carry.
+      if (observed !== null && provider !== null) {
+        recordRequestUsage({
+          provider,
+          usage: observed,
+          status: 'partial',
+          durationMs: Date.now() - startedAt,
+        });
+      }
+      throw error;
+    }
+
+    if (observed !== null && provider !== null) {
+      recordRequestUsage({
+        provider,
+        usage: observed,
+        status: 'ok',
+        durationMs: Date.now() - startedAt,
+      });
     }
   };
 
@@ -126,7 +238,14 @@ export function createAgentContext(input: AgentContextInput): AgentContext {
     request: CompletionRequest,
   ): Promise<{ text: string; usage: TokenUsage }> => {
     const signal = request.signal ?? stopSignal;
+    const startedAt = Date.now();
     const result = await routerComplete({ ...request, signal });
+    recordRequestUsage({
+      provider: result.provider,
+      usage: result.usage,
+      status: 'ok',
+      durationMs: Date.now() - startedAt,
+    });
     return { text: result.text, usage: result.usage };
   };
 
@@ -139,6 +258,10 @@ export function createAgentContext(input: AgentContextInput): AgentContext {
       timeoutMs: options?.timeoutMs,
       signal: stopSignal,
       ...(codeTaskId === undefined ? {} : { taskId: codeTaskId }),
+      // The run that asked, so the process registry can attribute a running
+      // command to the run whose output it will appear in (S3). A headless run has
+      // no id, and the entry then binds the task alone.
+      ...(runId === undefined ? {} : { runId }),
     });
 
   const artifactServices = {
@@ -155,8 +278,12 @@ export function createAgentContext(input: AgentContextInput): AgentContext {
   const restoreArtifactVersion: AgentContext['restoreArtifactVersion'] = (artifact) =>
     restoreCodeArtifactVersion(artifact, artifactServices);
 
+  // Filtered by the Plugins hub (1.34): a skill switched off for this tool is
+  // not offered to it, so the model cannot recommend what it is not allowed to
+  // run. The library read is untouched — the skill is still installed and still
+  // listed in Settings, with the switch that hid it.
   const getSkillsSummary = (): { name: string; description: string }[] =>
-    skillsSummary().map((skill) => ({ name: skill.name, description: skill.description }));
+    skillsAvailableTo(tool).map((skill) => ({ name: skill.name, description: skill.description }));
 
   return {
     taskId,
