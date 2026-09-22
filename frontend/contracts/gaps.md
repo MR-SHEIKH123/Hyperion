@@ -14,12 +14,21 @@ behavior in the browser.
   `attention.queue` is `implemented` here, and so is `attention.interrupted`: the `TaskRun`
   union gained the `interrupted` state on 2026-09-21 (migration `020`, written by boot
   reconciliation), so an interruption is a state the backend holds rather than one this
-  frontend derives. One thing it does not close: there is still no per-project active-task
-  listing.
+  frontend derives. One thing it did not close, and which the entry below now
+  records: there was no per-project active-task listing.
 - ~~No way to see what an interrupted run left.~~ **Closed for Code 2026-09-21 (1.31)** —
   read and screen; see the fuller entry below, which `tasks.recovery` is declared
   `partial` against.
-- No complete per-project active-task listing for switch warnings.
+- ~~No complete per-project active-task listing for switch warnings.~~ **Backend closed
+  2026-09-22**, and the client with it: `GET /api/projects/:id/tasks` lists every
+  unfinished task in the project — all three tools, the latest run per `(tool, taskId)`,
+  the four active states, per-state counts — and reports `unattributedActive` for active
+  runs that name no project (started with nothing open, or written before migration `027`)
+  rather than folding them into whichever project is open. What is **still** missing is the
+  surface: `api/projects.ts` has `getProjectTasks` and nothing calls it, so no switch warning
+  is shown and the ledger row stays `partial`. The same switch is why the read exists —
+  opening another project repoints containment and drops per-task worktree assignments, so
+  work in flight keeps running and stops being visible.
 - Health summary has no backup component (`health.backup` stays `partial`).
 - ~~No explicit provider cooldown detail.~~ **Closed 2026-09-22 (1.36).**
   `ProviderPublic.cooldown` carries the class, the `until` deadline, which of the two

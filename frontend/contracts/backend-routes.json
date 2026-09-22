@@ -691,42 +691,49 @@
     {
       "method": "GET",
       "path": "/api/projects",
-      "source": "src/http/projects.ts:152",
+      "source": "src/http/projects.ts:153",
       "exposure": "frontend",
       "capability": "projects.manage"
     },
     {
       "method": "POST",
       "path": "/api/projects",
-      "source": "src/http/projects.ts:173",
+      "source": "src/http/projects.ts:174",
       "exposure": "frontend",
       "capability": "projects.manage"
     },
     {
       "method": "GET",
       "path": "/api/projects/:id",
-      "source": "src/http/projects.ts:200",
+      "source": "src/http/projects.ts:201",
       "exposure": "frontend",
       "capability": "projects.manage"
     },
     {
       "method": "PATCH",
       "path": "/api/projects/:id",
-      "source": "src/http/projects.ts:215",
+      "source": "src/http/projects.ts:216",
       "exposure": "frontend",
       "capability": "projects.manage"
     },
     {
       "method": "POST",
       "path": "/api/projects/:id/open",
-      "source": "src/http/projects.ts:240",
+      "source": "src/http/projects.ts:241",
+      "exposure": "frontend",
+      "capability": "projects.manage"
+    },
+    {
+      "method": "GET",
+      "path": "/api/projects/:id/tasks",
+      "source": "src/http/projects.ts:284",
       "exposure": "frontend",
       "capability": "projects.manage"
     },
     {
       "method": "DELETE",
       "path": "/api/projects/:id",
-      "source": "src/http/projects.ts:263",
+      "source": "src/http/projects.ts:339",
       "exposure": "frontend",
       "capability": "projects.manage"
     },

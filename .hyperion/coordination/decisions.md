@@ -931,6 +931,25 @@ than defaulted) and **docs matching behaviour** (same commit). Run the same pass
 again whenever a surface gains a state: the fixtures are the coverage argument, so
 a new state without a fixture is an unverified claim.
 
+## The per-project active-task listing, and what a run's project is (frontend-held gap, closed 2026-09-22)
+
+`frontend/contracts/gaps.md` carried "No complete per-project active-task listing for switch warnings" and the contract row `projects.active-tasks` was `partial` with the reason "Code tasks can be listed globally; Cowork and Design have no task list." The question the frontend could not answer is the one its own project switch creates: opening another project repoints containment and drops the per-task worktree assignments, so work in flight keeps running and stops being visible — and the client only knew about the tasks it happened to have remembered (`RememberedTaskHint.projectId`, `state/task-machine/reconcile.ts`).
+
+The read did not exist because the fact it reads did not. `task_runs` recorded what a run did and when, never *where* it was scoped, and the scope (`active_project_id`) is a process-level setting that moves. Four decisions, each recorded in `docs/CONTRACTS.md`:
+
+1. **The stamp is read where the run starts, never supplied by a caller.** `startTaskRun` reads `activeProject()?.id ?? null` itself for the same reason the run's path resolution does: a caller-supplied field could disagree with the directory the run actually worked in, and a future call site could omit it and produce a run no listing can see. There is exactly one insert.
+2. **NULL means no project, and it is never guessed.** A run started with nothing open works in the default projects root, which is not a project row, and rows written before `027` have no scope recorded anywhere. Deriving an answer from the setting at read time, or backfilling, would attribute old work to whichever project the user last opened — the one answer a listing whose purpose is to stop somebody navigating away from live work must not give.
+3. **`ON DELETE SET NULL`.** Deregistering a project never touches the user's files, and it does not touch the record of what ran either: the run stops naming a project and keeps being the run it was. It then shows up in the unattributed count instead of disappearing.
+4. **A listing of tasks, and a typed partition of the states.** A task id is reused across attempts and continuations, so only the latest run per `(tool, taskId)` is listed — the same run `GET /api/{tool}/tasks/:taskId/state` answers with, ordering and `rowid` tie-break mirrored in `latestRunForTask`. `TERMINAL_RUN_STATES`/`ACTIVE_RUN_STATES` are `Record`s over the vocabulary, so a new state fails the build until somebody classifies it; a hand-written "not in this list" filter would drop one silently and render as an empty listing nobody reports.
+
+The route answers `{project, active, tasks, counts, unattributedActive}`. `unattributedActive` is the honest half of the same question: it counts active runs that name no project, so a client can say "something else is running" rather than presenting the per-project number as the whole answer. `counts` carries every key at zero so "none" and "not said" stay distinguishable.
+
+**What is still not built:** no frontend surface calls the client, so no switch warning renders and the ledger row stays `partial` — the status describes how far the frontend has got with the requirement, not what the backend serves. `frontend/src/api/projects.ts` gained `getProjectTasks` with its wire schema, so the contract is complete for whoever builds the warning, and `gaps.md` says so.
+
+**One defect found and fixed on the way.** `wire/projects.ts` required an `updatedAt` on every project, and the backend has never sent one (`listProjects()` returns `id, name, path, managed, createdAt, lastOpenedAt`), so the whole module would have answered `invalid_response` the first time anything called it. Nothing did, so nothing noticed — the reason the new wire test parses the shapes the routes actually return (`frontend/src/contracts/wire/projects.test.ts`, **9 cases**) instead of asserting what the schemas say.
+
+Numbers: migration `027` (`project_id` + `idx_task_runs_project`); `GET /api/projects/:id/tasks` (route snapshot **184**, was 183); `test/projecttasks.test.ts` **13 cases** and `test/migration027.test.ts` **3** — the latter builds a pre-`027` database from the migration files on disk, keeps a legacy row with `project_id` NULL, and proves `ON DELETE SET NULL` with foreign keys on, which is how the app runs them.
+
 ## Prompt-1 scope — status (2026-09-21, verified against the code, not transcribed)
 
 "Prompt 1" is not a document in this repo and never was — it is the working name

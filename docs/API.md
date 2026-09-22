@@ -2359,6 +2359,52 @@ server.
 Switching is a clean boundary, not a union: the previous project's paths are
 refused immediately afterwards.
 
+### `GET /api/projects/:id/tasks`  *(new 2026-09-22)*
+
+What in this project has not finished yet — the read a **switch warning** is made
+of. Opening another project repoints containment and drops the per-task worktree
+assignments, so a run that is in flight keeps running and stops being visible;
+this is how a client can name what is being left behind before the user clicks.
+
+```json
+{
+  "project": { "id": "8f3c…", "name": "Hyperion", "path": "C:\\…\\Hyperion", "managed": false,
+               "createdAt": 1765000000000, "lastOpenedAt": 1765100000000 },
+  "active": true,
+  "tasks": [
+    { "tool": "code", "taskId": "t-4c1…", "runId": "r-9ab…", "state": "blocked",
+      "pauseReason": "approval_required", "chatId": null,
+      "startedAt": 1765200000000, "updatedAt": 1765200300000 }
+  ],
+  "counts": { "total": 1, "running": 0, "paused": 0, "blocked": 1, "ready_for_review": 0 },
+  "unattributedActive": 0
+}
+```
+
+- **Tasks, not runs.** A task id can be run more than once (a retry, a
+  continuation) and only the latest run per `(tool, taskId)` is listed, the same
+  run `GET /api/{tool}/tasks/:taskId/state` answers with — so `tasks[0].runId` is
+  the run a client would watch, and `counts.total` counts tasks.
+- **Active means unfinished.** `running`, `paused`, `blocked` and
+  `ready_for_review` are listed, including across all three tools. A run parked on
+  an approval has not ended; it is the one most worth mentioning before somebody
+  navigates away. Terminal states (`complete`, `error`, `stopped`, `interrupted`)
+  are not history here and are omitted.
+- **`active`** says whether this is the project the tools are scoped to right now
+  (`activeId` of `GET /api/projects`), which decides whether the warning reads as
+  "you are leaving this" or "you are coming back to this".
+- **`unattributedActive`** is the count of active runs that name **no** project —
+  started with nothing open, or written before migration `027` recorded a scope.
+  They are never folded into whichever project happens to be open; the count is
+  how a client can say "something else is running" instead of presenting the
+  per-project number as the whole answer. It reaches zero for old rows only by
+  those runs finishing.
+- **`counts`** carries every key at zero, so a client branching on
+  `counts.blocked` never has to tell "none" from "not said".
+
+`404 not_found` for an unknown id (with `details.projectId`), like the other
+per-project reads.
+
 ### `DELETE /api/projects/:id`
 
 ```json

@@ -164,7 +164,7 @@
       "method": "GET",
       "expectedPath": "/api/projects/:id/tasks",
       "status": "partial",
-      "reason": "Code tasks can be listed globally; Cowork and Design have no task list."
+      "reason": "Backend complete 2026-09-22: every unfinished task in the project, all three tools, latest run per task, per-state counts, and `unattributedActive` for active runs that name no project rather than folding them in. `api/projects.ts` has `getProjectTasks`. Still partial because no surface calls it, so no switch warning is rendered."
     },
     {
       "id": "health.summary",

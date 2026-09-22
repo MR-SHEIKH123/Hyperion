@@ -5708,3 +5708,59 @@ named, `ask` refusing with `approval_required`, idle expiry inside the absolute 
 and the cap itself, a token from another session, a body field claiming a bypass,
 containment outside the scope, task ownership against a real worktree, the capability
 gate switching a bypassed command off, and the output bound.
+
+## A run's project is stamped when it starts, and never derived *(added 2026-09-22)*
+
+**Who depends on this:** `GET /api/projects/:id/tasks` and the switch warning a
+frontend builds on it; every `startTaskRun` call site (the Code run route, the
+Cowork scheduled runs, the Design run route, and continuation), which must not
+have to pass the project and must not be able to disagree with it.
+
+`task_runs.project_id` (migration `027`) answers "where was this run working?".
+The obvious cheaper answer — read `active_project_id` at read time — is wrong for
+the same reason the column exists: the setting moves. A run begun in project A
+and still running after the user opens project B is work in A, and a switch
+warning that attributed it to B would tell the user they were leaving nothing
+behind at the exact moment they were.
+
+**The value is read where the row is written.** `startTaskRun` reads
+`activeProject()?.id ?? null` itself rather than taking a field from its caller.
+The two facts then come from one source: the project stamped on the row and the
+project whose directory the run's path resolution resolved against. A caller
+that passed its own answer could disagree with where the work happened, and a
+future call site that omitted the field would produce a run the listing cannot
+see — the failure mode of this whole read is silent invisibility, not an error.
+
+**NULL is a real state and is never backfilled.** It means "no project": the run
+started with nothing open (the default projects root is not a project row), or
+the row predates `027` and no scope was ever recorded. `activeTaskRuns(null)`
+returns exactly that half, and the listing reports its length as
+`unattributedActive` beside the per-project list — a client can then say
+"something else is running" instead of presenting a partial answer as the whole
+one. Guessing from the current setting would be worse than the absence, so
+nothing is guessed, and old rows only leave that count by finishing.
+
+**Deleting a project un-attributes its runs rather than dropping them.** The
+column is `ON DELETE SET NULL`, matching `deleteProject`'s rule that deregistering
+a project never destroys the user's files; it does not destroy the record of what
+ran either. The consequence is deliberate: a run whose project came off the list
+appears in `unattributedActive`.
+
+**The listing is tasks, not runs, and its states come from a typed partition.**
+A task id is reused across attempts and a continuation is a new run id, so only
+the latest run per `(tool, taskId)` is listed — the same run
+`GET /api/{tool}/tasks/:taskId/state` answers with, with the ordering (including
+the `rowid` tie-break) mirrored in `latestRunForTask`. `ACTIVE_RUN_STATES` and
+`TERMINAL_RUN_STATES` are `Record`s over `TaskRunState`, so adding a state fails
+the build until it is classified; a hand-maintained "everything except these"
+filter would silently drop one, and an empty listing is not a bug anybody
+reports. `blocked` and `ready_for_review` are active on purpose: a run parked on
+an approval has not ended, and it is the one most worth naming before the user
+navigates away from it.
+
+`test/projecttasks.test.ts` — **13 cases** (stamping, non-re-attribution across a
+switch, the active-state set, latest-run-per-task, the unattributed half, and the
+route itself including the deregistered-project case); `test/migration027.test.ts`
+— **3 cases** (a pre-`027` database built from the migration files on disk: legacy
+rows survive with NULL, `ON DELETE SET NULL` under enforced foreign keys, and a
+`project_id` naming no project is refused).

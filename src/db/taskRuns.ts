@@ -21,6 +21,7 @@
 
 import { getDb } from './adapter.ts';
 import { closeApprovals } from './approvals.ts';
+import { activeProject } from './projects.ts';
 import { clearConversation } from './taskMessages.ts';
 import { createLogger } from '../util/logger.ts';
 
@@ -58,6 +59,52 @@ export type TaskRunState =
   | 'stopped'
   | 'interrupted';
 
+/**
+ * The states a run has *finished* in — nothing is executing, nothing is waiting
+ * on a decision, and no process is needed to make the row mean anything.
+ */
+export type TerminalTaskRunState = 'complete' | 'error' | 'stopped' | 'interrupted';
+
+/** Everything that is not terminal — the runs a switch warning is about. */
+export type ActiveTaskRunState = Exclude<TaskRunState, TerminalTaskRunState>;
+
+/**
+ * The two halves of the vocabulary, written so they cannot fall out of step.
+ *
+ * `TERMINAL_STATES` fixes the terminal set; `ACTIVE_STATES` is a `Record` over
+ * everything that is **not** terminal, so a state added to `TaskRunState` fails
+ * the build here until somebody decides which half it belongs to. The
+ * alternative — a hand-maintained "not in this list" filter at the call site —
+ * drops a new state silently, and the failure mode of a listing is an empty
+ * screen that nobody reports as a bug.
+ *
+ * `blocked` and `ready_for_review` are active on purpose: a run parked on an
+ * approval has not ended, and the person deciding whether it is safe to switch
+ * away from a project is exactly the person who needs to be told something in it
+ * is still waiting for them.
+ */
+const TERMINAL_STATES: Record<TerminalTaskRunState, true> = {
+  complete: true,
+  error: true,
+  stopped: true,
+  interrupted: true,
+};
+
+const ACTIVE_STATES: Record<Exclude<TaskRunState, TerminalTaskRunState>, true> = {
+  running: true,
+  paused: true,
+  blocked: true,
+  ready_for_review: true,
+};
+
+export const TERMINAL_RUN_STATES = Object.keys(TERMINAL_STATES) as TerminalTaskRunState[];
+export const ACTIVE_RUN_STATES = Object.keys(ACTIVE_STATES) as ActiveTaskRunState[];
+
+/** The active half, when a caller has a state it read rather than wrote. */
+export function isActiveRunState(state: TaskRunState): state is ActiveTaskRunState {
+  return (ACTIVE_RUN_STATES as readonly TaskRunState[]).includes(state);
+}
+
 /** Tools that own a task run. Chat has `chat_runs` and its own state machine. */
 export type TaskRunTool = 'code' | 'cowork' | 'design';
 
@@ -82,6 +129,23 @@ export interface TaskRun {
    * sentence would put a prose edit between the user and every continuation.
    */
   continuedFrom: string | null;
+  /**
+   * The project this run was scoped to when it started (migration `027`), or
+   * null when there is no project to name.
+   *
+   * Read at the moment the row is written rather than passed in by the caller,
+   * because the value has to agree with the directory the run's own path
+   * resolution reads — both come from `active_project_id`, and a caller that
+   * supplied its own answer could disagree with where the run actually worked.
+   * That also means no future call site can forget it and produce an
+   * invisible run: there is exactly one place that starts a run.
+   *
+   * Null is a real state and not an error: a run started with nothing open works
+   * in the default projects root, which is not a project row, and rows written
+   * before `027` have no scope recorded anywhere. The listing that reads this
+   * reports those as unattributed instead of guessing.
+   */
+  projectId: string | null;
   startedAt: number;
   updatedAt: number;
   completedAt: number | null;
@@ -95,6 +159,7 @@ interface TaskRunRow {
   state: string;
   pause_reason: string | null;
   continued_from: string | null;
+  project_id: string | null;
   error_code: string | null;
   error_message: string | null;
   started_at: number;
@@ -111,6 +176,7 @@ function mapRow(row: TaskRunRow): TaskRun {
     state: row.state as TaskRunState,
     pauseReason: row.pause_reason,
     continuedFrom: row.continued_from ?? null,
+    projectId: row.project_id ?? null,
     errorCode: row.error_code,
     errorMessage: row.error_message,
     startedAt: row.started_at,
@@ -134,16 +200,33 @@ export interface StartTaskRunInput {
  * `INSERT OR REPLACE` on the primary key: a retried run id is the same run
  * being restarted, and leaving the old terminal row in place would make a
  * reconnecting client believe a task that is running right now had finished.
+ *
+ * The project stamp is read here, from the same setting the run's own path
+ * resolution reads (`active_project_id` through `fsScope`), so the row cannot
+ * claim a directory the run was not scoped to. A continuation is stamped the
+ * same way as a fresh run — with the project that is open when it starts —
+ * because that is where it is actually working; inheriting the parked run's
+ * project would name a directory this run may not resolve a single path in.
  */
 export function startTaskRun(input: StartTaskRunInput): TaskRun {
   const now = Date.now();
+  const projectId = activeProject()?.id ?? null;
   getDb()
     .prepare(
       `INSERT OR REPLACE INTO task_runs
-         (run_id, task_id, tool, chat_id, continued_from, state, started_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, 'running', ?, ?)`,
+         (run_id, task_id, tool, chat_id, continued_from, project_id, state, started_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?)`,
     )
-    .run(input.runId, input.taskId, input.tool, input.chatId ?? null, input.continuedFrom ?? null, now, now);
+    .run(
+      input.runId,
+      input.taskId,
+      input.tool,
+      input.chatId ?? null,
+      input.continuedFrom ?? null,
+      projectId,
+      now,
+      now,
+    );
   return requireTaskRun(input.runId);
 }
 
@@ -364,13 +447,58 @@ function requireTaskRun(runId: string): TaskRun {
 export function latestRunForTask(tool: TaskRunTool, taskId: string): TaskRun | null {
   const row = getDb()
     .prepare<TaskRunRow>(
+      // `rowid` breaks ties on equal `started_at`: two attempts of one task can
+      // start inside the same millisecond (a retry of a fast failure), and
+      // "whichever row SQLite happened to reach first" is not an answer a
+      // caller can reason about. The rowid is insertion order, so the tie goes
+      // to the attempt that was actually started last.
       `SELECT * FROM task_runs
         WHERE tool = ? AND task_id = ?
-        ORDER BY started_at DESC
+        ORDER BY started_at DESC, rowid DESC
         LIMIT 1`,
     )
     .get(tool, taskId);
   return row ? mapRow(row) : null;
+}
+
+/**
+ * Every task in one project that has not finished yet, newest first.
+ *
+ * `projectId: null` asks the other half of the same question — the runs with no
+ * project to name. The two calls together are what the listing route reports, so
+ * a caller cannot present the per-project answer as complete while unattributed
+ * runs exist, and the query is written once rather than twice.
+ *
+ * Two rules shape the SQL:
+ *
+ * - **Only the latest run for a task.** A task id can be run again — a retry, a
+ *   continuation — and the states are one-way, so an older row for the same
+ *   `(tool, task_id)` is history. Listing both would count one task twice, which
+ *   is exactly the number a switch warning is made of. The ordering mirrors
+ *   `latestRunForTask` down to its tie-break, so the two cannot disagree about
+ *   which run is current.
+ * - **Terminal states are excluded.** A finished run is not something to warn
+ *   about; the point of the read is work that is still going or still waiting.
+ *   The set comes from `ACTIVE_RUN_STATES`, whose typing makes a new state a
+ *   compile error until it is classified.
+ */
+export function activeTaskRuns(projectId: string | null): TaskRun[] {
+  const placeholders = ACTIVE_RUN_STATES.map(() => '?').join(', ');
+  const rows = getDb()
+    .prepare<TaskRunRow>(
+      `SELECT * FROM task_runs r
+        WHERE r.project_id IS ?
+          AND r.state IN (${placeholders})
+          AND r.run_id = (
+                SELECT r2.run_id FROM task_runs r2
+                 WHERE r2.tool = r.tool AND r2.task_id = r.task_id
+                 ORDER BY r2.started_at DESC, r2.rowid DESC
+                 LIMIT 1
+              )
+        ORDER BY r.started_at DESC, r.run_id DESC`,
+    )
+    .all(projectId, ...ACTIVE_RUN_STATES);
+  return rows.map(mapRow);
 }
 
 /**
