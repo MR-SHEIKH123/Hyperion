@@ -31,11 +31,15 @@ const TASK_TOOL_LABEL: Record<'code' | 'cowork' | 'design', string> = {
  * frontend URLs would have to be redeployed every time a route moved. The shell
  * owns its own URL space, so the shell is where the translation happens.
  *
- * The task tools have no workspace surface yet, so those items link to the tool's
- * honest placeholder *with the ids attached*: the placeholder names the task and
- * says the live view does not exist. A dead-looking row with no link at all would
- * be worse — the queue is where the user learns the task is waiting, and it has to
- * take them somewhere that tells them the truth.
+ * What a task item points at depends on whether the tool has a surface, and the
+ * answer changed under this comment once. Code has one — a Code item is a real deep
+ * link to `/code?task=…&run=…`, and since 2026-09-22 that screen can also *continue*
+ * the parked run, which is what the queue's own notice tells the user to do. Cowork
+ * and Design do not, so their items link to the tool's honest placeholder *with the
+ * ids attached*, and the destination carries a caveat saying so rather than letting
+ * the user discover it. A dead-looking row with no link at all would be worse — the
+ * queue is where the user learns the task is waiting, and it has to take them
+ * somewhere that tells them the truth.
  *
  * One kind is deliberately not actionable from here: an orphaned worktree carries
  * a `resolve` call that *deletes a directory*, and a queue row is one mis-click
