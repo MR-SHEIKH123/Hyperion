@@ -289,6 +289,40 @@ export function claimParkedRun(runId: string): boolean {
   return changed !== 0;
 }
 
+/**
+ * Put a claimed run back the way it was, because the continuation never started.
+ *
+ * `claimParkedRun` moves the park to `running` and the route only gets as far as
+ * starting a new run *inside* the lane. Between those two points there is a wait:
+ * a Code continuation queues behind the lane, and the wait can end without a
+ * continuation — the client disconnects (which aborts the lane waiter, since the
+ * SSE stream is the run's own liveness) or the queue times out. Measured against
+ * the tree, the run was left `running` with no process behind it: `requireContinuable`
+ * refuses it (`not parked`), the next boot demotes it to `interrupted`, and the
+ * user's park was gone because they closed a tab.
+ *
+ * So the claim is released, and the guard is the mirror of the claim's: only a row
+ * that is still `running` *and* has no continuation of its own moves. `state` and
+ * `pauseReason` come from the row read before the claim, which is the only place
+ * they exist — `claimParkedRun` overwrote neither, but nothing else knows what the
+ * park was waiting on.
+ *
+ * Returns whether the release happened. `false` is not an error: it means a
+ * continuation did start, and its own state is the truth.
+ */
+export function releaseParkedRun(
+  runId: string,
+  parked: { state: 'blocked' | 'ready_for_review'; pauseReason: string | null },
+): boolean {
+  const changed = getDb()
+    .prepare(
+      `UPDATE task_runs SET state = ?, pause_reason = ?, updated_at = ?
+        WHERE run_id = ? AND state = 'running'`,
+    )
+    .run(parked.state, parked.pauseReason, Date.now(), runId).changes;
+  return changed !== 0;
+}
+
 export function getTaskRun(runId: string): TaskRun | null {
   const row = getDb()
     .prepare<TaskRunRow>('SELECT * FROM task_runs WHERE run_id = ?')

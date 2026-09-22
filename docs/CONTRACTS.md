@@ -5396,3 +5396,47 @@ continuation one is the fact worth repeating here: approving a prompt records a
 decision and deliberately does not start the agent, nothing in the frontend posts
 `/continue`, and the Attention Center's own copy tells the user to "open the task and
 continue it" — which no screen can do.
+
+## A claim is not a run *(added 2026-09-22)*
+
+`POST /api/{tool}/tasks/:taskId/continue` takes the parked run's row *before* it waits
+for anything: `claimParkedRun` flips `blocked`/`ready_for_review` to `running` in one
+conditional UPDATE, and that transition is the mutex standing between two clients and
+two agents in one worktree. The claim has to happen before the lane is awaited,
+because a park that stayed parked until a slot opened could be claimed twice — the
+same order `run-task` uses for a fresh run.
+
+The run's *own* row is written later, inside the lane. That leaves a window in which
+the claim exists and the continuation does not, and both ends of the window are
+reachable in normal use:
+
+- **A full lane in `reject` mode.** The lane raises `busy` after the claim, so the
+  response is an SSE error frame and the parked row is left `running`.
+- **A stream abandoned while queued.** The SSE connection is the run's own liveness —
+  `acquireCodeLane` is handed `AbortSignal.any([sse.signal, cancellable.signal])` — so a
+  closed tab aborts the waiter with `aborted`, again after the claim.
+
+Measured against the tree before it was fixed, the consequence was not subtle: the run
+stayed `running` with no process behind it, `requireContinuable` then refused every
+later attempt with `not parked`, and the next boot's reconciliation demoted it to
+`interrupted`. A user who closed a tab lost their park and could only re-run the task
+from scratch.
+
+So the claim is released when the continuation's own run row does not exist. Three
+properties make the release safe rather than a second race:
+
+- **The guard mirrors the claim's.** Only a row still `running` moves, so a
+  continuation that did start — and therefore superseded the park to `complete` — can
+  never be un-started by the failure of a later attempt.
+- **The park is restored from the row read before the claim**, because that is the
+  only place its state and reason still exist: `claimParkedRun` overwrites the state
+  and stores no memory of what it was.
+- **It is conditional on the continuation's row, not on the error.** A failure raised
+  after `startTaskRun` belongs to that run and is recorded on it; only a failure
+  raised before it belongs to the claim.
+
+`releaseParkedRun` is exported from `db/taskRuns.ts` rather than inlined in the route,
+so the guard is testable without a real worktree and a real git repository — the case
+that needs both (a continuation that parks, supersedes, and *then* fails) is exactly
+the one that cannot be produced over HTTP here, and it is the case the guard exists
+for.

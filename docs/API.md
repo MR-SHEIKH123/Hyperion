@@ -1921,7 +1921,14 @@ exists to continue.
 **Continuing** resumes a parked task as an SSE stream. Validation, the claim and
 the module lookup all happen **before** the response becomes a stream, so every
 refusal is JSON a client can read rather than an error buried in an SSE frame — the
-same discipline `run-task` follows. The body may carry `approvalId`/`decision` to
+same discipline `run-task` follows. **The claim is released when no continuation
+starts**: the parked run is moved to `running` before the Code lane is awaited (that
+transition is the mutex, and it has to be taken while queued or a park could be
+claimed twice), so a wait that ends without a run — a `reject`-mode refusal on a full
+lane, or a client whose stream dropped while queued — would otherwise leave the run
+`running` with nothing behind it, uncontinuable (`not parked`) and demoted to
+`interrupted` on the next boot. The release writes the park back with the state and
+reason it had, and only while no continuation of its own exists. The body may carry `approvalId`/`decision` to
 resolve an approval and continue in one call. Answering an **expired** prompt is
 refused here (409, `details.reason: "expired"`, with the configured `waitHours`) and
 in its own words — `already_resolved` would say somebody answered it, and nobody did.
