@@ -29,6 +29,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { getDb } from './adapter.ts';
+import { settleTicketForDecision, voidTicketsForApprovals, voidTicketsForTask } from './approvalTickets.ts';
 import { AppError } from '../util/errors.ts';
 
 import type { PermissionAction, PermissionLayer, PermissionRule } from '../types/core.ts';
@@ -274,6 +275,9 @@ export function expireStaleApprovals(input: { ttlMs: number; now?: number }): Pe
     if (expire.run(now, approval.id).changes === 0) continue;
     expired.push({ ...approval, state: 'expired', resolvedAt: now });
   }
+  // The question's deadline is the ticket's deadline (S1): a ticket that outlived
+  // its prompt would be an authorisation nobody is waiting on any more.
+  voidTicketsForApprovals(expired.map((approval) => approval.id), now);
   return expired;
 }
 
@@ -304,6 +308,12 @@ export function resolveApproval(
   if (approval === null) {
     throw new AppError('not_found', `No approval "${id}" was found.`, { details: { approvalId: id } });
   }
+
+  // The ticket moves with the answer, and only when this call is the one that
+  // answered. A loser of the race must not arm an authorisation it did not grant
+  // — the same reason the state update above is guarded rather than read-then-write
+  // (S1).
+  if (updated.changes !== 0) settleTicketForDecision(id, decision);
   return { approval, applied: updated.changes !== 0 };
 }
 
@@ -366,6 +376,13 @@ export function closeApprovals(taskId: string): number {
         WHERE task_id = ? AND state = 'allow_session'`,
     )
     .run(now, taskId);
+  // Every ticket the task still holds goes with it (S1): an `allow_once` ticket
+  // that survived a task's ending could be spent by a later run that reused the
+  // id, and a `standing` one records a session allowance that has just been
+  // cleared. Voiding by task rather than by approval state is deliberate — the
+  // question here is "is this task still authorised to do anything?", and the
+  // answer does not depend on how each individual approval was answered.
+  voidTicketsForTask(taskId, now);
   return expired.changes + cleared.changes;
 }
 

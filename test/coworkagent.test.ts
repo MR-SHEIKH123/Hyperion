@@ -51,6 +51,10 @@ function context(
       async complete() { return { text: '', usage: { tokensIn: 0, tokensOut: 0 } }; },
     },
     saveArtifactVersion: () => ({ version: options.artifacts?.[artifactIndex++]?.version ?? 1 }),
+    // The agent binds an approval ticket to the workspace its tools resolve
+    // against (S1); Cowork's tools stay inside the projects scope, so the stub
+    // answers the same shape the real context does.
+    resolvePath: (candidate: string) => `/projects/demo/${candidate}`,
     signal: new AbortController().signal,
     log: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
   } as unknown as AgentContext;

@@ -330,6 +330,15 @@ async function runCodeInternal(
       profile,
       permissions,
       policy,
+      // What an approval ticket binds beyond the call itself (S1). The worktree
+      // root, not the requested path: the point of binding it is that a call
+      // approved in this worktree is not honoured in another one. A delegated
+      // child names the task it was delegated from, which is what makes "the same
+      // approval" mean the same delegation rather than merely the same arguments.
+      ticketBinding: {
+        workspace: projectRoot,
+        ...(runtime.depth === 1 ? { parentTaskId: runtime.shared.parentTaskId } : {}),
+      },
       run: runTool,
       // See cowork/agent.ts: the per-run flag wins, and the dependency survives
       // only as a test override.

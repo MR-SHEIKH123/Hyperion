@@ -65,6 +65,7 @@
  * committed. Different trade-off, different default.
  */
 
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 
 import { findSensitive } from '../../util/redact.ts';
@@ -448,6 +449,36 @@ export function evaluate(input: EvaluateInput): PermissionVerdict {
 }
 
 /**
+ * The effective stack's own revision (S1).
+ *
+ * An approval binds the permission configuration that was in effect when the user
+ * was asked, so the same stack has to be recognisable later. This is a hash of the
+ * *resolved* layers — each layer's name and rules, in evaluation order — plus the
+ * tool set, because that is what "the configuration" means to an evaluation: two
+ * spellings of one rule file that resolve to the same rules are the same
+ * configuration, and a rule added to a layer the run never consults is not a change
+ * to *this* run's authority.
+ *
+ * Deliberately not a counter in the settings table. A counter would need every
+ * writer of every permission source to remember to bump it — a project file is
+ * edited in an editor, not through this process — and a revision nobody bumps is
+ * worse than none, because it reads as a check. A hash of the resolved rules is
+ * derived from the same inputs the engine itself uses, so it cannot disagree with
+ * them.
+ */
+export function permissionRevision(input: {
+  layers: readonly PermissionLayerInput[];
+  knownTools: ReadonlySet<string>;
+}): string {
+  const parts = input.layers.map(({ layer, rules }) => {
+    const keys = Object.keys(rules).sort();
+    return `${layer}:${keys.map((key) => `${key}=${JSON.stringify(rules[key])}`).join(';')}`;
+  });
+  parts.push(`tools:${[...input.knownTools].sort().join(',')}`);
+  return createHash('sha256').update(parts.join('|'), 'utf8').digest('hex').slice(0, 32);
+}
+
+/**
  * Bind a layer stack to a resolver the loop can call per tool call.
  *
  * The stack is assembled once per run, not per call: the project file is read at
@@ -459,9 +490,9 @@ export function createPermissionResolver(input: {
   knownTools: ReadonlySet<string>;
   /** See `EvaluateInput.pathResolver` — bound here so the loop's hot path stays one call. */
   pathResolver?: (candidate: string) => string;
-}): (call: { call: ToolCall; effect: ToolEffect }) => PermissionVerdict {
+}): RevisionedResolver {
   assertNoPermissionKeyCollisions(input.knownTools);
-  return ({ call, effect }) =>
+  const resolver: RevisionedResolver = ({ call, effect }) =>
     evaluate({
       call,
       effect,
@@ -469,6 +500,24 @@ export function createPermissionResolver(input: {
       knownTools: input.knownTools,
       ...(input.pathResolver === undefined ? {} : { pathResolver: input.pathResolver }),
     });
+  // Carried on the resolver rather than returned beside it, because the resolver is
+  // the only object that is *provably* the stack the engine will consult. An agent
+  // that resolved its layers somewhere else and computed a revision from a second
+  // reading would be checking a rule file against itself (S1).
+  resolver.revision = permissionRevision({ layers: input.layers, knownTools: input.knownTools });
+  return resolver;
+}
+
+/**
+ * A resolver plus the revision of the stack behind it.
+ *
+ * The revision is what an approval ticket binds, so it has to come from the same
+ * layers the engine evaluates against — see `permissionRevision` for why it is a
+ * hash of the resolved rules rather than a counter somebody has to remember to bump.
+ */
+export interface RevisionedResolver {
+  (call: { call: ToolCall; effect: ToolEffect }): PermissionVerdict;
+  revision?: string;
 }
 
 /** A one-line, loggable statement of who decided and how. */

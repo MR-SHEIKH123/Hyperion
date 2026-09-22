@@ -70,6 +70,18 @@ export interface TaskRun {
   pauseReason: string | null;
   errorCode: string | null;
   errorMessage: string | null;
+  /**
+   * The parked run this one continues, when it is a continuation (S1, migration
+   * `026`). Null for every run that started on its own.
+   *
+   * `supersede()` already wrote the link as prose in the parked row's
+   * `pause_reason` (`continued_as:<runId>`), which is the right shape for a user
+   * reading why a run ended and the wrong shape for a check: an approval ticket
+   * asks *this* direction — given the live run, is it the run the ticket was
+   * minted for, or one that records it as its predecessor? Deriving that from a
+   * sentence would put a prose edit between the user and every continuation.
+   */
+  continuedFrom: string | null;
   startedAt: number;
   updatedAt: number;
   completedAt: number | null;
@@ -82,6 +94,7 @@ interface TaskRunRow {
   chat_id: string | null;
   state: string;
   pause_reason: string | null;
+  continued_from: string | null;
   error_code: string | null;
   error_message: string | null;
   started_at: number;
@@ -97,6 +110,7 @@ function mapRow(row: TaskRunRow): TaskRun {
     chatId: row.chat_id,
     state: row.state as TaskRunState,
     pauseReason: row.pause_reason,
+    continuedFrom: row.continued_from ?? null,
     errorCode: row.error_code,
     errorMessage: row.error_message,
     startedAt: row.started_at,
@@ -110,6 +124,8 @@ export interface StartTaskRunInput {
   taskId: string;
   tool: TaskRunTool;
   chatId?: string | undefined;
+  /** Set by the continuation route: the parked run this run is carrying on. */
+  continuedFrom?: string | undefined;
 }
 
 /**
@@ -124,10 +140,10 @@ export function startTaskRun(input: StartTaskRunInput): TaskRun {
   getDb()
     .prepare(
       `INSERT OR REPLACE INTO task_runs
-         (run_id, task_id, tool, chat_id, state, started_at, updated_at)
-       VALUES (?, ?, ?, ?, 'running', ?, ?)`,
+         (run_id, task_id, tool, chat_id, continued_from, state, started_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'running', ?, ?)`,
     )
-    .run(input.runId, input.taskId, input.tool, input.chatId ?? null, now, now);
+    .run(input.runId, input.taskId, input.tool, input.chatId ?? null, input.continuedFrom ?? null, now, now);
   return requireTaskRun(input.runId);
 }
 

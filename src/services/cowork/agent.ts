@@ -424,6 +424,10 @@ export async function runCoworkTask(
       profile,
       permissions,
       policy,
+      // Cowork has no worktree to name — its tools stay inside the projects scope
+      // — so the containment root is the workspace an approval binds (S1). Same
+      // value the tools themselves resolve against, which is the whole point.
+      ticketBinding: { workspace: ctx.resolvePath('.') },
       run: runTool,
       // `input.unattended` first: it is a per-run fact. `deps.unattended` is
       // retained only as a test override, which is why it loses — before 1.27 it

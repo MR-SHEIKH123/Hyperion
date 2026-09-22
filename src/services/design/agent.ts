@@ -180,6 +180,9 @@ export async function runDesignTask(
       profile,
       permissions,
       policy,
+      // See cowork/agent.ts: Design stays inside the projects scope, so its
+      // containment root is the workspace its approvals bind (S1).
+      ticketBinding: { workspace: ctx.resolvePath('.') },
       run: runTool,
       unattended: input.unattended ?? deps.unattended ?? false,
       iterationCeiling: deps.iterationCeiling,
