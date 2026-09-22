@@ -85,15 +85,24 @@ behavior in the browser.
   Settings surface exists, and the daily-cap read is the summary's only consumer today.
   Whatever renders it must keep `rowsWithCacheReporting`/`rowsWithDuration` beside the
   rates and means, and must not show a `null` measure as zero.
-- **Nothing in the frontend posts a task continuation.** `POST /api/{tool}/tasks/:taskId/continue`
-  is the call that starts a parked run again — approving a prompt deliberately does not
-  (`continuation.ts`: "does not start the agent", it records the decision and answers
-  `continuable`) — and no client makes it: `api/tasks.ts` has `state` and `recovery`, the
-  Attention Center posts the decision and then tells the user to "open the task and continue
-  it", and the Code surface's recovery panel reports resume without actioning it. So an
-  approved run can sit parked indefinitely while the copy implies a next step. The route is
-  ready and is a `route-mismatch` row (the spec named `/resume`); what is missing is the
-  control that calls it.
+- ~~Nothing in the frontend posts a task continuation.~~ **Closed 2026-09-22.** The Code
+  surface's parked-task panel (`src/tools/code/ParkedTask.tsx`, over
+  `src/api/agentStream.ts` and `src/tools/code/useTaskContinuation.ts`) is the caller:
+  `POST /api/{tool}/tasks/:taskId/continue` is posted when the selected task's run is
+  `blocked` or `ready_for_review` — the two states `requireContinuable` accepts,
+  deliberately not `paused` — with the held call and its arguments shown first, an allow
+  posted together with the continuation in one call, and a denial sent to `/approve`
+  instead, because a denial finishes the run server-side rather than continuing it.
+  Continuing without a decision is offered too, and is the way back from an expired
+  prompt; it is refused in the panel while a prompt is outstanding, because the route
+  would only replay the call and park again. `api/tasks.ts` gained the approvals read
+  (`GET /api/{tool}/tasks/:taskId/approvals`) that the panel needs, and the Attention
+  Center's sentence now names the button it is telling the user to press. The route stays
+  a `route-mismatch` row (the spec named `/resume`) — and it is worth noting what that
+  cost: the client-half rule only requires a client of `implemented` rows, so this gap was
+  invisible to the gate and was found by hand. The related gap that remains is the one
+  under `tasks.recovery`: resuming an **interrupted** run is a re-run
+  (`POST /api/{tool}/run-task`), and no surface can start a run yet.
 - **No client posts `POST /api/settings/reload-config` (1.28).** The route re-reads and
   validates the on-disk permissions and profiles on demand, caching nothing, and is covered by
   three route cases; nothing calls it, because there is no Settings surface at all (the same

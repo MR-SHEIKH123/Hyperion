@@ -169,8 +169,10 @@ describe('the attention center', () => {
       body: JSON.stringify({ approvalId: 'a1', decision: 'allow_once' }),
     });
     // Allowing is not resuming, and the notice says so rather than implying the
-    // task has continued.
-    expect(await screen.findByText(/waiting to continue/)).toBeInTheDocument();
+    // task has continued — and it names the control that does resume it, which is
+    // `ParkedTask`'s own button (this sentence pointed at a screen with no such
+    // button until that panel landed).
+    expect(await screen.findByText(/waiting to continue — open it and press “Continue this task”/)).toBeInTheDocument();
     await waitFor(() => {
       expect(screen.queryByText('bash needs a decision')).toBeNull();
     });

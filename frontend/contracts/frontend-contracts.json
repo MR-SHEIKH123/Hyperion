@@ -78,7 +78,7 @@
       "expectedPath": "/api/{tool}/tasks/:taskId/continue",
       "status": "route-mismatch",
       "specifiedPath": "/api/{tool}/tasks/:taskId/resume",
-      "reason": "All three implemented agent tools use /continue."
+      "reason": "All three implemented agent tools use /continue. The mismatch is the path alone: the continuation control in the Code surface (`tools/code/ParkedTask.tsx` over `api/agentStream.ts`) posts `/api/{tool}/tasks/:taskId/continue`, so the implemented half of this row now has a caller, which it did not when the row was written."
     },
     {
       "id": "tasks.recovery",

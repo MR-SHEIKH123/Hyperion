@@ -163,3 +163,43 @@ export const discardWorktreeResponseSchema = z.object({
   method: z.string(),
   lostReason: z.string().nullable(),
 }).passthrough();
+
+/**
+ * What a task is waiting on (`GET /api/{tool}/tasks/:taskId/approvals`, §12.5).
+ *
+ * `arguments` is a **string, verbatim**, and it stays one here on purpose: the point
+ * of showing an approval is that the user sees exactly what would run, and parsing
+ * it into an object so the UI could pretty-print it would be a second rendering of
+ * a call that has one authoritative form — the one that gets replayed on
+ * continuation. The surface renders the string it was given.
+ *
+ * `state` and `pauseReason` are nullable because a task can be asked about with no
+ * run row at all; the pair is how a client tells "parked on a decision" from
+ * "nothing is running". `expiresAt` comes from the same setting the reaper reads, so
+ * a countdown rendered from it reaches zero when the prompt actually stops being
+ * answerable — a client that assumed the 72-hour default would disagree with the
+ * server the moment somebody changed it.
+ */
+export const taskApprovalSchema = z.object({
+  id: z.string().min(1),
+  toolName: z.string().min(1),
+  arguments: z.string(),
+  permissionKey: z.string(),
+  matchedLayer: z.string().nullable(),
+  matchedPattern: z.string().nullable(),
+  reason: z.string().nullable(),
+  createdAt: z.number(),
+  expiresAt: z.number(),
+}).passthrough();
+
+export const taskApprovalsResponseSchema = z.object({
+  tool: taskToolSchema,
+  taskId: z.string(),
+  state: taskRunStateSchema.nullable(),
+  pauseReason: z.string().nullable(),
+  count: z.number().int().nonnegative(),
+  approvals: z.array(taskApprovalSchema),
+}).passthrough();
+
+export type TaskApproval = z.infer<typeof taskApprovalSchema>;
+export type TaskApprovals = z.infer<typeof taskApprovalsResponseSchema>;

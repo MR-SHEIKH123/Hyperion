@@ -1918,7 +1918,12 @@ when a doom loop was declined), and `continuable` says whether the caller still 
 work to do: true only for an allow, and only while the run's conversation still
 exists to continue.
 
-**Continuing** resumes a parked task as an SSE stream. Validation, the claim and
+**Continuing** resumes a parked task as an SSE stream, with one exception worth
+stating because a client has to handle it: a body carrying `decision: "deny"` is
+**not** streamed. A denial ends the run (`finishDenied`), so there is no agent to
+start and nothing to watch, and the route answers JSON —
+`{ tool, taskId, runId, continued: false, state: "stopped", decision: "deny" }` — on
+the same 200. Everything else about the request is the stream below. Validation, the claim and
 the module lookup all happen **before** the response becomes a stream, so every
 refusal is JSON a client can read rather than an error buried in an SSE frame — the
 same discipline `run-task` follows. **The claim is released when no continuation
@@ -1939,6 +1944,23 @@ project rules and session permissions may all have changed while the task was
 parked, and that change is usually the reason it was continued. The last user
 message becomes the prompt — the task's own description is not replayed as a fresh
 turn, which would make the model read it twice.
+
+**The frontend calls it now** (2026-09-22). Until then nothing did: the route had
+existed since 1.24 with tests, the `tasks.continue` row was a `route-mismatch` (the
+spec named `/resume`), and the Attention Center's "open it to resume" pointed at a
+surface with no resume control — a decision could be recorded on an approval and the
+run left parked with no way to start it from the UI. The caller is
+`frontend/src/api/agentStream.ts` (`continueTask`), mounted by
+`src/tools/code/ParkedTask.tsx` in the Code surface's main region whenever the
+selected task's run is `blocked` or `ready_for_review` — the two states
+`requireContinuable` accepts, and deliberately not `paused`, which is a park with no
+continuation path. The panel posts an allow together with the continuation in one
+call, sends a denial to `/approve` instead (it is a decision, not a continuation,
+and `/approve` is idempotent), and refuses a bare continue while a prompt is
+outstanding rather than round-tripping to a `not_parked` park. The frontend's
+client-half rule in `scripts/check-contracts.mjs` only requires a client of
+`implemented` rows, so this row's `route-mismatch` status never demanded one — the
+gap was found by hand and closed by hand.
 
 **`GET /api/code/permissions`** answers the one question the layers exist for:
 *why* is this refused. It returns the layers **separately and in evaluation order**

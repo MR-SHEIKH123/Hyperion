@@ -1,6 +1,7 @@
 import {
   codeLaneSchema,
   recoveryReportSchema,
+  taskApprovalsResponseSchema,
   taskStateWithUsageResponseSchema,
   type taskToolSchema,
 } from '../contracts/wire/tasks';
@@ -43,3 +44,22 @@ export const getTaskRecovery = (tool: TaskTool, taskId: string, signal?: AbortSi
   request(`/api/${tool}/tasks/${encodeURIComponent(taskId)}/recovery`, recoveryReportSchema, {
     ...(signal === undefined ? {} : { signal }),
   });
+
+/**
+ * What this task is waiting on: the parked calls, with their arguments verbatim
+ * (§12.5).
+ *
+ * The task surface is where the full three-way decision belongs — the Attention
+ * Center offers `allow_once` and `deny` inline and says so, because a standing
+ * `allow_session` is a decision about a rule and needs the task's context in front
+ * of the person making it. This read is that context: the call, the layer that
+ * refused it, and the deadline.
+ */
+export const getTaskApprovals = (tool: TaskTool, taskId: string, signal?: AbortSignal) =>
+  request(`/api/${tool}/tasks/${encodeURIComponent(taskId)}/approvals`, taskApprovalsResponseSchema, {
+    ...(signal === undefined ? {} : { signal }),
+  });
+
+/** The decision endpoint for this task, as the queue item's own `resolve.path` spells it. */
+export const taskApprovalPath = (tool: TaskTool, taskId: string): string =>
+  `/api/${tool}/tasks/${encodeURIComponent(taskId)}/approve`;

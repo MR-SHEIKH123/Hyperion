@@ -65,12 +65,18 @@ requirement, not what the backend serves; `missing` is a gap by definition.
 `route-mismatch` is not constrained by the client half either, and that is a
 statement about what the status means rather than a hole: a mismatch records that
 the specification's path and the implemented path differ, which is a fact about
-paths and stays true whether or not a client has been written. Two mismatches have
-no client — `tasks.continue` and `settings.reload` — and they are recorded in
-`gaps.md`, which is the file that carries frontend progress. The client check is
-deliberately one-directional: it can prove that *no* client mentions a path, which is
-what makes a row's status false, and it cannot prove the right client calls it, since
-the method is not compared.
+paths and stays true whether or not a client has been written. Two mismatches had no
+client — `tasks.continue` and `settings.reload` — and **what that cost is worth
+recording, because it was paid**: `tasks.continue` was uncalled and the gate could not
+say so, since the rule only asks about `implemented` rows. It was found by hand, kept
+in `gaps.md`, and closed on 2026-09-22 by the Code surface's parked-task panel; only
+`settings.reload` still has no client, for the reason beside it (no Settings surface to
+put the control on). The client check is deliberately one-directional: it can prove
+that *no* client mentions a path, which is what makes a row's status false, and it
+cannot prove the right client calls it, since the method is not compared. A green run
+therefore means "nothing the rules check is contradicted", not "every contract has a
+consumer" — and the rows the rules cannot see are the ones this file and `gaps.md`
+have to carry by hand.
 
 The matcher is looser than a string comparison in two ways, both because of how the
 clients are written: a parameter matches anything inside one path segment (the

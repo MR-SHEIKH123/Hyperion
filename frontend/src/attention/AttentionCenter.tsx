@@ -62,7 +62,14 @@ export default function AttentionCenter() {
       setNotice(
         decision === 'deny'
           ? `Denied “${item.title}”. The run has been finalised.`
-          : `Allowed “${item.title}”. ${result.continuable ? 'The task is waiting to continue — open it to resume.' : 'Nothing else is required.'}`,
+          : `Allowed “${item.title}”. ${
+              // Answering is not resuming, and this sentence is the one place the
+              // difference is explained to a user: the decision is recorded, and the
+              // run is started by the task surface's own control
+              // (`src/tools/code/ParkedTask.tsx`). Until that panel existed this
+              // sentence pointed at a screen that had no such button.
+              result.continuable ? 'The task is waiting to continue — open it and press “Continue this task”.' : 'Nothing else is required.'
+            }`,
       );
       // The item is gone from the server's answer now; refetching is what makes the
       // row disappear rather than being optimistically removed and possibly wrong.

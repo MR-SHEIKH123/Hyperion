@@ -4,6 +4,7 @@ import { useSearchParams } from 'react-router-dom';
 
 import { getCodeLane, getTaskState } from '../../api/tasks';
 import { RecoveryPanel } from '../../components/RecoveryPanel/RecoveryPanel';
+import { ParkedTask } from './ParkedTask';
 import { CodeLaneRail, TaskSpend } from './CodeSurface';
 import { getArtifactVersions } from '../../api/provenance';
 import { TaskStateBanner } from '../../components/TaskStateBanner/TaskStateBanner';
@@ -96,6 +97,19 @@ export default function CodeTool() {
           // decision attached to it, and the frame's main region is where the
           // surface answers its own banner (1.31).
           <RecoveryPanel tool="code" taskId={taskId} />
+        ) : null}
+        {state?.kind === 'approval_required' || state?.kind === 'ready_for_review' ? (
+          // The parked states, and the only place a parked task can be continued:
+          // both are `isParked` on the server, which is what `/continue` accepts.
+          // The backend's `paused` state is deliberately *not* here — it is a park
+          // with no continuation path (`not_parked`), and offering the button would
+          // make the surface promise something the route refuses.
+          <ParkedTask
+            tool="code"
+            taskId={taskId}
+            state={task.data?.run.state ?? ''}
+            pauseReason={state.kind === 'approval_required' ? state.reason : (task.data?.run.pauseReason ?? null)}
+          />
         ) : null}
         <TaskSpend taskId={taskId} usage={task.data?.usage} isPending={task.isPending} isError={task.isError} />
       </>

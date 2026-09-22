@@ -5387,15 +5387,60 @@ about the app — the same failure shape as the route-pointer pass, one level up
 **The check is one-directional, and that is stated rather than papered over.** It can
 prove that no client mentions a path, which is what makes an `implemented` row false.
 It cannot prove the right client calls it: the method is not compared, so a client
-for the same path with a different verb satisfies it. Two rows it deliberately does
-not constrain are `route-mismatch` rows whose paths genuinely differ —
-`tasks.continue` and `settings.reload` — and neither has a client either. A mismatch
-is a fact about paths and stays true without a caller, so those two are recorded in
-`frontend/contracts/gaps.md`, which is where frontend progress lives. The
-continuation one is the fact worth repeating here: approving a prompt records a
-decision and deliberately does not start the agent, nothing in the frontend posts
-`/continue`, and the Attention Center's own copy tells the user to "open the task and
-continue it" — which no screen can do.
+for the same path with a different verb satisfies it.
+
+Two rows the rule deliberately does not constrain are `route-mismatch` rows whose
+paths genuinely differ — `tasks.continue` and `settings.reload` — because a mismatch
+is a fact about paths and stays true without a caller. That tolerance has a price, and
+the price was paid the next day: `tasks.continue` had **no** client, and because the
+rule only asks about `implemented` rows, the gate could not see it. The gap was found
+by hand, recorded in `frontend/contracts/gaps.md`, and closed on 2026-09-22 by the
+parked-task panel (see the next section). `settings.reload` still has no client, for
+the reason recorded beside it: there is no Settings surface to put the control on.
+
+The lesson is not that the rule is wrong — a `route-mismatch` row is a statement about
+paths, and requiring a client of it would make the status mean two things. It is that
+**a green gate is a statement about what the gate checks**, and a gap list is where the
+things it cannot see have to live by hand.
+
+## A continuation is a stream, and a decision is not one *(added 2026-09-22)*
+
+The frontend could approve a prompt and could not resume the task, so the Code surface
+gained the control that calls `POST /api/{tool}/tasks/:taskId/continue`
+(`tools/code/ParkedTask.tsx` over `api/agentStream.ts` and
+`tools/code/useTaskContinuation.ts`). Three properties of that seam were decided by what
+the route does rather than by what a button would like to do, and each is stated in the
+client because the honest wording depends on it:
+
+1. **An allow and its continuation are one call.** A decision recorded with no run to
+   carry it out is exactly the dead end the queue's `continuable` flag describes, so
+   *Allow once* and *Allow for this session* post `/continue` with the `approvalId` and
+   the decision. The route applies the decision **before** it claims the parked run, so
+   the two are not atomic: a refusal in between (another window already continuing it, a
+   full lane in `reject` mode) leaves the decision recorded and a bare *Continue*
+   finishes the job. The refusals are worded from `details.reason` rather than from the
+   message text, because the reason is the stable part.
+2. **A denial is not a continuation.** `POST /continue` with `decision: "deny"` answers
+   **JSON**, not a stream — there is no agent to start — and finishing the run is the
+   route's own act (`finishDenied`). The panel sends a denial to `/approve` instead,
+   which is idempotent, so a double click cannot turn "I said no" into an error, and it
+   never opens a stream it would have to explain away.
+3. **The terminal event is not the one the session watches for.** The agent protocol
+   carries every frame inside one `agent` event with its own `channel`, so
+   `runStreamSession`'s terminal-event check cannot see a `result`. A continuation that
+   finishes normally therefore closes and **reconciles**: the persisted run is re-read
+   and reported, with its own end reason (`socket-closed`), and a stream that died
+   mid-run is never replayed — a chat turn may be retried, a mutation may not. The
+   panel's closing sentence names the state the server records, including when it
+   disagrees with the frames above it, because the stream was only a view of the run.
+
+The surface also declines to do something a button easily would: with a prompt
+outstanding, a bare continue is refused **in the panel**, with the reason, instead of
+being posted to replay the conversation, re-emit the gated call and park again. And the
+panel renders for `blocked` and `ready_for_review` only — the two states
+`requireContinuable` accepts. The backend's `paused` state is a park with no
+continuation path, and offering the button there would promise something the route
+refuses.
 
 ## A claim is not a run *(added 2026-09-22)*
 
