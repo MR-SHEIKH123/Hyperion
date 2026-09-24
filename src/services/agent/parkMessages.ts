@@ -45,8 +45,11 @@ const PARK_SUMMARY: Record<ParkReason, string> = {
   iteration_ceiling: 'It reached the step limit for a single run. Continue it to carry on.',
   context_exhausted:
     'The conversation no longer fits the model’s window and could not be shortened enough to send. Start it as a fresh task.',
+  // Not "nobody was watching": a task run can park this way with the user in
+  // front of it, because no task route reads the acknowledgement a chat turn
+  // would resend. What is true in both cases is that the send needs an answer.
   redaction_blocked:
-    'Its next message appeared to contain a credential and nobody was watching to approve sending it. Open the task to review it.',
+    'Its next message appeared to contain a credential and sending it needs your approval. Open the task to review the finding.',
   zdr_blocked:
     'No provider that can serve it satisfies your zero-data-retention requirement. Record ZDR support for a provider, or lower the requirement, then resume it.',
 };

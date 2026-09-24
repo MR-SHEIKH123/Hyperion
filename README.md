@@ -28,8 +28,19 @@ is active at a time, with standby failover to alternates.
   eight-tool sidebar, backend health indicator, per-tool routes — and the
   **Chat tool wired end-to-end**: conversation list, transcript, streaming
   with pause/resume, busy handling, and the model picker against the active
-  provider. The Code, Cowork, and Design tool workflows, plus Playground,
-  Plugins, Skills, and Settings, remain.
+  provider. The **Code tool is the frame's first real occupant**: a composer
+  that starts a run (task id, ask/plan/act mode, instruction, model) and
+  streams its frames as they arrive, settling on the persisted run rather
+  than on the socket when the stream ends; the lane rail — running slots,
+  queue depth, capacity, and the parked worktrees that hold disk rather than
+  a slot — beside the selected task's state, recorded spend and version
+  timeline; the parked-task panel, where a held call's arguments are shown
+  before it is allowed once, allowed for the session, or denied, and the run
+  continues from that answer; and the recovery panel for a run a restart
+  interrupted, which reports what it got as far as doing, discards the
+  leftover checkout on request, and resumes by filling the composer with the
+  task id whose checkout the re-run adopts. Cowork, Design, Playground,
+  Plugins, Skills, and Settings still resolve to a placeholder that says so.
 
 ## The agent architecture
 

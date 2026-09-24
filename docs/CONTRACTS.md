@@ -3214,26 +3214,55 @@ direction: reading ten different files is ten pieces of real work, not a loop.
 The limit is 3 by default: two identical calls is a legitimate retry, three is a
 pattern.
 
-### An unattended redaction finding parks the run instead of failing it
+### A redaction finding parks the run instead of sending
 
 `assertOutboundSafe` throws `redaction_flagged` on the assumption that a user is
-present to read the finding and decide. A scheduled task, or a queued task the
-user has navigated away from, has nobody to ask — and both obvious answers are
-worse than parking. Sending anyway defeats the check. Failing the run as an error
-tells the user their task broke, when in fact it is waiting on them.
+present to read the finding and decide. On the chat path that assumption holds:
+the client resends with `acknowledgeSensitive`. On the **task** path it does not,
+because no task route reads that field — so a task run parks whether or not a
+browser is attached, and the park is answered by an approval rather than by a
+flag.
 
-So `parkOnRedaction` parks the run as `blocked` and throws a **fresh**
-`AppError`, deliberately not quoting the original. The original message describes
-what was found in the outbound text, and that description can contain the
-credential itself; the replacement says a credential-shaped string was found and
-where to go to review it. A test asserts the secret appears in neither
-`error.message` nor `toJSON()`.
+**The finding is scanned on the task path now** *(2026-09-24)*. Until then the
+gate was called from `orchestrator/chat.ts` alone, so a Code, Cowork or Design
+run reached a remote provider unscanned: with the check switched on, a
+credential-shaped prompt in a task went out and the usage row recorded that it
+had. The scan now runs in `orchestrator/agentContext.ts`, in the two wrappers
+every agent request passes through — including a delegated child's, which borrows
+its parent's `llm` rather than building a context of its own. It sits *outside*
+`router.stream()` for the reason `outbound.ts` gives: a check inside the router
+would re-run on every internal failover retry of a payload already approved.
 
-When a user *is* present the error is re-thrown untouched, so the 409 reaches the
-UI that knows how to offer acknowledgement. Anything that is not a
-`redaction_flagged` `AppError` is re-thrown untouched in both cases — this
-function must never become a general-purpose catch that turns unrelated bugs into
-parked runs.
+**Park, then ask.** `parkOnBlockedSend` parks the run as `blocked` and throws a
+**fresh** `AppError`, deliberately not quoting the original: the original message
+describes what was found, and that description can contain the credential itself.
+A test asserts the secret appears in neither `error.message` nor `toJSON()`. The
+park is not the end of it — see below.
+
+**An approval is the acknowledgement.** Recording the question is what keeps the
+park from being a loop: the run is parked *and* a pending approval is recorded
+under the tool name `outbound_send`, with a ticket binding the finding (rule names
+and offsets, never the matched text) and the destination provider. Approving it
+arms the ticket, and the gate consults that ticket **before** it refuses — so the
+resumed run replays the same conversation, finds the same credential, and sends.
+Skipping the ticket check, or checking it after the scan, is the "parks forever"
+failure; both are covered by a test that resumes an approved park and asserts it
+does not park again.
+
+The ticket is deliberately **not consumed** on use: the same send is re-made on
+every turn of the run, and spending it on the first would ask the identical
+question on the second. It is bound to the finding and to the destination, so an
+approval for one credential does not carry another, and one granted for a provider
+does not carry a different provider.
+
+Two things did **not** change. The interactive **chat** path keeps
+`redaction_flagged` + `acknowledgeSensitive` exactly as it was — this is additive,
+not a unification. And ZDR keeps the old `unattended` rule: nothing can
+acknowledge a ZDR block, so an interactive run is better *told* than parked,
+while an unattended one parks as `zdr_blocked`. Anything that is not a
+`redaction_flagged` or `zdr_requirement_unmet` `AppError` is re-thrown untouched
+in both cases — this function must never become a general-purpose catch that
+turns unrelated bugs into parked runs.
 
 ### Cancellation is checked between iterations, not only around the external request
 
@@ -4206,7 +4235,7 @@ twice, once as history and once as a new instruction.
 | `approval_required` | The recorded decision, as a session-layer rule |
 | `doom_loop` | The same; a denial finalises as `loop_detected` |
 | `plan_ready` | Planned actions authorised via a session allow — Plan→Act stops meaning "re-run from scratch" |
-| `redaction_blocked` | Replay with the finding acknowledged. Only reachable at all once `unattended` moved to `TaskInput` |
+| `redaction_blocked` | Replay against the armed send ticket: the gate consults it before it refuses, so the identical payload goes out. Reachable by any task run since the scan was wired into the agent context (2026-09-24), not only by an unattended one |
 | `zdr_blocked` | Replay; succeeds only if a setting or a recorded provider fact changed |
 
 Two classes of park with no principled distinction between them would be the worse

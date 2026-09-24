@@ -276,6 +276,39 @@ export function ticketForCall(taskId: string, toolName: string, args: string): A
   return row ? mapRow(row) : null;
 }
 
+/**
+ * The newest ticket that could still authorise one *class* of question on a task.
+ *
+ * `settleTicket` finds a ticket by the exact question — for a tool call, the
+ * verbatim arguments the model emitted. Some questions are not knowable before
+ * doing work: an outbound send's question is the credential-shaped text the scan
+ * finds, so settling it means scanning the payload first, and scanning every
+ * request only to discover there was nothing to settle is the wrong way round.
+ *
+ * This is the cheap half of that lookup — one indexed read answering "is there an
+ * authorisation for this kind of question at all?" — and the caller does the work
+ * and settles properly only when it says yes. State and deadline are filtered here
+ * rather than left to the caller because a `spent`, `void` or expired ticket
+ * authorises nothing, and "nothing to settle" is exactly the answer that lets the
+ * caller skip the work.
+ *
+ * It never authorises anything by itself: the settlement below is still the check.
+ */
+export function liveTicketForQuestion(
+  taskId: string,
+  toolName: string,
+  now: number = Date.now(),
+): ApprovalTicket | null {
+  const row = getDb()
+    .prepare<TicketRow>(
+      `SELECT * FROM approval_tickets
+        WHERE task_id = ? AND tool_name = ? AND state IN ('armed', 'standing') AND expires_at > ?
+        ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+    )
+    .get(taskId, toolName, now);
+  return row ? mapRow(row) : null;
+}
+
 export function ticketForApproval(approvalId: string): ApprovalTicket | null {
   const row = getDb()
     .prepare<TicketRow>('SELECT * FROM approval_tickets WHERE approval_id = ? ORDER BY created_at DESC LIMIT 1')
@@ -349,11 +382,21 @@ export interface TicketSettlement {
  * No ticket for this exact call is `absent`, which is not a refusal: it is the
  * ordinary first-time case, and the caller parks for a decision exactly as it did
  * before tickets existed.
+ *
+ * `consume: false` settles without spending, for the one question whose approved
+ * answer is not a single execution. A tool call runs once, so its ticket is spent
+ * on that run; an outbound send is re-made on **every turn of the run**, with the
+ * same conversation and therefore the same finding, so spending it on the first
+ * send would ask the identical question again on the second — the noise failure
+ * `approvals.ts` names, and a park loop with an extra click per iteration. Such a
+ * ticket stays live and is ended the way the question it answers is: voided at the
+ * task's terminal transition (`voidTicketsForTask`) or expired with its prompt.
  */
 export function settleTicket(input: {
   live: TicketBinding;
   runAccepts: (ticketRunId: string | null) => boolean;
   now?: number;
+  consume?: boolean;
 }): TicketSettlement {
   const ticket = ticketForCall(input.live.taskId, input.live.toolName, input.live.arguments);
   if (ticket === null) return { kind: 'absent' };
@@ -398,6 +441,7 @@ export function settleTicket(input: {
   if (!input.runAccepts(ticket.runId)) {
     return { kind: 'refused', ticket, refusal: 'run_replaced', fields: ['runId'] };
   }
+  if (input.consume === false) return { kind: 'granted', ticket };
   if (!consumeTicket(ticket.id, input.live.runId, now)) {
     // Lost the race for a ticket that was live a moment ago.
     return { kind: 'refused', ticket: getTicket(ticket.id) ?? ticket, refusal: 'already_consumed' };

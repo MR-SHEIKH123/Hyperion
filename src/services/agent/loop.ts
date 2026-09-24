@@ -61,7 +61,7 @@
  * context keeps working unchanged.
  */
 
-import { finishTaskRun, updateTaskRunState } from '../../db/taskRuns.ts';
+import { acceptsTicketRun, finishTaskRun, updateTaskRunState } from '../../db/taskRuns.ts';
 import { CEILING_REASON } from '../limits/budget.ts';
 import { recordApproval } from '../../db/approvals.ts';
 import { getTaskRun } from '../../db/taskRuns.ts';
@@ -74,6 +74,7 @@ import {
   type TicketSettlement,
 } from '../../db/approvalTickets.ts';
 import { approvalWaitTtlMs } from './approvalWait.ts';
+import { OUTBOUND_SEND_TOOL, outboundSendBinding, questionFromRefusal } from '../safety/outboundGate.ts';
 import { snapshotConversation } from '../../db/taskMessages.ts';
 import { nextStepNumber, recordStep } from '../../db/taskSteps.ts';
 import { taskIterationCeiling } from '../../db/settings.ts';
@@ -535,9 +536,17 @@ const BLOCKED_SEND_PARK: Partial<Record<ErrorCode, BlockedSendReason>> = {
 
 /** The user-facing wording for each parked send, by park reason. */
 const BLOCKED_SEND_MESSAGE: Record<BlockedSendReason, string> = {
+  // Says "no way to acknowledge it here" rather than "no one was watching". It
+  // used to be the second, and it was true then: this branch only ran for an
+  // unattended run. Since the scan was wired into the task path it also fires
+  // with a browser attached, and telling a user who *is* watching that nobody
+  // was would be a small lie in the one sentence they are reading to find out
+  // what to do. The finding is answerable now — an approval — so the sentence
+  // says how.
   redaction_blocked:
-    'This task was paused because its next message appeared to contain a credential and no one was ' +
-    'watching to approve sending it. Open the task to review and resume it.',
+    'This task was paused because its next message appeared to contain a credential, and a task run ' +
+    'has no way to send it anyway. Open the task, review the finding, and approve it to let this ' +
+    'send through.',
   // Deliberately does not say "review and resume": there is nothing here for the
   // user to approve, and inviting them to approve something would be a lie. The
   // block lifts only when a setting or a recorded provider fact changes.
@@ -561,8 +570,106 @@ export function parkOnBlockedSend(
   parkRun(ctx, runId, reason, error.message);
   throw new AppError(error.code, BLOCKED_SEND_MESSAGE[reason], {
     retryable: false,
-    details: { runId, unattended: true },
+    // The flag as the caller stated it, not `true` because a park happened: a
+    // redaction finding parks an attended task run too (see
+    // `unattendedForBlockedSend`), and an error body is not the place to invent
+    // a fact about who was watching.
+    details: { runId, unattended },
   });
+}
+
+/**
+ * Whether a refused send parks this run when the flag says somebody is watching.
+ *
+ * `parkOnBlockedSend` parks only an unattended run, and that is right for the
+ * general case: both refusals it handles are written on the assumption that a
+ * user is present to answer them. A *task* run is the exception, and only for one
+ * of the two.
+ *
+ * A `redaction_flagged` finding has exactly one interactive answer in this
+ * codebase — the chat composer resends with `acknowledgeSensitive` — and no task
+ * route reads that field. So a task run has no interactive answer to wait for
+ * even with a browser attached: the finding is answered by an approval, and the
+ * park is what makes one possible. `unattended` is therefore overridden here
+ * rather than treated as a reason to fail the run.
+ *
+ * A `zdr_requirement_unmet` refusal keeps the old rule untouched, because nothing
+ * can acknowledge it — no approval lets it through, and the block lifts only when
+ * a setting or a recorded provider fact changes. An interactive run is better
+ * *told* than parked, which is what the flag was for in the first place.
+ */
+function unattendedForBlockedSend(input: AgentLoopInput, error: unknown): boolean {
+  if (error instanceof AppError && error.code === 'redaction_flagged') return true;
+  return input.unattended === true;
+}
+
+/**
+ * Record the question a refused send is waiting on, and mint its ticket.
+ *
+ * The send half of S1's mechanism, reused rather than reinvented: an ordinary
+ * pending approval under `outbound_send`, with a ticket binding the finding and
+ * the destination exactly as one binds a tool call's arguments and workspace. The
+ * ticket is what stops the park from being a loop — see the comment in
+ * `services/safety/outboundGate.ts` for the order the two are checked in.
+ *
+ * Deliberately not `recordPendingApproval`, which mints only behind an `ask`
+ * verdict from the permission engine. Nothing here was refused by a rule, and a
+ * synthetic verdict to borrow that function would hang an approval on a layer the
+ * engine never consulted. The fields, the dedupe (`recordApproval` returns the
+ * identical question rather than stacking a second) and the deadline are the
+ * same ones, and the settlement is `settleTicket` — the same call a tool call's
+ * ticket is settled by.
+ *
+ * Cannot end the run. It describes a run that has already stopped, and a storage
+ * failure must not turn a question the user can answer into an exception they
+ * cannot — the park happens either way, and its step row says why.
+ */
+function recordBlockedSend(input: AgentLoopInput, error: unknown): PendingApproval | null {
+  if (!(error instanceof AppError) || error.code !== 'redaction_flagged') return null;
+  if (input.taskId === undefined) {
+    log.warn('a run parked on a blocked send with no task id, so nothing was recorded', {
+      tool: input.tool,
+    });
+    return null;
+  }
+  const question = questionFromRefusal(error.details);
+  if (question === null) {
+    log.warn('a blocked send carried no finding, so no question was recorded', { tool: input.tool });
+    return null;
+  }
+
+  const runId = input.runId;
+  const providerId = typeof error.details?.providerId === 'string' ? error.details.providerId : null;
+
+  try {
+    const approval = recordApproval({
+      ...(runId === undefined ? {} : { runId }),
+      taskId: input.taskId,
+      tool: input.tool,
+      toolName: OUTBOUND_SEND_TOOL,
+      arguments: question,
+      permissionKey: OUTBOUND_SEND_TOOL,
+      // What was found, never the matched text: this row is listed by the
+      // approvals route and rendered in the task, and a question that quoted the
+      // credential would publish the thing the scan exists to protect. The
+      // offsets are in `arguments`, which is what an approval's own display
+      // shows verbatim.
+      reason: `Sending this to a remote provider was held: ${error.message}`,
+    });
+    mintTicket({
+      approvalId: approval.id,
+      tool: input.tool,
+      binding: outboundSendBinding({ taskId: input.taskId, ...(runId === undefined ? {} : { runId }), providerId, question }),
+      expiresAt: Date.now() + approvalWaitTtlMs(),
+    });
+    return approval;
+  } catch (mintError) {
+    log.warn('could not record the approval a blocked send is waiting on', {
+      tool: input.tool,
+      error: mintError instanceof Error ? mintError.message : String(mintError),
+    });
+    return null;
+  }
 }
 
 /**
@@ -824,7 +931,12 @@ export async function runAgentLoop(
       // still reachable. A `redaction_blocked` park with no snapshot would be
       // exactly the dead end this phase exists to remove.
       snapshotForPark(input);
-      parkOnBlockedSend(ctx, input.runId, error, input.unattended === true);
+      // Recorded before the park, for the same reason: a blocked send parks
+      // *waiting on an answer*, and the answer is given to an approval row. A
+      // park with nothing behind it would re-scan the replayed conversation on
+      // resume, find the same credential, and park again — forever.
+      recordBlockedSend(input, error);
+      parkOnBlockedSend(ctx, input.runId, error, unattendedForBlockedSend(input, error));
     }
 
     if (calls.length === 0) {
@@ -969,9 +1081,10 @@ function ticketContext(input: AgentLoopInput): TicketContext | undefined {
     workspace: binding.workspace,
     ...(binding.parentTaskId === undefined ? {} : { parentTaskId: binding.parentTaskId }),
     revision,
+    // The lineage rule itself lives beside the column it reads, because the
+    // outbound gate asks the same question of a different kind of ticket.
     runAccepts: (ticketRunId) =>
-      // A headless run has no id to compare, so the task key is the whole identity.
-      ticketRunId === null || ticketRunId === input.runId || ticketRunId === continuedFrom,
+      acceptsTicketRun({ runId: input.runId, continuedFrom, ticketRunId }),
   };
 }
 

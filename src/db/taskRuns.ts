@@ -438,6 +438,34 @@ function requireTaskRun(runId: string): TaskRun {
 }
 
 /**
+ * Whether a live run is the run a ticket was minted for, or a continuation of it.
+ *
+ * The lineage half of S1's ticket check (migration `026`), kept beside the column
+ * it reads rather than inside either caller, because two callers now ask it: the
+ * agent loop, settling an approved tool call, and the outbound gate, settling an
+ * approved send. A rule that lives in one of them is a rule the other will
+ * eventually disagree with, and the disagreement is invisible — it shows up as an
+ * approval that was granted and then refused as `run_replaced`.
+ *
+ * Deliberately pure. `continuedFrom` is passed in, so each caller decides *when*
+ * the lineage is resolved: the loop resolves it once per run (re-reading the row
+ * mid-loop is what S1 says not to do), and the gate reads it per request because
+ * it has no run-level moment to resolve anything at.
+ *
+ * A null `ticketRunId` accepts. A headless run has no id to mint under, so the task
+ * is the whole identity and there is no lineage to compare.
+ */
+export function acceptsTicketRun(input: {
+  runId: string | undefined;
+  continuedFrom: string | null;
+  ticketRunId: string | null;
+}): boolean {
+  if (input.ticketRunId === null) return true;
+  if (input.runId === undefined) return false;
+  return input.ticketRunId === input.runId || input.ticketRunId === input.continuedFrom;
+}
+
+/**
  * The most recent run for a task, which is what a reconnecting client wants.
  *
  * A task id can be reused across attempts — the user retries, the frontend
