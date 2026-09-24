@@ -13,7 +13,7 @@
  * module has no such constraint, so the app always has a working database.
  *
  * Both backends are normalized here so no call site ever has to care which one
- * is live. Two real behavioural differences are smoothed over:
+ * is live. Three real behavioural differences are smoothed over:
  *
  *   - Booleans cannot be bound by either driver. SQLite has no boolean type.
  *     Since the schema is full of flags (enabled/pinned/active), `true`/`false`
@@ -21,6 +21,12 @@
  *   - `undefined` cannot be bound, which is easy to hit with optional fields
  *     (`row.token` on an object that simply lacks the property). It is coerced
  *     to NULL, which is what the caller means in practice.
+ *   - `node:sqlite` hands back rows with a null prototype while better-sqlite3
+ *     hands back plain objects. Anything that looks at the prototype
+ *     (`assert.deepEqual`, and the migration tests' whole-row comparisons) can
+ *     tell which backend is live, so `get`/`all` spread rows into plain objects
+ *     on the node:sqlite path — matching better-sqlite3, not inventing a third
+ *     shape.
  *
  * `transaction()` is provided for both, since node:sqlite has no equivalent.
  */
@@ -165,8 +171,8 @@ function wrapNodeSqlite(file: string): Db {
           const r = stmt.run(...(normalize(params) as SqlValue[]));
           return { changes: Number(r.changes), lastInsertRowid: Number(r.lastInsertRowid) };
         },
-        get: (...params) => stmt.get(...(normalize(params) as SqlValue[])) as Row | undefined,
-        all: (...params) => stmt.all(...(normalize(params) as SqlValue[])) as Row[],
+        get: (...params) => plainRow(stmt.get(...(normalize(params) as SqlValue[])) as Row | undefined),
+        all: (...params) => (stmt.all(...(normalize(params) as SqlValue[])) as Row[]).map(plainRow),
       };
     },
     exec: (sql) => raw.exec(sql),
@@ -174,6 +180,16 @@ function wrapNodeSqlite(file: string): Db {
     close: () => raw.close(),
   };
   return db;
+}
+
+/**
+ * Spread one row into a plain object. Misses (`undefined`), NULLs and scalars
+ * pass through untouched — only the prototype of a real row is normalized, so
+ * `get` on a miss still answers `undefined` rather than an empty object.
+ */
+function plainRow<Row>(row: Row): Row {
+  if (row === null || typeof row !== 'object' || Array.isArray(row)) return row;
+  return { ...(row as Record<string, unknown>) } as Row;
 }
 
 interface NodeSqliteStatement {
