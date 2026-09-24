@@ -128,6 +128,10 @@ behavior in the browser.
   three route cases; nothing calls it, because there is no Settings surface at all (the same
   reason the memory import routes above are uncalled). A reload control belongs there when
   that surface exists.
+- **No profile-import client (1.28).** `POST /api/code/agents/import` files uploaded `.md`
+  profiles into the active project's `.hyperion/agents/` with per-file results, but nothing
+  calls it: there is no profiles surface, and no Settings screen to host one. A folder picker
+  can POST the folder's files to it unchanged when that surface exists.
 - No global search endpoint; later shell search must report federated partial coverage.
 
 ## Later

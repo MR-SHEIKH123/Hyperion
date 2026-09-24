@@ -1102,6 +1102,28 @@ filename. A file that declares nothing still has to appear in the list as
 something the user recognises — dropping it, or showing it as `(untitled)`, would
 hide a rule that is genuinely in effect.
 
+### Import never overwrites without confirmation (added in 1.28)
+
+`POST /api/code/agents/import` is this file family's first writer — every route
+above only reads — so its policy is stated as refusals. A colliding name
+defaults to skipping the file; `rename` files it under `<stem>-2.md`, the same
+suffix scheme `freePath` uses for worktrees; `overwrite` additionally requires
+`confirm: true`, and the policy is validated before the first byte lands, so a
+missing confirmation refuses the whole request rather than importing half the
+batch. Only `.md` files under 64 KiB that parse as profiles are filed, and each
+rejection is reported per file rather than failing the batch — except the policy
+errors (`confirm`, the 50-file cap, an unknown `onConflict`), which refuse
+everything, because they describe the request rather than a file.
+
+Validation runs through `parseProfileDocument` plus `profileFields` — the same
+two functions that will read the file back — so an import the scanner cannot
+read is unrepresentable. The destination is the active project's agents
+directory through the `projects` scope (which follows the active project,
+managed or not); with no project open there is no destination, and the answer
+is a 409 naming `no_active_project` rather than a write into the scope
+fallback. No cache is invalidated because none exists: profiles are read on
+demand (D9), so an imported file is visible to the next read.
+
 ---
 
 ## Settings are not all public (found by HTTP smoke testing)

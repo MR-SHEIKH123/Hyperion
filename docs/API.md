@@ -1461,6 +1461,7 @@ modules registered at boot — `cowork`, `code`, `design` and the terminal, via
 | GET | `/api/code/rules` | plain JSON *(new in 1.13)* |
 | GET | `/api/code/agents` | plain JSON *(new in 1.13)* |
 | GET | `/api/code/commands` | plain JSON *(new in 1.13)* |
+| POST | `/api/code/agents/import` | multipart `files`, per-file results *(new in 1.28)* |
 | GET | `/api/agents/status` | `{ agents, terminal, registered: { code, cowork, design } }` |
 
 `run-task` body (`TaskInput`): `tool`, `chatId`, `modelId`, `prompt`, `mode?`,
@@ -1670,6 +1671,35 @@ through to the next location and misreporting where the rules came from.
 `null`. Agents additionally carry `tools` (`tools: [read, bash]`, or a lone
 `tool: bash`, normalised to an array) and `model`, both `null` when undeclared.
 Commands carry only `name`, `description` and `path`.
+
+**`POST /api/code/agents/import`** files `.md` agent profiles from a multipart
+upload into the **active** project's `.hyperion/agents/`, alongside the profiles
+already there *(new in 1.28 — the profile set's first writer)*. Fields: `files`
+(at most 50), `onConflict` (`skip` default | `rename` | `overwrite`), and
+`confirm` (`true`, required alongside `overwrite`).
+
+Each file is validated through the same parser that will read it back; only
+`.md` files under 64 KiB that parse as profiles are filed. The response is 200
+with a per-file result:
+
+```json
+// POST /api/code/agents/import
+{
+  "project": { "id": "prj_…", "name": "…" },
+  "imported": 1,
+  "count": 2,
+  "results": [
+    { "filename": "reviewer.md", "name": "Reviewer", "status": "imported", "path": ".hyperion/agents/reviewer.md" },
+    { "filename": "helper.md", "name": "Helper", "status": "skipped", "error": "\"helper.md\" already exists; …" }
+  ]
+}
+```
+
+`status` is `imported` | `overwritten` | `renamed` (`<stem>-2.md`) | `skipped` |
+`invalid` (non-`.md`, oversize, or malformed front matter — each reported, none
+filed). Policy errors refuse the whole request before anything lands: `400`
+for a missing `confirm`, the 50-file cap, or an unknown `onConflict`. With no
+project open there is no destination: `409` naming `no_active_project`.
 
 ### 12.3a Provenance  *(new in Prompt 1.39 A6)*
 
