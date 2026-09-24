@@ -39,6 +39,7 @@ import {
   updateScheduledTask,
 } from '../services/cowork/scheduledTasks.ts';
 import { runScheduledTask } from '../services/cowork/scheduler.ts';
+import { getPulseConfig, listPulseHistory, savePulseTier } from '../services/cowork/pulse.ts';
 import { AppError } from '../util/errors.ts';
 import { wrap } from './errors.ts';
 import {
@@ -251,5 +252,42 @@ coworkRouter.post(
     requireScheduledTask(id);
     void runScheduledTask(id);
     res.status(202).json({ started: true, id });
+  }),
+);
+
+// --- Cowork Pulse (1.30) -----------------------------------------------------
+
+/**
+ * The Pulse tier and the sources behind it.
+ *
+ * There is deliberately no direct-fetch route: Pulse answers through the
+ * `pulse.fetch` tool only, on demand, so every fetch carries a run's context
+ * and lands in the audit trail below.
+ */
+coworkRouter.get(
+  '/pulse/config',
+  wrap(async (_req, res) => {
+    res.json(getPulseConfig());
+  }),
+);
+
+/**
+ * Sets the Pulse tier (`off`, `free` or `keyed`). The tier is the whole write
+ * surface: the keyed tier's framework registers code, not keys, so there is no
+ * credential to configure.
+ */
+coworkRouter.put(
+  '/pulse/config',
+  wrap(async (req, res) => {
+    res.json(savePulseTier(body(req)));
+  }),
+);
+
+/** Newest-first fetch history: query, tier, per-source outcomes and items. */
+coworkRouter.get(
+  '/pulse/fetches',
+  wrap(async (req, res) => {
+    const fetches = listPulseHistory(queryLimit(req, 'limit', { fallback: 50, max: 500 }));
+    res.json({ count: fetches.length, fetches });
   }),
 );

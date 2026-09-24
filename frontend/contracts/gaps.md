@@ -165,8 +165,13 @@ behavior in the browser.
   lists one artifact's version chain with its derived parent (Prompt 1.39 A6). There is still no
   cross-artifact listing or a "what produced this" graph — the version stack answers "what did this
   replace", not "where did this come from".
-- No Pulse, discovery, or watchlist contracts. Browser-use exists as a seeded MCP server (1.35); what has
-  no contract is *assigning* browser work to it from a tool.
+- ~~No Pulse, discovery, or watchlist contracts.~~ **Partly closed 2026-09-24 (1.30).**
+  Pulse is contracted: the `pulse.fetch` tool plus config/history routes
+  (`docs/API.md` §17.3), `deferred-frontend` — the UI that would call them does
+  not exist yet. Discovery and watchlists remain absent by design: Pulse is
+  on-demand only, with no poller and no direct-fetch route. Browser-use exists
+  as a seeded MCP server (1.35); what has no contract is *assigning* browser
+  work to it from a tool.
 - ~~Backup does not expose the specified encrypted destination/passphrase system.~~ **Closed 2026-09-24 (1.29).**
   Both halves now exist: the passphrase half since 2026-09-21 (`.hypbak`
   containers, `docs/API.md` §10.1) and the destinations half since 2026-09-24

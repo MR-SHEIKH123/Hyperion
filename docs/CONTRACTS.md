@@ -4627,12 +4627,14 @@ your data" — the same reasoning as the enumerated `healthStatus` and provider
 type, now applied where the label has privacy semantics.
 
 **What has no data source, and therefore no UI.** The same item lists proxy
-profile, attachment/URL egress and Pulse source tier. None of the three exists in
-this backend (`grep -r 'proxyProfile\|attachmentEgress\|pulse'` finds nothing),
-so the composer shows no control for them: an unlabelled toggle or a permanently
+profile, attachment/URL egress and Pulse source tier. The first two still have
+no backend (`grep -r 'proxyProfile\|attachmentEgress'` finds nothing), so the
+composer shows no control for them: an unlabelled toggle or a permanently
 "unknown" chip would read as a limitation of the provider rather than of the
-feature. When any of them gets a backend field, it is rendered from that field or
-not at all — never defaulted.
+feature. The Pulse tier got its backend field in 1.30
+(`GET /api/cowork/pulse/config`) and the composer *still* shows no control for
+it — the exposure surface that would carry it was cut to a stretch goal, so the
+field is rendered nowhere rather than defaulted somewhere.
 
 ## The development state harness *(added in Prompt 1.39, item A4)*
 
@@ -5955,3 +5957,51 @@ import with `.ts` extensions, which its config forbids), and the backend's Node 
 runner cannot import frontend sources (they import without extensions, which Node
 does not resolve). `frontend/scripts/*.mjs` is the one place both resolve, which is
 where the contract check already lived.
+
+## Cowork Pulse fetches on demand, through the tool, and says what it did (1.30)
+
+Pulse is the one path on which model-chosen text leaves for public search
+APIs, so the shape is deliberately narrow: one tool (`pulse.fetch`), one
+switch (the tier), one audit table (`pulse_fetches`). There is no direct-fetch
+HTTP route, no poller and no watchlist — not as missing pieces but as the
+design. A fetch answers a question the run is asking right now; anything on a
+timer would be egress nobody asked for, unattended.
+
+**Why the tier starts off and reads fail closed.** Fetching is network egress
+the user did not type. `off` is the default, the tool is unoffered while it
+holds, and a stored value that is not a known tier fetches nothing rather than
+guessing. The tool is *registered* even when unoffered, which diverges from
+Wigolo's conditional names on purpose: Wigolo's absence is an outage, while the
+tier is a setting the user flips — and a profile granting `pulse.fetch` must
+not break the run when they flip it off. A call that arrives anyway (a race
+with a settings write) is refused at execution with `capability_disabled`.
+
+**Why the refusal wording is Pulse's own.** The tree has one `redaction_flagged`
+refusal, and Pulse reuses its code and its details shape (`kinds`, `hits`) —
+but not its sentence, because the stock text offers an
+acknowledge-and-send-anyway. That affordance exists for sending to the user's
+own provider; a public search API is not the user's provider, and no
+acknowledgement should post a suspected secret to one. The refusal names the
+kinds and tells the model to rephrase, which is the only recourse and is
+stated as such. The scan itself runs only under `redaction_check_enabled`,
+like every other outbound scan.
+
+**Why partial failure is the normal shape.** Four sources answer in parallel
+and any of them can be down, rate-limited (GitHub allows ten unauthenticated
+searches a minute) or reshaped without notice. One slow source must not erase
+the three that answered, so per-source outcomes ride along with the items and
+only a total failure throws — and even that records its row first, because a
+failed fetch is exactly what the history is for.
+
+**Why SSRF is excluded by construction rather than by validation.** Source
+hosts are fixed constants, the tool schema carries no URL field, and the only
+endpoint override in the module is a test seam no route or tool argument
+reaches. There is no input to validate because there is no input that names a
+host.
+
+**Why the keyed tier has no sources.** Framework first, credentials never: the
+registry, the tier plumbing, the scan and the audit trail are real and are
+proven by a test fixture, while no concrete keyed source ships — so there is
+nothing to configure yet, and the config write surface is the tier alone. A
+future source is one registered object; its secrets stay with its own module,
+read at fetch time and never written to the fetch table.

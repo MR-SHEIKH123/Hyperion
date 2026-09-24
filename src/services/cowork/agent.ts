@@ -24,6 +24,8 @@ import {
   knowledgePath,
   listKnowledgeSources,
 } from './knowledge.ts';
+import { fetchPulse, formatPulseResult, pulseStatusMessage } from './pulse.ts';
+import { pulseTier } from '../../db/settings.ts';
 import { runAgentLoop } from '../agent/loop.ts';
 import { createPermissionResolver } from '../agent/permissions.ts';
 import { assertKnownTools, permissionLayers, profileSelector, resolveProfile } from '../agent/profiles.ts';
@@ -240,7 +242,7 @@ function knowledgeBlock(prepared: readonly PreparedKnowledge[]): string {
   return lines.join('\n');
 }
 
-function toolSchemas(tools: readonly McpToolDefinition[]): ToolSchema[] {
+function toolSchemas(tools: readonly McpToolDefinition[], pulseOffered: boolean): ToolSchema[] {
   return [
     {
       name: 'cowork.save_artifact',
@@ -257,6 +259,26 @@ function toolSchemas(tools: readonly McpToolDefinition[]): ToolSchema[] {
         },
       },
     },
+    // Pulse is offered only when the tier is on: a tool the model can see but
+    // never successfully call would read as broken rather than disabled.
+    ...(pulseOffered
+      ? [
+          {
+            name: 'pulse.fetch',
+            description:
+              'Search the live public web via Cowork Pulse. On-demand only: call when the run needs current information the knowledge library does not have.',
+            parameters: {
+              type: 'object',
+              required: ['query'],
+              properties: {
+                query: { type: 'string', minLength: 1 },
+                limit: { type: 'integer', minimum: 1, maximum: 10 },
+                sources: { type: 'array', items: { type: 'string' } },
+              },
+            },
+          },
+        ]
+      : []),
     ...tools.map((tool) => ({
       name: `wigolo.${tool.name}`,
       description: tool.description ?? tool.title ?? `Wigolo tool ${tool.name}`,
@@ -341,6 +363,7 @@ export async function runCoworkTask(
       knowledgeBlock(prepared),
       memory ?? 'No relevant memory was available for this turn.',
       `Wigolo status: ${wigolo.message}`,
+      pulseStatusMessage(),
       'Do not claim Wigolo ran unless a live supervised tool returned a result.',
       'Save an artifact only when the user requested or clearly confirmed it, and only as Markdown or CSV.',
     ].join('\n\n');
@@ -354,9 +377,17 @@ export async function runCoworkTask(
       : [{ role: 'system', content: system }, ...restored.filter((message) => message.role !== 'system')];
 
     const manager = wigolo.manager ?? null;
-    const schemas = toolSchemas(wigolo.tools);
+    // Read once, at run start, like Wigolo's status: a tier flipped mid-run
+    // takes effect on offering for the next run, while execution re-checks on
+    // every call (the safe direction — off mid-run refuses).
+    const schemas = toolSchemas(wigolo.tools, pulseTier() !== 'off');
     const policy = {
-      effect: (name: string) => name === 'cowork.save_artifact' ? 'mutate' as const : name.startsWith('wigolo.') ? 'read' as const : undefined,
+      effect: (name: string) =>
+        name === 'cowork.save_artifact'
+          ? ('mutate' as const)
+          : name === 'pulse.fetch' || name.startsWith('wigolo.')
+            ? ('read' as const)
+            : undefined,
     };
 
     // Cowork has no project directory, so only the built-ins and the session
@@ -367,7 +398,13 @@ export async function runCoworkTask(
       mode: input.mode,
       ...(profileSelector(input) === undefined ? {} : { selector: profileSelector(input) }),
     });
-    const knownTools = new Set(schemas.map((schema) => schema.name));
+    // `pulse.fetch` is registered even when the tier leaves it unoffered: a
+    // profile granting Pulse must not break the run when the user toggles the
+    // tier off — the tool is merely absent from the schemas, and a call that
+    // arrives anyway (a race with a settings write) is refused below with
+    // `capability_disabled`. Wigolo's names stay conditional because a down
+    // supervisor is an outage, not a setting.
+    const knownTools = new Set([...schemas.map((schema) => schema.name), 'pulse.fetch']);
     assertKnownTools(profile, knownTools);
     const session = (deps.sessionPermissionRules ?? sessionPermissionRules)(ctx.taskId);
     const permissions = createPermissionResolver({
@@ -400,6 +437,28 @@ export async function runCoworkTask(
         artifacts.push({ key: artifactKey.trim(), version: saved.version });
         ctx.emit('artifact', { artifactKey: artifactKey.trim(), version: saved.version, format });
         return `Saved ${format} artifact ${artifactKey.trim()} version ${saved.version}.`;
+      }
+      if (call.name === 'pulse.fetch') {
+        // Shape here, values in the service: the tool narrows the JSON types,
+        // `fetchPulse` owns the bounds, the tier gate and the redaction scan.
+        const query = args.query;
+        if (typeof query !== 'string') {
+          throw new AppError('bad_request', 'Pulse fetch requires a query string.');
+        }
+        const limit = args.limit;
+        if (limit !== undefined && (typeof limit !== 'number' || !Number.isInteger(limit))) {
+          throw new AppError('bad_request', 'Pulse limit must be an integer.');
+        }
+        const sources = args.sources;
+        if (sources !== undefined && (!Array.isArray(sources) || !sources.every((source) => typeof source === 'string'))) {
+          throw new AppError('bad_request', 'Pulse sources must be an array of source names.');
+        }
+        const result = await fetchPulse({
+          query,
+          ...(limit === undefined ? {} : { limit }),
+          ...(sources === undefined ? {} : { sources: sources as string[] }),
+        });
+        return formatPulseResult(result);
       }
       if (!call.name.startsWith('wigolo.') || !manager) {
         throw new AppError('capability_disabled', 'Wigolo is unavailable, disabled, or not running; no tool was called.');

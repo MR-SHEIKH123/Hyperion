@@ -2767,6 +2767,45 @@ The scheduler, including the automatic daily backup, is disabled by
 `HYPERION_SCHEDULER_DISABLED=1` — which is what the test helper sets, so a suite
 that boots the app never fires real Cowork runs against live providers.
 
+### 17.3 Cowork Pulse *(new in 1.30)*
+
+```ts
+PulseConfig { tier: 'off'|'free'|'keyed',
+              freeSources: { id, label }[], keyedSources: { id, label }[] }
+PulseFetch  { id, createdAt, query, tier, sources: PulseSourceOutcome[],
+              items: PulseItem[] }
+PulseSourceOutcome { source, ok, count, error: string|null, ms }
+PulseItem { source, title, url: string|null, snippet: string|null,
+            publishedAt: string|null, score: number|null }
+```
+
+| Method | Path | Response |
+| --- | --- | --- |
+| GET | `/api/cowork/pulse/config` | `PulseConfig` |
+| PUT | `/api/cowork/pulse/config` | `PulseConfig` (`{ tier }`, required) |
+| GET | `/api/cowork/pulse/fetches` | `{ count, fetches: PulseFetch[] }` (`?limit=`, default 50, max 500) |
+
+Pulse is Cowork's on-demand public-web fetching, reached through the
+`pulse.fetch` tool only — there is deliberately no direct-fetch route, no
+poller and no watchlist. The tier starts at **`off`** and the tool is unoffered
+until it moves; reads fail closed (anything that is not a known tier fetches
+nothing). The **free** tier queries Reddit, Hacker News, Polymarket and GitHub
+without keys; the **keyed** tier is a framework in v1 (registry plus plumbing,
+no concrete source — a `keyed` tier with nothing registered refuses with
+`capability_disabled`).
+
+Tool arguments: `query` (required, 1–300 chars), `limit?` (per-source, default
+5, max 10), `sources?` (a subset of the tier's source ids). When
+`redaction_check_enabled` is on, the query is scanned for credential-shaped
+text before anything is sent, and a flagged query is refused with
+`redaction_flagged` — worded for the occasion, because the stock refusal offers
+an acknowledge-and-send-anyway that must not exist for public search APIs.
+
+Fetches fan out in parallel and partial failure is the normal shape: each
+source's outcome (ok, item count, error, milliseconds) rides along with the
+items, and only a total failure throws. Every fetch — including failed ones —
+is recorded to `pulse_fetches` for `/fetches`, newest first.
+
 ---
 
 ## 18. Push notifications — `/api/push`  *(new in 1.14)*

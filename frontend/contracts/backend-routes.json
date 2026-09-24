@@ -425,91 +425,91 @@
     {
       "method": "GET",
       "path": "/api/cowork/knowledge",
-      "source": "src/http/cowork.ts:68",
+      "source": "src/http/cowork.ts:69",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "POST",
       "path": "/api/cowork/knowledge",
-      "source": "src/http/cowork.ts:83",
+      "source": "src/http/cowork.ts:84",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "GET",
       "path": "/api/cowork/knowledge/:id",
-      "source": "src/http/cowork.ts:104",
+      "source": "src/http/cowork.ts:105",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "GET",
       "path": "/api/cowork/knowledge/:id/file",
-      "source": "src/http/cowork.ts:118",
+      "source": "src/http/cowork.ts:119",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "DELETE",
       "path": "/api/cowork/knowledge/:id",
-      "source": "src/http/cowork.ts:134",
+      "source": "src/http/cowork.ts:135",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "GET",
       "path": "/api/cowork/scheduled-tasks",
-      "source": "src/http/cowork.ts:148",
+      "source": "src/http/cowork.ts:149",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "POST",
       "path": "/api/cowork/scheduled-tasks",
-      "source": "src/http/cowork.ts:161",
+      "source": "src/http/cowork.ts:162",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "GET",
       "path": "/api/cowork/scheduled-tasks/:id",
-      "source": "src/http/cowork.ts:181",
+      "source": "src/http/cowork.ts:182",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "PUT",
       "path": "/api/cowork/scheduled-tasks/:id",
-      "source": "src/http/cowork.ts:217",
+      "source": "src/http/cowork.ts:218",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "PATCH",
       "path": "/api/cowork/scheduled-tasks/:id",
-      "source": "src/http/cowork.ts:218",
+      "source": "src/http/cowork.ts:219",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "DELETE",
       "path": "/api/cowork/scheduled-tasks/:id",
-      "source": "src/http/cowork.ts:220",
+      "source": "src/http/cowork.ts:221",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "GET",
       "path": "/api/cowork/scheduled-tasks/:id/history",
-      "source": "src/http/cowork.ts:229",
+      "source": "src/http/cowork.ts:230",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "POST",
       "path": "/api/cowork/scheduled-tasks/:id/run",
-      "source": "src/http/cowork.ts:247",
+      "source": "src/http/cowork.ts:248",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
@@ -1317,6 +1317,27 @@
       "source": "src/http/backup.ts:186",
       "exposure": "deferred-frontend",
       "capability": "backup.manage"
+    },
+    {
+      "method": "GET",
+      "path": "/api/cowork/pulse/config",
+      "source": "src/http/cowork.ts:267",
+      "exposure": "deferred-frontend",
+      "capability": "cowork.read"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/cowork/pulse/config",
+      "source": "src/http/cowork.ts:279",
+      "exposure": "deferred-frontend",
+      "capability": "cowork.core"
+    },
+    {
+      "method": "GET",
+      "path": "/api/cowork/pulse/fetches",
+      "source": "src/http/cowork.ts:287",
+      "exposure": "deferred-frontend",
+      "capability": "cowork.read"
     }
   ]
 }
