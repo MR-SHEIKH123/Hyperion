@@ -70,15 +70,13 @@ behavior in the browser.
   reason and the route in words instead of a dead button. Of the rest of 1.31, the unattended-run notification and the
   interactive-wait timeout both landed on 2026-09-21 (a prompt now expires after
   `approval_wait_ttl_hours`, default 72, and the Attention Center says so instead of
-  announcing an allowance that was never applied); the **Design environment** remains, and it
-  is the last open half of the item — with its requirement text absent from every document in
-  this repository (the phrase appears once, in the register's digest of the owner-supplied
-  increments, and nowhere in `docs/SPEC.md`'s Design deep-dive or the Design agent's prose).
-  The register's Open decisions records both possible readings and why neither was built: a
-  filesystem environment for Design is refused by the ratified `S-2` (its artifacts are
-  `artifact_versions` rows and its toolset excludes `write`/`bash`/`command`), and the Design
-  *surface* is Prompt-2 frontend work this scope excludes — the placeholder above is that
-  scope's honest state, not this entry's.
+  announcing an allowance that was never applied). The **Design environment** left Prompt 1's
+  list on 2026-09-24 by owner decision: it is a frontend surface for Design's eventual
+  Prompt 2 build (file/component tree, visual diff, viewport presets), not backend scope,
+  so nothing was built for it and the register's Open-decision item is closed. The S-2
+  refusal stands for any filesystem reading — Design's artifacts are `artifact_versions`
+  rows and its toolset excludes `write`/`bash`/`command` — and the surface half now lives
+  in the Later entry below with the Design tool's other deferred surfaces.
 
   One thing this list should carry while it is here: **the approval deadline has no
   settings control.** The value is a setting (three days by default) and the read reports
@@ -158,7 +156,7 @@ behavior in the browser.
   *active* work; a per-project *history* of code tasks is still absent, and `GET /api/code/tasks/:id/export`
   covers one task's diff. The Code surface (`src/tools/code/`) therefore shows the lane and says
   that a finished task leaves no row here, rather than caching rows the server never sent.)
-- No Design file tree, version timeline, rendered diff, or design-system context contract.
+- No Design file tree, version timeline, rendered diff, or design-system context contract. (1.31's "Design environment" clause lives here now: reclassified out of Prompt 1 to Design's Prompt 2 build, 2026-09-24.)
 - ~~No general artifact lineage/list endpoint.~~ **Partly closed 2026-09-21**: `GET /api/artifacts/versions?key=…`
   lists one artifact's version chain with its derived parent (Prompt 1.39 A6). There is still no
   cross-artifact listing or a "what produced this" graph — the version stack answers "what did this
