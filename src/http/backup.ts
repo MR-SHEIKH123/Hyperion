@@ -6,6 +6,13 @@ import multer from 'multer';
 import { wrap } from './errors.ts';
 import { asBool, asOptionalString, body, queryBool, queryLimit } from './params.ts';
 import { listRestoreAudit } from '../db/restoreAudit.ts';
+import { getRoot } from '../security/fsScope.ts';
+import {
+  getS3PublicConfig,
+  saveS3Config,
+  testS3Connection,
+  uploadFileToS3,
+} from '../services/backup/destinations.ts';
 import { backupPath, exportBackup, listBackups } from '../services/backup/export.ts';
 import {
   inspectArchive,
@@ -97,6 +104,13 @@ backupRouter.get(
  * passphrase must not be able to reach a URL. Everything else matches the GET —
  * keys excluded by default, attachments included by default — and the response is
  * a `.hypbak` download rather than a `.zip`.
+ *
+ * `uploadToS3` (1.29 destinations) uploads the finished archive to the
+ * configured S3 destination before the download starts, and reports its key in
+ * the `x-hyperion-s3-key` response header. An explicit upload that fails fails
+ * the request (409 when S3 is not configured, 500 when the service refuses)
+ * — but the local archive is already written, so the error still names the file
+ * and the download can be retried with `uploadToS3` left off.
  */
 backupRouter.post(
   '/export',
@@ -107,9 +121,72 @@ backupRouter.post(
       includeAttachments: asBool(payload.includeAttachments, 'includeAttachments') ?? true,
       passphrase: passphraseFrom(payload),
     });
+    if ((asBool(payload.uploadToS3, 'uploadToS3') ?? false) === true) {
+      try {
+        const uploaded = await uploadFileToS3(result.file, result.filename);
+        res.set('x-hyperion-s3-key', uploaded.key);
+      } catch (error) {
+        // The archive is already on disk; say so, so the user knows the retry
+        // is a download, not a rebuild.
+        if (error instanceof AppError) {
+          throw new AppError(error.code, `${error.message} The archive is saved locally as ${result.filename}.`, {
+            details: { ...error.details, file: result.filename },
+            privateDetails: error.privateDetails,
+            retryable: error.retryable,
+            cause: error,
+          });
+        }
+        throw error;
+      }
+    }
     res.download(result.file, result.filename, (error) => {
       if (error) next(error);
     });
+  }),
+);
+
+/**
+ * Where finished archives go besides the backups root (1.29 destinations).
+ *
+ * `local` is the pre-existing env-only mirror; `s3` is the configured
+ * S3-compatible destination, redacted — the secret access key is never
+ * returned, only `hasSecret`.
+ */
+backupRouter.get(
+  '/destinations',
+  wrap(async (_req, res) => {
+    res.json({
+      local: {
+        directory: getRoot('backups'),
+        mirror: env.backupDest === '' ? null : env.backupDest,
+      },
+      s3: getS3PublicConfig(),
+    });
+  }),
+);
+
+/**
+ * Partial update of the S3 destination: omitted fields are left alone, null or
+ * `""` clears a field, unknown fields are rejected. The response is the same
+ * redacted shape as `GET /destinations`.
+ */
+backupRouter.put(
+  '/destinations/s3',
+  wrap(async (req, res) => {
+    res.json({ s3: saveS3Config(body(req)) });
+  }),
+);
+
+/**
+ * Round-trip probe of the S3 destination: PUT a small marker, HEAD it back,
+ * DELETE it. Always answers 200 with `{ ok, steps }` — a failed probe is a
+ * diagnosis, not a server error, and is deliberately not written to
+ * `error_log`, which the Attention queue reads as real backup failures.
+ */
+backupRouter.post(
+  '/destinations/s3/test',
+  wrap(async (_req, res) => {
+    res.json(await testS3Connection());
   }),
 );
 

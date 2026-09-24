@@ -187,42 +187,42 @@
     {
       "method": "GET",
       "path": "/api/backup",
-      "source": "src/http/backup.ts:68",
+      "source": "src/http/backup.ts:75",
       "exposure": "frontend",
       "capability": "backup.manage"
     },
     {
       "method": "GET",
       "path": "/api/backup/export",
-      "source": "src/http/backup.ts:80",
+      "source": "src/http/backup.ts:87",
       "exposure": "frontend",
       "capability": "backup.manage"
     },
     {
       "method": "POST",
       "path": "/api/backup/export",
-      "source": "src/http/backup.ts:101",
+      "source": "src/http/backup.ts:115",
       "exposure": "frontend",
       "capability": "backup.manage"
     },
     {
       "method": "GET",
       "path": "/api/backup/restores",
-      "source": "src/http/backup.ts:123",
+      "source": "src/http/backup.ts:200",
       "exposure": "frontend",
       "capability": "backup.manage"
     },
     {
       "method": "POST",
       "path": "/api/backup/inspect",
-      "source": "src/http/backup.ts:131",
+      "source": "src/http/backup.ts:208",
       "exposure": "frontend",
       "capability": "backup.manage"
     },
     {
       "method": "POST",
       "path": "/api/backup/import",
-      "source": "src/http/backup.ts:145",
+      "source": "src/http/backup.ts:222",
       "exposure": "frontend",
       "capability": "backup.manage"
     },
@@ -1296,6 +1296,27 @@
       "source": "src/http/usage.ts:142",
       "exposure": "frontend",
       "capability": "usage.read"
+    },
+    {
+      "method": "GET",
+      "path": "/api/backup/destinations",
+      "source": "src/http/backup.ts:155",
+      "exposure": "deferred-frontend",
+      "capability": "backup.manage"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/backup/destinations/s3",
+      "source": "src/http/backup.ts:173",
+      "exposure": "deferred-frontend",
+      "capability": "backup.manage"
+    },
+    {
+      "method": "POST",
+      "path": "/api/backup/destinations/s3/test",
+      "source": "src/http/backup.ts:186",
+      "exposure": "deferred-frontend",
+      "capability": "backup.manage"
     }
   ]
 }

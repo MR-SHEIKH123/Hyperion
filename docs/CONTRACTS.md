@@ -1772,6 +1772,47 @@ The unwritable destination is simulated by replacing the directory with a
 largely ignores them on directories, so a chmod-based test would pass on CI and
 silently do nothing locally.
 
+## S3 backup destinations answer the mirror's standing objection (added in 1.29)
+
+The section above ends with an instruction — *do not add a route or a setting
+for the mirror without re-reading this paragraph* — and this section is the
+re-reading, for a destination that takes the other branch. The mirror stays
+env-only because it accepts a **filesystem path**, and a path in a request body
+is an arbitrary file-write primitive. The S3 destination accepts an endpoint, a
+bucket, a key prefix and credentials: none of them names a local file, the only
+write the module performs is a `PUT` of a finished archive to the remote
+bucket, and the secret is keystore-encrypted in the settings table, redacted
+from public settings (`SECRET_SETTING_KEYS`) and never returned by any read —
+so HTTP configuration buys no capability the mirror paragraph forbids.
+
+**Why the failure contract is asymmetric.** An explicit upload
+(`POST /api/backup/export` with `uploadToS3`) throws on any failure, because
+the user asked for the upload and a silent skip would lie about where the
+archive is — and the error still names the local file, which was written first.
+The automatic leg (`maybeUploadToS3`) never throws, for the mirror's own
+reason: the archive is already safely written, so a downed endpoint degrades to
+`s3Key: null`, a warning, and an `error_log` row under
+`/api/backup/destinations/s3`, which the Attention queue already reads as a
+backup failure. The round-trip probe writes no such row: a user pressing "test"
+is not a backup failing, and logging it there would cry wolf in the queue.
+
+**Why a 200 without an ETag fails the upload.** S3 answers every successful PUT
+with an ETag. Its absence means something between here and the bucket is not
+speaking S3; accepting the 200 would make the archive's presence a guess.
+
+**Why signing is hand-rolled, and how it is pinned.** There is no SDK
+dependency: SigV4 over `node:crypto`, path-style URLs only (every S3-compatible
+service accepts them). The canonical-request builder is pinned against the AWS
+documentation's worked IAM example, and the suite asserts the Authorization
+structure, credential scope and payload-hash-against-actual-bytes of every
+upload — but it does not reimplement signature verification, which would only
+prove the test agrees with itself. Live-provider proof is operational: point
+the config at the bucket and press test.
+
+**Why `enabled` does not gate explicit uploads.** The toggle is the automatic
+run's switch. An explicit per-request upload overrides it the way pressing
+"back up now" would override a disabled schedule — the request *is* the intent.
+
 ## A backup exported without keys carries no plaintext credential *(S18)*
 
 The export has always excluded `secret.key`, and the comment beside that decision

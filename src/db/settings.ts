@@ -81,7 +81,13 @@ export function allSettings(): Record<string, string | null> {
  * round-trip them or every existing browser subscription breaks on restore.
  * The omission therefore belongs at the boundary, not in the table accessor.
  */
-export const SECRET_SETTING_KEYS: readonly string[] = ['push_vapid_private', 'push_subscriptions'];
+export const SECRET_SETTING_KEYS: readonly string[] = [
+  'push_vapid_private',
+  'push_subscriptions',
+  // The S3 secret access key (1.29 destinations): keystore-encrypted at rest,
+  // and must never appear in a public-settings dump or an API response.
+  'backup_s3_secret_access_key',
+];
 
 /**
  * `allSettings()` minus the credential keys — the only form that may be sent

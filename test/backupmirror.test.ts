@@ -15,8 +15,9 @@
  *      backup where it is. Failing the run would throw away a good archive over
  *      a secondary convenience.
  *
- * `mirrorBackup` is module-private on purpose, so both cases are driven through
- * the exported `runAutoBackup` — which is also the only path production uses.
+ * Both cases are driven through the exported `runAutoBackup` — which is also the
+ * only path production uses — rather than calling `mirrorToLocalDestination`
+ * directly, so the suite pins the wiring as well as the copy.
  *
  * Note the import order below. `env.backupDest` is resolved once, when
  * `config/env.ts` is first imported, so `HYPERION_BACKUP_DEST` is set in this

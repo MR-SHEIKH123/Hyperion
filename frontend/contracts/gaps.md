@@ -167,7 +167,13 @@ behavior in the browser.
   replace", not "where did this come from".
 - No Pulse, discovery, or watchlist contracts. Browser-use exists as a seeded MCP server (1.35); what has
   no contract is *assigning* browser work to it from a tool.
-- Backup does not expose the specified encrypted destination/passphrase system.
+- ~~Backup does not expose the specified encrypted destination/passphrase system.~~ **Closed 2026-09-24 (1.29).**
+  Both halves now exist: the passphrase half since 2026-09-21 (`.hypbak`
+  containers, `docs/API.md` §10.1) and the destinations half since 2026-09-24
+  (the env mirror as the local adapter plus S3-compatible destinations,
+  `docs/API.md` §10.3). The Settings surface that will call the destination
+  routes does not exist yet — the routes are ready and the UI is pending, so
+  the three destinations routes are `deferred-frontend` in the snapshot.
 - ~~Memory has no direct-add or text-import endpoint.~~ **Closed 2026-09-21**: `POST /api/memory`
   (one memory, bounded to a paragraph) and `POST /api/memory/import` (pasted text, split on blank
   lines, bounded to 100 chunks / 20 000 characters, dropped pieces counted rather than truncated).

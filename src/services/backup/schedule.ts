@@ -26,7 +26,6 @@
  */
 
 import fs from 'node:fs';
-import path from 'node:path';
 
 import { env } from '../../config/env.ts';
 
@@ -36,6 +35,7 @@ import { createIntervalJob, type IntervalJob } from '../../util/intervalJob.ts';
 import { createLogger } from '../../util/logger.ts';
 
 import { backupPath, exportBackup, listBackups } from './export.ts';
+import { maybeUploadToS3, mirrorToLocalDestination } from './destinations.ts';
 
 const log = createLogger('backup:auto');
 
@@ -72,59 +72,34 @@ export interface AutoBackupResult {
   pruned: string[];
   /** Absolute path of the off-machine copy, when one is configured. */
   mirrored: string | null;
+  /** S3 object key of the uploaded copy, when S3 is enabled and configured. */
+  s3Key: string | null;
 }
-
-/**
- * Copy the finished archive into `HYPERION_BACKUP_DEST`, when one is set.
- *
- * The point of a backup is to survive the machine, and an archive sitting in
- * `~/Hyperion/backups` dies with the disk that held the database. Copying into
- * a sync folder hands that problem to software that already solves it.
- *
- * A copy rather than a move: the backups root is what `listBackups`,
- * `/api/backup/inspect`, import and retention all read, and relocating the only
- * archive would break every one of them.
- *
- * Never allowed to fail the run. The archive is already safely written by the
- * time this is called, so a full destination or an unmounted network drive
- * makes the *mirror* unavailable, not the backup. It is logged as a warning and
- * reported as `mirrored: null`.
- */
-function mirrorBackup(filename: string): string | null {
-  if (env.backupDest === '') return null;
-
-  const target = path.join(path.resolve(env.backupDest), filename);
-  try {
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.copyFileSync(backupPath(filename), target);
-    return target;
-  } catch (error) {
-    log.warn('could not copy the backup to HYPERION_BACKUP_DEST', {
-      dest: env.backupDest,
-      error: String(error),
-    });
-    return null;
-  }
-}
-
 
 /**
  * Take one automatic backup and apply retention. Exported so the tests (and a
  * future "back up now" button) can run it without waiting a day.
+ *
+ * Fan-out order is mirror, then S3, then retention: both destinations copy an
+ * archive the pruner only ever deletes old versions of, and neither destination
+ * can fail the run — the mirror degrades to `mirrored: null`, the S3 leg to
+ * `s3Key: null` plus an `error_log` row.
  */
 export async function runAutoBackup(): Promise<AutoBackupResult> {
   return await withLock({ tool: 'chat', label: 'automatic backup', mode: 'queue' }, async () => {
     const outFile = backupPath(`${AUTO_PREFIX}${timestamp(Date.now())}.zip`);
     const result = await exportBackup({ outFile });
-    const mirrored = mirrorBackup(result.filename);
+    const mirrored = mirrorToLocalDestination(result.filename);
+    const s3Key = await maybeUploadToS3(result.file, result.filename);
     const pruned = pruneAutoBackups();
     log.info('automatic backup complete', {
       filename: result.filename,
       bytes: result.bytes,
       ...(pruned.length > 0 ? { pruned: pruned.length } : {}),
       ...(mirrored === null ? {} : { mirrored }),
+      ...(s3Key === null ? {} : { s3Key }),
     });
-    return { filename: result.filename, bytes: result.bytes, pruned, mirrored };
+    return { filename: result.filename, bytes: result.bytes, pruned, mirrored, s3Key };
 
   });
 }

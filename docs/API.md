@@ -1319,16 +1319,22 @@ RestoreResult { restored, dryRun, inspection, preRestoreBackup: string|null,
                  restartRequired }
 RestoreAuditEntry { id, createdAt, filename, bytes, sha256, encrypted, dryRun, restored,
                  outcome: 'dry_run'|'restored'|'refused', detail, preRestoreBackup }
+S3Destination { enabled, configured, missing, endpoint, region, bucket, prefix,
+                 accessKeyId, hasSecret }
+S3ProbeStep { step: 'put'|'head'|'delete', ok, status?, etag?, error?, warning? }
 ```
 
 | Method | Path | Response |
 | --- | --- | --- |
 | GET | `/api/backup` | `{ backups: BackupFile[] }` (`.zip` and `.hypbak`) |
 | GET | `/api/backup/export` | **a file download**, not JSON |
-| POST | `/api/backup/export` | **a file download** — `{ passphrase }` *(1.29)* |
+| POST | `/api/backup/export` | **a file download** — `{ passphrase, uploadToS3? }` *(1.29)* |
 | GET | `/api/backup/restores` | `{ restores: RestoreAuditEntry[] }`, newest first *(1.29)* |
 | POST | `/api/backup/inspect` | `{ inspection: ArchiveInspection }` |
 | POST | `/api/backup/import` | `RestoreResult` (bare) |
+| GET | `/api/backup/destinations` | `{ local: { directory, mirror }, s3: S3Destination }` *(1.29)* |
+| PUT | `/api/backup/destinations/s3` | `{ s3: S3Destination }`, partial update *(1.29)* |
+| POST | `/api/backup/destinations/s3/test` | `{ ok, key?, steps: S3ProbeStep[] }` *(1.29)* |
 
 `GET /export` query: `includeKeys` (**default false**), `includeAttachments`
 (default true). The archive bundles the SQLite database and the skills registry.
@@ -1408,6 +1414,54 @@ swap displaced — and there is no column a passphrase could be written into.
 import overwrites the live database. It takes a pre-restore backup automatically
 and reports it as `preRestoreBackup`. `restartRequired: true` means the process
 must be restarted for the restored database to take effect.
+
+### 10.3 Backup destinations *(new in 1.29)*
+
+A finished archive lands in the backups root first, always. Two destinations
+then carry copies off the machine:
+
+- **Local mirror** — the pre-existing `HYPERION_BACKUP_DEST` copy (env-only,
+  unchanged in behavior, now `mirrorToLocalDestination` in
+  `services/backup/destinations.ts`). `GET /destinations` reports it as
+  `local: { directory, mirror }`, where `mirror` is null when the variable is
+  unset.
+- **S3-compatible object storage** — endpoint, bucket, key prefix and
+  credentials, configured over HTTP because, unlike the mirror, it accepts no
+  local path and so cannot become a file-write primitive (CONTRACTS.md answers
+  the mirror section's standing objection in full).
+
+`PUT /destinations/s3` takes any subset of `endpoint`, `region` (default
+`us-east-1`), `bucket`, `prefix`, `accessKeyId`, `secretAccessKey`, `enabled`.
+Omitted fields are left alone; null or `""` clears a field; unknown fields are
+rejected so a typo cannot read as configured. Validation at write: the endpoint
+must be a bare http(s) origin (no path, query or userinfo), and **plain http is
+accepted only for loopback hosts** — the credential travels in an `Authorization`
+header on every request, and loopback MinIO is the one case with no network to
+sniff. Buckets follow the S3 naming rules (lowercase, 3–63 chars, no IP
+spelling). The secret is keystore-encrypted in the settings table and **never
+returned**: reads carry only `hasSecret`. `GET /destinations` answers
+`configured` plus `missing[]`, and a stored secret that no longer decrypts
+reads as missing-but-present (`hasSecret: true`, `missing` containing
+`secretAccessKey`) so the fix — re-entering it — is obvious.
+
+Uploads are path-style SigV4 (`{endpoint}/{bucket}/{key}`), signed on
+`node:crypto` with no SDK dependency, against any S3-compatible service. Keys
+are `{prefix}/{filename}`. Two callers, two failure contracts: `POST /export`
+with `uploadToS3: true` uploads before the download starts, reports the key in
+the `x-hyperion-s3-key` response header, and **fails the request** on any
+failure (409 `s3_not_configured`, else 500) — but the archive is already on
+disk, so the error names the local file and the download can be retried with
+the flag off. An explicit upload overrides `enabled: false`; the toggle gates
+only the automatic run, whose S3 leg never throws: it degrades to `s3Key: null`,
+a warning, and an `error_log` row the Attention queue surfaces as a backup
+failure.
+
+Two integrity properties: a PUT answered without an `ETag` is treated as a
+failed upload, and objects past the 4 GiB single-request ceiling are refused
+before a byte is read (multipart upload is not implemented).
+`POST /destinations/s3/test` round-trips a small probe object (PUT, HEAD with a
+size check, DELETE) and always answers 200 with `{ ok, steps }` — a failed
+probe is a diagnosis, so it is deliberately *not* written to `error_log`.
 
 ---
 
