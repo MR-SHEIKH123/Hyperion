@@ -5003,10 +5003,13 @@ provider that never cooled sends `null` rather than an absent field — an absen
 field is a client's default, and the default for this fact must not be "not
 cooling" when the answer is unknown.
 
-**What 1.36 names and this does not implement: `ModelSlot`.** The addendum lists
-it with no mechanism, and nothing in this tree resembles a slot abstraction over
-models, so inventing one would be a guess wearing the addendum's name. It is
-recorded in the register as unavailable rather than approximated.
+**What 1.36 named and this deliberately does not implement: `ModelSlot`
+(dropped 2026-09-24).** The addendum listed it with no mechanism, and nothing in
+this tree resembles a slot abstraction over models. The owner decision drops it
+as a named requirement rather than approximating it: every surface that needs a
+model control already has one (per-conversation on Chat, per-run on Code), so a
+slot abstraction would be indirection with no consumer. Do not build one without
+an explicit owner decision.
 
 ---
 
