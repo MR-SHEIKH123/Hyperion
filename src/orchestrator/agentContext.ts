@@ -11,6 +11,7 @@ import { executeCommand as runCommand } from './agents.ts';
 import { complete as routerComplete, stream as routerStream } from '../providers/router.ts';
 import { recordUsage } from '../db/usage.ts';
 import { zdrRequirement } from '../db/settings.ts';
+import { assertTaskOutboundSafe } from '../services/safety/outboundGate.ts';
 import { zdrStatusFor } from '../services/safety/zdr.ts';
 import { resolveInScope } from '../security/fsScope.ts';
 import { containAgentCwd } from '../services/code/worktree.ts';
@@ -153,9 +154,36 @@ export function createAgentContext(input: AgentContextInput): AgentContext {
     });
   };
 
+  /**
+   * The outbound credential scan (Part 1.23), on the task-run path.
+   *
+   * Called from both wrappers below rather than from the agents, because every
+   * agent request in the tree goes through one of the two — including a delegated
+   * child's, which borrows the parent's `llm` rather than building a context of
+   * its own. A check inside an agent would be a check the other two could skip,
+   * and the point of the gate is that it cannot be skipped by whichever agent
+   * somebody edits next.
+   *
+   * It sits *outside* `router.stream()` for the reason `outbound.ts` gives: a
+   * check buried in the router would re-run on every internal failover retry of a
+   * payload already approved, and could report nothing but an exception. The
+   * trade-off is the one `orchestrator/chat.ts` already documents — a mid-run
+   * failover can land on a provider of a different egress class than the one
+   * scanned — and it is the same residual gap rather than a new one.
+   *
+   * Nothing here catches the refusal. It propagates out of `turn`, which is where
+   * `runAgentLoop` is waiting: that is what lets the loop take its conversation
+   * snapshot and park *this run* with a question the user can answer, rather than
+   * the request failing somewhere the run's state is not written yet.
+   */
+  const scanOutbound = (request: CompletionRequest): void => {
+    assertTaskOutboundSafe({ messages: request.messages, taskId, ...(runId === undefined ? {} : { runId }) });
+  };
+
   const llmStream = async function* (
     request: CompletionRequest,
   ): AsyncGenerator<StreamChunk, void, unknown> {
+    scanOutbound(request);
     const signal = request.signal ?? stopSignal;
     const startedAt = Date.now();
     // Accumulated rather than overwritten: a request is one row, and an adapter
@@ -237,6 +265,7 @@ export function createAgentContext(input: AgentContextInput): AgentContext {
   const llmComplete = async (
     request: CompletionRequest,
   ): Promise<{ text: string; usage: TokenUsage }> => {
+    scanOutbound(request);
     const signal = request.signal ?? stopSignal;
     const startedAt = Date.now();
     const result = await routerComplete({ ...request, signal });

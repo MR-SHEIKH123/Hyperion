@@ -370,8 +370,12 @@ export interface OutboundGateInput {
    * that claims locality is only local if that URL is this machine, so passing
    * the type alone would wave through exactly the case this gate is for. Null
    * means we cannot say, and an unclassifiable provider is not gated.
+   *
+   * `id` is optional and only ever *read*, never used to decide: it is echoed
+   * into the refusal's `details` so the task path can bind an acknowledgement to
+   * the destination it was granted for.
    */
-  provider: EgressSubject | null | undefined;
+  provider: (EgressSubject & { id?: string }) | null | undefined;
   /** The user has seen the finding and asked to send anyway. */
   acknowledged?: boolean;
   /** False when the feature toggle is off; the scan is then skipped entirely. */
@@ -404,6 +408,12 @@ export function assertOutboundSafe(input: OutboundGateInput): SensitiveReport | 
         kinds: report.kinds,
         hits: report.hits,
         providerClass,
+        // Which provider the payload was going to. Id only, never the base URL:
+        // the destination is part of what an acknowledgement on the task path
+        // covers (a send approved to one provider is not a send approved to
+        // another), and the id is enough to say that without publishing an
+        // address the caller already has.
+        providerId: input.provider?.id ?? null,
       },
     },
   );

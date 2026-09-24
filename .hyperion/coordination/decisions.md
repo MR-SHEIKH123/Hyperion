@@ -971,6 +971,64 @@ data: {"runId":null,"code":"scope_violation","message":"Path escapes the \"proje
 
 **Found on the way, deliberately not fixed here — a different class, and it needs a decision.** With the redaction gate enabled, a task run sent a credential-shaped prompt to a remote-class provider and completed; the provider log line recorded it. The scan (`assertOutboundSafe`, `src/services/safety/outbound.ts`) is called from exactly one place, `src/orchestrator/chat.ts`, so task runs reach the provider without it. The agent loop already has the receiving half of this (`parkOnBlockedSend` in `src/services/agent/loop.ts`, whose `redaction_blocked` branch is therefore unreachable from the agent path), so a mechanical wiring looks tempting — but the *interactive* case has no way out: the chat path refuses with `redaction_flagged` so the client can resend with `acknowledgeSensitive`, and the task routes read no such field, while parking would re-scan on resume and park again. Wiring the gate without deciding how an interactive task acknowledges a finding would turn those runs into "paused, and resuming does not help". That is a product decision with a route-shape consequence, so it is recorded here, with the evidence and the reproduction, rather than made unilaterally. (ZDR is unaffected: it is enforced inside the provider router, so the agent path inherits it.)
 
+## Task runs bypassed the redaction gate, and what closing it cost (2026-09-24)
+
+The entry below this one recorded a defect and declined to fix it: with the
+redaction check enabled, a task run sent a credential-shaped prompt to a
+remote-class provider and completed. `assertOutboundSafe` was called from
+`orchestrator/chat.ts` and nowhere else, so the agent path had no scan — and the
+receiving half of the mechanism (`parkOnBlockedSend`, whose `redaction_blocked`
+branch was therefore unreachable) already existed. The reason given for not
+wiring it was the right one: the interactive case had no way out. The chat path
+refuses so the client can resend with `acknowledgeSensitive`, the task routes
+read no such field, and parking would re-scan on resume and park again. "Wiring
+the gate without deciding how an interactive task acknowledges a finding would
+turn those runs into *paused, and resuming does not help*."
+
+**The decision, which is the one that was deferred.** A task run's
+acknowledgement is **an approval**, not a new field. The run parks, and the
+question it is waiting on is recorded as a pending approval under
+`outbound_send` with a ticket behind it (S1's mechanism, reused: the finding is
+its `arguments`, the destination provider its `workspace`). `allow_once` arms
+that ticket, and the gate consults it **before** it refuses — so the resumed run
+replays the same conversation, finds the same credential, and sends. This is what
+"an approval for that specific park *is* the acknowledgment" buys: the ticket
+binds the finding the way it already binds a command, so it authorises that send
+and nothing else, and no parallel `acknowledgeSensitive`-equivalent exists to
+keep in sync.
+
+**No infinite park loop, traced.** Park: the loop's `turn` catch snapshots the
+conversation, records the approval, mints a pending ticket, parks
+`redaction_blocked`. Resume: `POST .../continue` with the decision applies it
+(`resolveApproval` → `settleTicketForDecision` → `armed`), starts a **second run
+id** that records the parked one as `continued_from`, and replays. The gate's
+order on that replay is: scan → flagged → *look up the ticket* → settle →
+granted → send. The ticket wins before the refusal is reached, so the identical
+payload does not park again; denied, pending and expired tickets fall through to
+`assertOutboundSafe` and do. Four tests pin it, including one that resumes an
+approved park and asserts the request reaches the provider.
+
+**The thing that was not in the register and nearly sank it.**
+`task_runs.continued_from` — added by migration `026` for exactly this check and
+described in `docs/CONTRACTS.md` as what a continuation writes — was **written by
+nobody**. S1's own lineage rule therefore refused every replayed approval as
+`run_replaced`; it went unnoticed because the loop's ticket tests drive
+`startTaskRun` directly and pass the predecessor by hand. The continuation route
+writes it now, asserted over HTTP.
+
+**Two smaller calls.** The park's wording said "no one was watching to approve
+sending it", which was true when this branch only ran for unattended runs and is
+false now that an attended task run parks too — reworded, in both
+`BLOCKED_SEND_MESSAGE` and `parkMessages.ts`, to name the answer instead of the
+audience. And the send ticket is **not consumed** on use: the same send is
+re-made on every turn of the run, so spending it on the first would ask the
+identical question on the second.
+
+Unchanged, as instructed: the chat path's `redaction_flagged` +
+`acknowledgeSensitive` mechanism, and ZDR — enforced in the provider router, so
+the agent path inherits it, and its park still honours `unattended` because
+nothing can acknowledge a ZDR block.
+
 ## The `updatedAt` nobody could see, and the check that finds the next one (2026-09-22)
 
 The item before this one recorded a defect on its way past: `frontend/src/contracts/wire/projects.ts` required an `updatedAt` the backend has never sent — `listProjects()` returns `id, name, path, managed, createdAt, lastOpenedAt` — so every project response would have parsed as `invalid_response` the first time anything called that module. **Nothing called it**, which is why it survived a green `tsc`, a green frontend suite and a green `npm run contracts`: the static snapshot checks the route side of the boundary (does the path exist; is the row's status true) and never the shape.

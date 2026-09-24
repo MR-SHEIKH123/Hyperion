@@ -2030,7 +2030,8 @@ It did not before, and two readers had already been written as if it did:
   sense if a sentence is expected, so every parked run showed the fallback. The
   item's `detail` is now the sentence for the recorded reason, and the wording
   differs per reason **because the action does**: `redaction_blocked` invites a
-  review of the flagged message, while `zdr_blocked` must not — nothing can be
+  review of the flagged message *(and, since 2026-09-24, an approval that lets
+  the send through — see §20.6)*, while `zdr_blocked` must not — nothing can be
   approved, and the block lifts only when a setting or a recorded provider fact
   changes.
 - **A scheduled run's notification** worded itself from `result.ok`, and a park is
@@ -3008,8 +3009,13 @@ one stops cleanly and is recorded `stopped` with `pause_reason:
 
 ### 20.6 Outbound data safety — `GET|PUT /api/settings/redaction-check`  *(new in 1.23)*
 
-A check on the way out: before a chat turn is sent to a **remote** provider, the
-payload is scanned for credential-shaped text, and a match refuses the send.
+A check on the way out: before a **chat turn** or a **task run's request** is sent
+to a **remote** provider, the payload is scanned for credential-shaped text, and a
+match refuses the send.
+
+*(Task runs were added 2026-09-24. Until then the scan was called from
+`orchestrator/chat.ts` only, so a Code, Cowork or Design run reached a remote
+provider unscanned; see the note on how a task run answers a finding, below.)*
 
 ```json
 // GET
@@ -3061,6 +3067,7 @@ request leaves and before anything is written:
     "details": {
       "kinds": ["vendor_prefixed_key"],
       "providerClass": "remote",
+      "providerId": "01J8ZC7N9K4V3M2P1Q0R5T6WXY",
       "hits": [{ "messageIndex": 3, "role": "user", "kind": "vendor_prefixed_key",
                  "index": 42, "length": 51 }]
     } } }
@@ -3112,6 +3119,25 @@ turn is *about to* be sent to. A mid-run failover can move the turn to a provide
 of a different egress class, and the gate does not re-run. The usage row records
 the class that actually served the turn (§9.1), so the exposure summary stays
 accurate even where the gate could not intervene.
+
+**A task run acknowledges differently, because it has to.** No task route reads
+`acknowledgeSensitive`, so a task run parks instead of refusing: the run stops as
+`blocked` / `pause_reason: redaction_blocked` (§12.6) and an approval is recorded
+under the tool name `outbound_send`, whose `arguments` are the finding — rule
+names and offsets, never the matched text — plus the destination provider id.
+`GET /api/{tool}/tasks/:taskId/approvals` lists it and
+`POST /api/{tool}/tasks/:taskId/approve` answers it with the same
+`allow_once` / `allow_session` / `deny` decisions every other approval takes
+(§12.6); `POST /api/{tool}/tasks/:taskId/continue` then replays the run.
+
+The ticket behind that approval is checked **before** the scan refuses, so an
+allowed finding lets the resumed run send the identical payload without parking
+again — and a pending, denied or expired one does not. It is bound to the finding
+and to the destination, so an approval for one credential does not carry another,
+and one granted for a provider does not carry a different provider. It is
+deliberately **not consumed** on use: the same send is re-made on every turn of
+the run, and spending it on the first would ask the same question again on the
+second.
 
 ---
 

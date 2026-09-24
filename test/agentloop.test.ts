@@ -319,7 +319,7 @@ describe('an unattended blocked send', () => {
     assert.throws(
       () => parkOnBlockedSend(ctx, runId, flagged, true),
       (error: unknown) =>
-        error instanceof AppError && error.code === 'redaction_flagged' && /no one was watching/.test(error.message),
+        error instanceof AppError && error.code === 'redaction_flagged' && /approve it to let this/.test(error.message),
     );
     assert.equal(getTaskRun(runId)?.state, 'blocked');
   });
@@ -601,7 +601,10 @@ describe('the loop', () => {
         },
         ctx,
       ),
-      (error: unknown) => error instanceof AppError && /no one was watching/.test(error.message),
+      // Not "no one was watching": a task run parks this way whether or not a
+      // browser is attached, so the sentence names the answer instead of the
+      // audience.
+      (error: unknown) => error instanceof AppError && /approve it to let this/.test(error.message),
     );
 
     assert.equal(getTaskRun(runId)?.state, 'blocked');

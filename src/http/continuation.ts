@@ -300,6 +300,18 @@ function continueTaskRoute(tool: AgentTool) {
         taskId,
         tool: tool as TaskRunTool,
         chatId: linkedChatId(input.chatId),
+        // The lineage a ticket is settled against (S1, migration `026`).
+        //
+        // The column was added for exactly this and written by nobody: an
+        // approval is minted under the *parked* run's id and settled by a
+        // continuation that deliberately runs under a new one, so without this
+        // line the live run id never matches and every replayed approval is
+        // refused as `run_replaced` — including the outbound-send approval a
+        // `redaction_blocked` park waits on, which would park again on resume
+        // and again on the resume after that. `supersede()` already wrote the
+        // link the other way round, as prose in the parked row's
+        // `pause_reason`; this is the direction a check can read.
+        continuedFrom: run.runId,
       });
       // The parked row is left `running` by the claim and would stay that way
       // forever otherwise, so it is closed out as superseded.
