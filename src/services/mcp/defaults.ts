@@ -3,8 +3,9 @@
  *
  * Hyperion ships with a few MCP servers that are useful out of the box — a
  * filesystem server scoped to the projects root, `wigolo`, the local-first web
- * research server Cowork uses, and `graphify`, which turns a repository into a
- * traversable knowledge graph. None of them existed in the database before this
+ * research server Cowork uses, `graphify`, which turns a repository into a
+ * traversable knowledge graph, and `memory`, Hyperion's own recall/store over
+ * MCP. None of them existed in the database before this
  * module: `mcp_config.json` was only ever written *from* the table, so a fresh
  * install started with an empty MCP list.
  *
@@ -56,6 +57,9 @@ export interface DefaultServer {
 /** The server's name in the registry, and the key `rescopeFilesystemServer` finds it by. */
 const FILESYSTEM_NAME = 'filesystem';
 
+/** The name the first-party memory server is seeded under. */
+const MEMORY_NAME = 'memory';
+
 /**
  * Everything before the root on the filesystem server's argv.
  *
@@ -82,17 +86,20 @@ const BROWSER_USE_ARGV = ['--from', 'browser-use[cli]', 'browser-use', '--mcp'] 
  * projects directory so it cannot reach anything outside the app's own sandbox
  * (the same root `security/fsScope.ts` enforces for our own writes).
  *
- * `wigolo`, `graphify` and `browser-use` are seeded **disabled** on purpose. wigolo is
- * documented as possibly needing a one-time `wigolo init` before it will serve,
- * and graphify's interpreter does not exist until its venv has been created —
- * nor does the graph it serves, which has to be built first. A server
- * `browser-use` needs `uv` on PATH (the entry runs `uvx`) and a model API key of
+ * `wigolo`, `graphify`, `browser-use` and `memory` are seeded **disabled** on
+ * purpose. wigolo is documented as possibly needing a one-time `wigolo init`
+ * before it will serve, and graphify's interpreter does not exist until its venv
+ * has been created — nor does the graph it serves, which has to be built first.
+ * A server `browser-use` needs `uv` on PATH (the entry runs `uvx`) and a model API key of
  * its own in its environment, which only the user can supply — the browser agent
  * runs its own model loop, so it is not satisfied by whatever drives Hyperion.
- * A server that fails on every start would sit permanently red in the status bar
- * and make the whole MCP panel look broken. Disabled means: visible in the list,
- * pre-filled, one click away — the user turns it on once its first-run setup is
- * done. That also matches the app-wide rule that nothing auto-enables itself.
+ * `memory` needs no setup at all, but its tools answer "the plugin is off"
+ * until the opt-in Memory plugin is on — enabling a server whose every tool
+ * refuses would read as broken. A server that fails on every start would sit
+ * permanently red in the status bar and make the whole MCP panel look broken.
+ * Disabled means: visible in the list, pre-filled, one click away — the user
+ * turns it on once its first-run setup is done. That also matches the app-wide
+ * rule that nothing auto-enables itself.
  */
 export function defaultServers(): DefaultServer[] {
   return [
@@ -159,7 +166,31 @@ export function defaultServers(): DefaultServer[] {
         enabled: false,
       },
     },
+    {
+      note:
+        "Hyperion's own memory over MCP (`memory_search`, `memory_add`): the same recall/store " +
+        'the Settings routes call, served so agents use memory through the standard tool path. ' +
+        'Runs on this Node with no setup, and inherits the app environment (including the memory ' +
+        'store location), so there is nothing to configure. Seeded disabled: its tools refuse ' +
+        'until the opt-in Memory plugin is on.',
+      input: {
+        name: MEMORY_NAME,
+        type: 'local',
+        command: process.execPath,
+        args: [memoryServerScript()],
+        enabled: false,
+      },
+    },
   ];
+}
+
+/**
+ * The served script, resolved from the installation root rather than the
+ * working directory: the supervisor inherits whatever cwd the app was launched
+ * with, so a relative script path would break under half the launch methods.
+ */
+function memoryServerScript(): string {
+  return path.join(env.appRoot, 'src', 'mcp-servers', 'memory.ts');
 }
 
 /** The venv this server's Python package is installed into. */

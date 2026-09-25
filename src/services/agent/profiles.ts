@@ -33,7 +33,9 @@
  * through. Granting shell access from a profile whose entire promise is "runs
  * nothing" needs a command parser, not a pattern, and that is not what this
  * feature is. A user who wants read-only shell in a question-answering profile can
- * author one — which is precisely the capability being added here.
+ * author one — which is precisely the capability being added here. The refusal is
+ * owner-signed as **AD-2** (coordination register, 2026-09-24): do not build the
+ * allowlist without an explicit owner decision overriding it.
  *
  * ## How a profile is chosen
  *

@@ -70,15 +70,13 @@ behavior in the browser.
   reason and the route in words instead of a dead button. Of the rest of 1.31, the unattended-run notification and the
   interactive-wait timeout both landed on 2026-09-21 (a prompt now expires after
   `approval_wait_ttl_hours`, default 72, and the Attention Center says so instead of
-  announcing an allowance that was never applied); the **Design environment** remains, and it
-  is the last open half of the item — with its requirement text absent from every document in
-  this repository (the phrase appears once, in the register's digest of the owner-supplied
-  increments, and nowhere in `docs/SPEC.md`'s Design deep-dive or the Design agent's prose).
-  The register's Open decisions records both possible readings and why neither was built: a
-  filesystem environment for Design is refused by the ratified `S-2` (its artifacts are
-  `artifact_versions` rows and its toolset excludes `write`/`bash`/`command`), and the Design
-  *surface* is Prompt-2 frontend work this scope excludes — the placeholder above is that
-  scope's honest state, not this entry's.
+  announcing an allowance that was never applied). The **Design environment** left Prompt 1's
+  list on 2026-09-24 by owner decision: it is a frontend surface for Design's eventual
+  Prompt 2 build (file/component tree, visual diff, viewport presets), not backend scope,
+  so nothing was built for it and the register's Open-decision item is closed. The S-2
+  refusal stands for any filesystem reading — Design's artifacts are `artifact_versions`
+  rows and its toolset excludes `write`/`bash`/`command` — and the surface half now lives
+  in the Later entry below with the Design tool's other deferred surfaces.
 
   One thing this list should carry while it is here: **the approval deadline has no
   settings control.** The value is a setting (three days by default) and the read reports
@@ -130,6 +128,10 @@ behavior in the browser.
   three route cases; nothing calls it, because there is no Settings surface at all (the same
   reason the memory import routes above are uncalled). A reload control belongs there when
   that surface exists.
+- **No profile-import client (1.28).** `POST /api/code/agents/import` files uploaded `.md`
+  profiles into the active project's `.hyperion/agents/` with per-file results, but nothing
+  calls it: there is no profiles surface, and no Settings screen to host one. A folder picker
+  can POST the folder's files to it unchanged when that surface exists.
 - No global search endpoint; later shell search must report federated partial coverage.
 
 ## Later
@@ -139,8 +141,9 @@ behavior in the browser.
   catalogue with an offline scan, and `PATCH /api/plugins/:id/availability` stores a per-tool decision
   (migration `025`, default available). What is still missing is a *frontend* Plugins surface — the tool
   is a placeholder. browser-use *is* registered now (1.35, a seeded MCP server), and the hub reads it as a
-  browser-driving server; what is still missing on that front is per-tool MCP selection, so no tool consumes a
-  second MCP server yet — Cowork reads `wigolo` by name.
+  browser-driving server; what is still missing on that front is *general* per-tool MCP selection. Cowork
+  read only `wigolo` by name until 2026-09-25, when the first-party `memory` server became its second
+  named server (`memory.memory_search` / `memory.memory_add`); any-server-into-any-tool is still open.
 - ~~No Chat fork endpoint~~ **Closed 2026-09-21 (1.27)**: `POST /api/chat/:id/fork` branches a
   conversation without touching it. A dedicated Chat state endpoint is still missing
   (`chat.state` above): runs and paused runs are the only chat-state reads.
@@ -158,16 +161,30 @@ behavior in the browser.
   *active* work; a per-project *history* of code tasks is still absent, and `GET /api/code/tasks/:id/export`
   covers one task's diff. The Code surface (`src/tools/code/`) therefore shows the lane and says
   that a finished task leaves no row here, rather than caching rows the server never sent.)
-- No Design file tree, version timeline, rendered diff, or design-system context contract.
+- No Design file tree, version timeline, rendered diff, or design-system context contract. (1.31's "Design environment" clause lives here now: reclassified out of Prompt 1 to Design's Prompt 2 build, 2026-09-24.)
 - ~~No general artifact lineage/list endpoint.~~ **Partly closed 2026-09-21**: `GET /api/artifacts/versions?key=…`
   lists one artifact's version chain with its derived parent (Prompt 1.39 A6). There is still no
   cross-artifact listing or a "what produced this" graph — the version stack answers "what did this
   replace", not "where did this come from".
-- No Pulse, discovery, or watchlist contracts. Browser-use exists as a seeded MCP server (1.35); what has
-  no contract is *assigning* browser work to it from a tool.
-- Backup does not expose the specified encrypted destination/passphrase system.
+- ~~No Pulse, discovery, or watchlist contracts.~~ **Partly closed 2026-09-24 (1.30).**
+  Pulse is contracted: the `pulse.fetch` tool plus config/history routes
+  (`docs/API.md` §17.3), `deferred-frontend` — the UI that would call them does
+  not exist yet. Discovery and watchlists remain absent by design: Pulse is
+  on-demand only, with no poller and no direct-fetch route. Browser-use exists
+  as a seeded MCP server (1.35); what has no contract is *assigning* browser
+  work to it from a tool.
+- ~~Backup does not expose the specified encrypted destination/passphrase system.~~ **Closed 2026-09-24 (1.29).**
+  Both halves now exist: the passphrase half since 2026-09-21 (`.hypbak`
+  containers, `docs/API.md` §10.1) and the destinations half since 2026-09-24
+  (the env mirror as the local adapter plus S3-compatible destinations,
+  `docs/API.md` §10.3). The Settings surface that will call the destination
+  routes does not exist yet — the routes are ready and the UI is pending, so
+  the three destinations routes are `deferred-frontend` in the snapshot.
 - ~~Memory has no direct-add or text-import endpoint.~~ **Closed 2026-09-21**: `POST /api/memory`
   (one memory, bounded to a paragraph) and `POST /api/memory/import` (pasted text, split on blank
   lines, bounded to 100 chunks / 20 000 characters, dropped pieces counted rather than truncated).
+  Extended 2026-09-25: the import route also takes `multipart/form-data` with up to 50 `files`
+  (one shared chunk budget, per-file breakdown), so a folder picker can POST a folder's files
+  unchanged — the 1.28 upload shape, not a server-side path read.
   The Settings surface that will call them does not exist yet — the routes are ready and the
   placeholder tool is not.

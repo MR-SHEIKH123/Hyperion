@@ -7,6 +7,7 @@
  */
 
 import { getDb } from '../db/adapter.ts';
+import { createLogger } from '../util/logger.ts';
 import { isZdrRequirement } from '../types/core.ts';
 
 import type { ZdrRequirement } from '../types/core.ts';
@@ -81,7 +82,13 @@ export function allSettings(): Record<string, string | null> {
  * round-trip them or every existing browser subscription breaks on restore.
  * The omission therefore belongs at the boundary, not in the table accessor.
  */
-export const SECRET_SETTING_KEYS: readonly string[] = ['push_vapid_private', 'push_subscriptions'];
+export const SECRET_SETTING_KEYS: readonly string[] = [
+  'push_vapid_private',
+  'push_subscriptions',
+  // The S3 secret access key (1.29 destinations): keystore-encrypted at rest,
+  // and must never appear in a public-settings dump or an API response.
+  'backup_s3_secret_access_key',
+];
 
 /**
  * `allSettings()` minus the credential keys — the only form that may be sent
@@ -265,6 +272,7 @@ export const TASK_TOKEN_CEILING_KEY = 'task_token_ceiling';
 export const TASK_ITERATION_CEILING_KEY = 'task_iteration_ceiling';
 export const SUBAGENT_COUNT_LIMIT_KEY = 'subagent_count_limit';
 export const REDACTION_CHECK_KEY = 'redaction_check_enabled';
+export const PULSE_TIER_KEY = 'pulse_tier';
 export const PARKED_WORKTREE_TTL_KEY = 'parked_worktree_ttl_hours';
 export const APPROVAL_WAIT_TTL_KEY = 'approval_wait_ttl_hours';
 
@@ -386,6 +394,29 @@ export function approvalWaitTtlHours(): number {
  */
 export function redactionCheckEnabled(): boolean {
   return getBoolSetting(REDACTION_CHECK_KEY, false);
+}
+
+// --- Cowork Pulse (Part 1.30) ------------------------------------------------
+
+const log = createLogger('settings');
+
+/** Which Pulse sources may serve a fetch. Absent and corrupt both read as `off`. */
+export type PulseTier = 'off' | 'free' | 'keyed';
+
+/**
+ * The Pulse tier, fail-closed: anything that is not a known tier — including a
+ * hand-edited settings row — disables fetching rather than guessing. The write
+ * path (`savePulseTier`) only stores known tiers, so the warning below fires
+ * only for values that arrived behind its back.
+ */
+export function pulseTier(): PulseTier {
+  const raw = getSetting(PULSE_TIER_KEY);
+  if (raw === null || raw === 'off') return 'off';
+  if (raw === 'free' || raw === 'keyed') return raw;
+  log.warn('ignoring an unknown pulse_tier value; Pulse is off until it is set to off, free or keyed', {
+    value: raw,
+  });
+  return 'off';
 }
 
 // --- zero data retention (Part 1.26) ---------------------------------------

@@ -20,6 +20,7 @@
  *     plainly, so the UI never shows a green tick we didn't earn.
  */
 import fs from 'node:fs';
+import path from 'node:path';
 import { env } from '../../config/env.ts';
 import { isInScope } from '../../security/fsScope.ts';
 import type { ScopeName } from '../../security/fsScope.ts';
@@ -246,6 +247,13 @@ function staticProblems(server: McpServerRecord): string[] {
   for (const arg of server.args) {
     if (!looksAbsolute(arg)) continue;
 
+    // The app's own code is not data access: a server pointed at its own
+    // shipped implementation (the first-party memory server's script) is
+    // granted nothing — the server is fixed — so it is exempt from the
+    // data-root containment below. Without this our own seed fails its own
+    // config check, the outcome the scope list above was extended to avoid.
+    if (isAppCode(arg)) continue;
+
     if (!ALLOWED_ARG_SCOPES.some((scope) => isInScope(scope, arg))) {
       problems.push(
         `The path "${arg}" is outside the allowed roots (${env.paths.projects} and ` +
@@ -267,6 +275,11 @@ function staticProblems(server: McpServerRecord): string[] {
     }
   }
   return problems;
+}
+
+/** Inside the installation the code runs from (`src/`, not data). The exact root or anything under it. */
+function isAppCode(arg: string): boolean {
+  return arg === env.appRoot || arg.startsWith(env.appRoot + path.sep);
 }
 
 function looksAbsolute(value: string): boolean {

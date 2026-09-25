@@ -1754,6 +1754,94 @@ the record of what was said); this section is the correction layer.
   output caps like `MAX_TOOL_OUTPUT` are ingest bounds, not compaction).
   The receipt-for-summary swap is owner-signed as **AD-1** below.
 
+## Corrections to inherited claims (2026-09-24) — the Prompt 1 close-out
+
+The per-addendum rows below stay verbatim — they are the record of what was
+believed when written, including the digest-text claims that later turned out
+to be stale. This section is the correction layer for the 2026-09-24 close-out
+round (append-only ruling, same round: entries are never rewritten in place,
+including for corrections). One bullet per row it supersedes:
+
+- **1.28 profile import — landed 2026-09-24, as an upload route; the row's
+  "blocked" is the stale half.** The owner specified the shape: `.md` files
+  from a user-selected folder into the active project's `.hyperion/agents/`,
+  alongside existing profiles, never overwriting without explicit confirmation.
+  `POST /api/code/agents/import` files them in one multipart call —
+  upload-based because a server-side folder path would be a read primitive
+  outside every fsScope root — validated through the same parser that reads
+  profiles back, collisions defaulting to skip with `rename` (`<stem>-2.md`)
+  and `overwrite` (requiring `confirm: true`) as explicit policies, and a 409
+  when no project is open. The two-readings question is answered as *write
+  definitions into the project's set*; profile inheritance stays unbuilt,
+  unrequested. `test/profileimport.test.ts` **13 cases** plus 2 killed mutants;
+  `docs/API.md` §12, `docs/CONTRACTS.md` "Import never overwrites without
+  confirmation". (Open decision resolved alongside, below.)
+- **1.29 destinations — landed 2026-09-24; the row's "absent" was written
+  against the digest text, not the tree.** The env-only mirror predates the row
+  (it landed in 1.8) and is now the local adapter in
+  `services/backup/destinations.ts`, beside a new S3-compatible destination:
+  SigV4 uploads on `node:crypto` with no SDK, path-style URLs, the secret
+  keystore-encrypted in the settings table and never returned, config/probe
+  routes, an `uploadToS3` option on `POST /export`, and a never-throw S3 leg on
+  the automatic run whose failures land in `error_log` for the Attention queue.
+  `src/services/backup/destinations.ts` (new), `src/http/backup.ts` (the
+  destinations routes), `src/services/backup/schedule.ts` (the S3 leg, `s3Key`),
+  `test/backups3.test.ts` **21 cases** plus 2 killed mutants (ETag requirement,
+  loopback-only http), `docs/API.md` §10.3, `docs/CONTRACTS.md` "S3 backup
+  destinations answer the mirror's standing objection".
+- **1.30 — landed 2026-09-24, both halves; the row's "no `pulse` anywhere" and
+  "no Design preview surface yet" were both stale.** *Pulse:* the `pulse.fetch`
+  tool on the Cowork agent (offered only when the tier is on; `read` effect;
+  statically registered so a profile granting it survives the tier being off),
+  an off-by-default tier (`off`/`free`/`keyed`, fail-closed reads) with four
+  keyless sources (Reddit, Hacker News, Polymarket, GitHub), a keyed-tier
+  framework with no concrete source (registry plus plumbing proven by a test
+  fixture), on-demand only (no direct-fetch route, no poller, no watchlists),
+  queries scanned under `redaction_check_enabled` with Pulse's own no-send-anyway
+  refusal wording, every fetch audited to `pulse_fetches` (migration `028`)
+  behind config/history routes, partial failure as the normal shape.
+  Deliberately not built (owner-approved scope vote 2026-09-24): the direct-fetch
+  HTTP route and the exposure-summary `pulse` block — stretch goals, recorded
+  here. *Design preview sandboxing:* verified landed, not built —
+  `GET /api/design/preview/:id` serves model-output markup with
+  `default-src 'none'; style-src 'unsafe-inline'; img-src data:`, `nosniff` and
+  `no-store`, a uniform 404, on a loopback-default bind, pinned by
+  `test/designagent.test.ts` ("serves it inert", "404s without confirming"); no
+  frontend embed exists (no `iframe` in `frontend/src`), so the
+  `sandbox`-attribute layer has nothing to attach to and the CSP carries
+  inertness even for direct visits. `src/services/cowork/pulse.ts` (new),
+  `src/services/cowork/agent.ts` (tool offering, dispatch, status line),
+  `src/http/cowork.ts` (the three routes),
+  `src/db/{migrations/028_pulse_fetches.sql,pulseFetches.ts}` (new),
+  `src/db/settings.ts` (`pulse_tier`); `test/coworkpulse.test.ts` **25 cases**
+  plus 2 killed mutants (tier gate, redaction scan); `docs/API.md` §17.3,
+  `docs/CONTRACTS.md` "Cowork Pulse fetches on demand".
+- **1.31 — complete as a Prompt-1 item 2026-09-24; the last clause was
+  reclassified, not built.** Owner decision: "the Design environment" is a
+  frontend surface for Design's eventual Prompt 2 build (file/component tree,
+  visual diff, viewport presets), not backend scope — nothing was built for it
+  here, it left Prompt 1's list entirely, and it now lives in
+  `frontend/contracts/gaps.md` with the Design tool's other deferred surfaces.
+  The recovery screen's remaining halves stay tracked where they were
+  (`tasks.recovery: partial`, the frontend gaps list). (Open decision resolved
+  alongside, below.)
+- **1.33 — the refusal is owner-signed AD-2 (2026-09-24).** The row's "needs
+  owner sign-off" is answered: the Ask shell allowlist stays refused, standing
+  unless the owner explicitly overrides it. The Accepted-deviations entry below
+  is the record. (Open decision resolved alongside, below.)
+- **1.36 — complete 2026-09-24; `ModelSlot` dropped as a named requirement.**
+  Owner decision: the addendum names it with no mechanism, nothing in the tree
+  resembles a slot abstraction, and every surface that needs a model control
+  already has one — Chat persists a per-conversation `modelId`, the Code
+  composer takes a per-run `modelId`, and Cowork/Design have no surface to need
+  one — so a new abstraction would add indirection with no consumer. No code.
+- **Increment series summary — the summary row stays as written; standing as
+  of 2026-09-24:** nothing remains unlanded in full (`1.30` and `1.29` closed
+  the last gaps; `1.34`–`1.38` landed 2026-09-21); `1.36` complete; partials
+  updated — `1.28` profile import landed as the upload route, `1.31`'s Design
+  environment reclassified to Prompt 2, `1.33` signed as AD-2, `1.27` unchanged
+  (AD-1 only).
+
 ## Accepted deviations (owner-signed)
 
 - **AD-1 — the compaction digest is a deterministic receipt, not a model
@@ -1778,6 +1866,21 @@ the record of what was said); this section is the correction layer.
   and `escalate` survives as the `nothing_droppable` → parked
   `context_exhausted` path. `summarize` is the only stage whose *mechanism*
   changed, and that change is this signed deviation, not drift.
+
+- **AD-2 — Ask mode grants no shell at all; the read-only `bash` allowlist is
+  refused, not deferred (accepted 2026-09-24).** Addendum 1.33 §1 enumerates a
+  read-only shell allowlist for Ask mode. This tree will not build it: a glob
+  over a shell command line is not a security boundary — `git status*` matches
+  `git status; rm -rf /`, and every `;`, `&&`, backtick and `$( )` is another
+  way through — so an allowlist would present as a safety control while being
+  passable by the first compound command the model emits. Granting shell access
+  from a profile whose entire promise is "runs nothing" needs a command parser,
+  not a pattern, and that is not what the requirement describes. Ask therefore
+  keeps `{ "*": "deny" }` (`services/agent/profiles.ts`, whose comment carries
+  the same reasoning); a user who wants read-only shell in a question-answering
+  profile authors a project profile, which is the capability 1.27 added for
+  exactly such cases. **Do not build the allowlist without an explicit owner
+  decision overriding this one** — same standing as AD-1.
 
 ## Open decisions
 
@@ -1807,6 +1910,10 @@ the record of what was said); this section is the correction layer.
   grants no shell at all. That is a divergence from an owner-supplied
   requirement, not an oversight — it needs either a signed deviation (the AD-1
   precedent) or an explicit instruction to build the allowlist anyway.
+
+  **RESOLVED 2026-09-24 as AD-2:** the owner accepted the refusal rather than
+  overriding it; recorded under Accepted deviations above. The allowlist stays
+  unbuilt.
 - **1.28's "profile import" — blocked, requirement text absent (raised 2026-09-21).**
   Profiles in this tree are **files a project authors**, discovered per project (and
   per worktree for a live Code task) through `ProfileSource` and parsed with their
@@ -1823,6 +1930,14 @@ the record of what was said); this section is the correction layer.
   chunks pasted text — an unrelated pattern, not evidence for either reading.
   **Needs:** the sentence from the source document that says what is imported and from
   where.
+
+  **RESOLVED 2026-09-24 (built as an upload route):** the owner specified the
+  shape — `.md` files from a user-selected folder into the active project's
+  `.hyperion/agents/`, alongside existing profiles, never overwriting without
+  explicit confirmation. The backend half is the multipart route above (a future
+  folder picker POSTs the folder's files unchanged); the two-readings question is
+  answered as *write definitions into the project's set*, and profile inheritance
+  stays unbuilt, unrequested.
 - **1.31's "Design environment" — blocked, requirement text absent (raised 2026-09-21).**
   The last unbuilt clause of item 1.31, and it cannot be built faithfully from what
   is here. The phrase appears **exactly once** in the whole repository — the digested
@@ -1841,6 +1956,11 @@ the record of what was said); this section is the correction layer.
   be a feature the requirement never named. **Needs:** the sentence from the source
   document that names what the environment is, or an explicit instruction to build
   one of the two readings above.
+
+  **RESOLVED 2026-09-24 (reclassified, not built):** the owner ruled it a frontend
+  surface for Design's eventual Prompt 2 build and removed it from Prompt 1's list
+  entirely. Nothing was built for it here; it now lives in
+  `frontend/contracts/gaps.md` with the Design tool's other deferred surfaces.
 - **Terminal "Take over": keep or drop (folded from the source's `QUESTIONS.md`,
   2026-08-28, still open).** No takeover surface exists in this tree, and 1.27 §1
   carries the exemption forward ("commands entered directly by the user through
@@ -1864,6 +1984,53 @@ the record of what was said); this section is the correction layer.
   target-link clause is the only thing to loosen; if it is looser (inward links
   followed), that is the `assertNoSymlinkedTraversal` call sites to drop. Both edits
   are one line plus its test.
+
+## Memory: folder import, MCP tools, and the prune check (2026-09-25)
+
+A self-contained Memory requirement in four items, worked verify-first: two
+items were already landed and were verified rather than rebuilt.
+
+1. **`POST /api/memory` — verified landed (1.21).** Single-fact add through
+   `addMemory`, the same mem0 client and `USER_ID` store the reads serve.
+2. **Bulk import — the paste half verified (1.21), the folder half built.**
+   `POST /api/memory/import` takes `multipart/form-data` with up to 50
+   `files` (the 1.28 upload shape — a folder picker POSTs the folder's files
+   unchanged; the server never reads a user-supplied path). Each file splits
+   on blank lines through the shared splitter, all files share the one
+   100-chunk / 20 000-character budget in upload order, and each file reports
+   `{ imported, dropped, found, error }` while the batch continues past
+   invalid files. The write path is byte-identical to the paste importer's —
+   sequential `mem.add` with the same metadata — and mem0's array form was
+   checked and rejected as the bulk mechanism: it joins the array into one
+   extraction context, which would merge per-file chunks into LLM-decided
+   memories.
+3. **Memory over MCP — built.** `memory_search` / `memory_add` served by a
+   first-party stdio server (`src/mcp-servers/memory.ts`), seeded disabled,
+   consumed by Cowork (verified the only MCP-aware agent) through the
+   standard supervised-server path. Two gates — the server switch and the
+   Memory plugin's own per-tool switch — because the server decision must not
+   override the plugin one; search is a read, add falls through to mutate.
+   The child owns its stdio (logger silenced, `console.*` to a file: stderr
+   is piped but never drained).
+4. **Prune check — report only, by decision.** mem0ai 3.1.2 read line by line:
+   extraction, exact-text-md5 dedup, read-time expiry filtering, history and
+   entity linking are covered; contradiction resolution and all automatic
+   pruning (GC, decay, caps) are genuinely uncovered, and Hyperion never sets
+   `expirationDate`, so nothing expires. Any future pruning rides mem0's own
+   `delete`/`update`/`expirationDate`. No pruning built.
+
+Adjacent fix from the same read: mem0 phones PostHog inside `add()` unless
+`MEM0_TELEMETRY=false` — contradicting the local-first rule — so the memory
+module now defaults it to off (explicit environment respected).
+
+Tests: `test/memorywrite.test.ts` (+11: files route, file chunking,
+telemetry default), `test/mcpmemory.test.ts` (new, 16: handler units, served
+surface, logger silence, live spawn round trip), `test/coworkagent.test.ts`
+(+5: offering, guidance, both hub gates, plan-mode read/mutate),
+`test/mcpdefaults.test.ts` (+3: seed shape, app-root exemption,
+sibling-prefix rejection). Docs: `docs/API.md` (import row + folder
+paragraph), `docs/CONTRACTS.md` ("Memory over MCP" + the mem0 read),
+`frontend/contracts/gaps.md` (M17 files note, second-server status).
 
 ---
 

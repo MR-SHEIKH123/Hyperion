@@ -9,6 +9,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -112,11 +113,25 @@ const paths = {
   worktrees: path.join(home, 'worktrees'),
 } as const;
 
+/**
+ * The app's own installation: the checkout the code runs from. Computed from
+ * this file's location, never from the working directory — the process may be
+ * launched from anywhere, but the code always knows where it lives.
+ *
+ * Deliberately *not* in `paths`: those are data locations the app may write,
+ * and the installation is not writable. Consumers: the first-party MCP server
+ * seed (its script path) and the MCP config check, which exempts the app's own
+ * code from data-root containment — pointing a server at its own implementation
+ * grants it no access.
+ */
+const appRoot = path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url))));
 
 export const env = {
   nodeEnv: str('NODE_ENV', 'development'),
   isTest: str('NODE_ENV', 'development') === 'test',
   logLevel: str('HYPERION_LOG_LEVEL', 'info'),
+  /** The checkout root — code, not data (see above). */
+  appRoot,
 
   host: bind.host,
   port: int('HYPERION_PORT', 4317),

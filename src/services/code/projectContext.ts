@@ -452,7 +452,22 @@ async function scanDirectory(dir: string, relativeDir: string): Promise<ParsedFi
   return parsed;
 }
 
-function parseContextFile(filename: string, relativePath: string, text: string): ParsedFile {
+/**
+ * One profile document's bytes, parsed the way the directory scan parses them.
+ *
+ * Exported so the import route validates uploads through the identical parser
+ * that will read them back: an import the scanner cannot read is a file the
+ * user filed and the app cannot see. `parseContextFile` below is this plus the
+ * relative path, and the two cannot drift because one calls the other.
+ */
+export interface ParsedProfileDocument {
+  name: string;
+  description: string | null;
+  raw: Record<string, string | string[]>;
+  body: string;
+}
+
+export function parseProfileDocument(filename: string, text: string): ParsedProfileDocument {
   const { front, body } = splitFrontMatter(text);
   const raw = front ? parseSimpleYaml(front) : {};
 
@@ -470,9 +485,19 @@ function parseContextFile(filename: string, relativePath: string, text: string):
     // recognise, and its filename is what they named it.
     name: clamp(name ?? filenameToName(filename), NAME_MAX),
     description: description === null ? null : clamp(description, DESCRIPTION_MAX),
-    path: relativePath,
     raw,
     body,
+  };
+}
+
+function parseContextFile(filename: string, relativePath: string, text: string): ParsedFile {
+  const doc = parseProfileDocument(filename, text);
+  return {
+    name: doc.name,
+    description: doc.description,
+    path: relativePath,
+    raw: doc.raw,
+    body: doc.body,
   };
 }
 

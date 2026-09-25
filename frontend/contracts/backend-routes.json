@@ -19,147 +19,154 @@
     {
       "method": "POST",
       "path": "/api/code/run-task",
-      "source": "src/http/agents.ts:510",
+      "source": "src/http/agents.ts:514",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "POST",
       "path": "/api/cowork/run-task",
-      "source": "src/http/agents.ts:511",
+      "source": "src/http/agents.ts:515",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "POST",
       "path": "/api/design/run-task",
-      "source": "src/http/agents.ts:512",
+      "source": "src/http/agents.ts:516",
       "exposure": "frontend",
       "capability": "design.core"
     },
     {
       "method": "GET",
       "path": "/api/code/tasks",
-      "source": "src/http/agents.ts:522",
+      "source": "src/http/agents.ts:526",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "GET",
       "path": "/api/code/tasks/:taskId/state",
-      "source": "src/http/agents.ts:612",
+      "source": "src/http/agents.ts:616",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "GET",
       "path": "/api/cowork/tasks/:taskId/state",
-      "source": "src/http/agents.ts:613",
+      "source": "src/http/agents.ts:617",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "GET",
       "path": "/api/cowork/tasks/:taskId/provenance",
-      "source": "src/http/agents.ts:600",
+      "source": "src/http/agents.ts:604",
       "exposure": "frontend",
       "capability": "cowork.read"
     },
     {
       "method": "GET",
       "path": "/api/design/tasks/:taskId/state",
-      "source": "src/http/agents.ts:614",
+      "source": "src/http/agents.ts:618",
       "exposure": "frontend",
       "capability": "design.core"
     },
     {
       "method": "GET",
       "path": "/api/code/tasks/:taskId/recovery",
-      "source": "src/http/agents.ts:632",
+      "source": "src/http/agents.ts:636",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "GET",
       "path": "/api/cowork/tasks/:taskId/recovery",
-      "source": "src/http/agents.ts:633",
+      "source": "src/http/agents.ts:637",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "GET",
       "path": "/api/design/tasks/:taskId/recovery",
-      "source": "src/http/agents.ts:634",
+      "source": "src/http/agents.ts:638",
       "exposure": "frontend",
       "capability": "design.core"
     },
     {
       "method": "POST",
       "path": "/api/code/tasks/:taskId/cancel",
-      "source": "src/http/agents.ts:688",
+      "source": "src/http/agents.ts:692",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "POST",
       "path": "/api/cowork/tasks/:taskId/cancel",
-      "source": "src/http/agents.ts:689",
+      "source": "src/http/agents.ts:693",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "POST",
       "path": "/api/design/tasks/:taskId/cancel",
-      "source": "src/http/agents.ts:690",
+      "source": "src/http/agents.ts:694",
       "exposure": "frontend",
       "capability": "design.core"
     },
     {
       "method": "GET",
       "path": "/api/code/tasks/:taskId/export",
-      "source": "src/http/agents.ts:703",
+      "source": "src/http/agents.ts:707",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "GET",
       "path": "/api/code/rules",
-      "source": "src/http/agents.ts:733",
+      "source": "src/http/agents.ts:737",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "GET",
       "path": "/api/code/agents",
-      "source": "src/http/agents.ts:745",
+      "source": "src/http/agents.ts:749",
       "exposure": "frontend",
+      "capability": "code.core"
+    },
+    {
+      "method": "POST",
+      "path": "/api/code/agents/import",
+      "source": "src/http/agents.ts:782",
+      "exposure": "deferred-frontend",
       "capability": "code.core"
     },
     {
       "method": "GET",
       "path": "/api/code/commands",
-      "source": "src/http/agents.ts:751",
+      "source": "src/http/agents.ts:806",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "GET",
       "path": "/api/code/permissions",
-      "source": "src/http/agents.ts:770",
+      "source": "src/http/agents.ts:825",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "POST",
       "path": "/api/code/execute-command",
-      "source": "src/http/agents.ts:821",
+      "source": "src/http/agents.ts:876",
       "exposure": "deferred-frontend",
       "capability": "code.execute-command"
     },
     {
       "method": "GET",
       "path": "/api/agents/status",
-      "source": "src/http/agents.ts:881",
+      "source": "src/http/agents.ts:936",
       "exposure": "frontend",
       "capability": "agents.status"
     },
@@ -180,42 +187,42 @@
     {
       "method": "GET",
       "path": "/api/backup",
-      "source": "src/http/backup.ts:68",
+      "source": "src/http/backup.ts:75",
       "exposure": "frontend",
       "capability": "backup.manage"
     },
     {
       "method": "GET",
       "path": "/api/backup/export",
-      "source": "src/http/backup.ts:80",
+      "source": "src/http/backup.ts:87",
       "exposure": "frontend",
       "capability": "backup.manage"
     },
     {
       "method": "POST",
       "path": "/api/backup/export",
-      "source": "src/http/backup.ts:101",
+      "source": "src/http/backup.ts:115",
       "exposure": "frontend",
       "capability": "backup.manage"
     },
     {
       "method": "GET",
       "path": "/api/backup/restores",
-      "source": "src/http/backup.ts:123",
+      "source": "src/http/backup.ts:200",
       "exposure": "frontend",
       "capability": "backup.manage"
     },
     {
       "method": "POST",
       "path": "/api/backup/inspect",
-      "source": "src/http/backup.ts:131",
+      "source": "src/http/backup.ts:208",
       "exposure": "frontend",
       "capability": "backup.manage"
     },
     {
       "method": "POST",
       "path": "/api/backup/import",
-      "source": "src/http/backup.ts:145",
+      "source": "src/http/backup.ts:222",
       "exposure": "frontend",
       "capability": "backup.manage"
     },
@@ -355,154 +362,154 @@
     {
       "method": "POST",
       "path": "/api/code/tasks/:taskId/continue",
-      "source": "src/http/continuation.ts:495",
+      "source": "src/http/continuation.ts:507",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "POST",
       "path": "/api/cowork/tasks/:taskId/continue",
-      "source": "src/http/continuation.ts:496",
+      "source": "src/http/continuation.ts:508",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "POST",
       "path": "/api/design/tasks/:taskId/continue",
-      "source": "src/http/continuation.ts:497",
+      "source": "src/http/continuation.ts:509",
       "exposure": "frontend",
       "capability": "design.core"
     },
     {
       "method": "GET",
       "path": "/api/code/tasks/:taskId/approvals",
-      "source": "src/http/continuation.ts:538",
+      "source": "src/http/continuation.ts:550",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "GET",
       "path": "/api/cowork/tasks/:taskId/approvals",
-      "source": "src/http/continuation.ts:539",
+      "source": "src/http/continuation.ts:551",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "GET",
       "path": "/api/design/tasks/:taskId/approvals",
-      "source": "src/http/continuation.ts:540",
+      "source": "src/http/continuation.ts:552",
       "exposure": "frontend",
       "capability": "design.core"
     },
     {
       "method": "POST",
       "path": "/api/code/tasks/:taskId/approve",
-      "source": "src/http/continuation.ts:601",
+      "source": "src/http/continuation.ts:613",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "POST",
       "path": "/api/cowork/tasks/:taskId/approve",
-      "source": "src/http/continuation.ts:602",
+      "source": "src/http/continuation.ts:614",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "POST",
       "path": "/api/design/tasks/:taskId/approve",
-      "source": "src/http/continuation.ts:603",
+      "source": "src/http/continuation.ts:615",
       "exposure": "frontend",
       "capability": "design.core"
     },
     {
       "method": "GET",
       "path": "/api/cowork/knowledge",
-      "source": "src/http/cowork.ts:68",
+      "source": "src/http/cowork.ts:69",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "POST",
       "path": "/api/cowork/knowledge",
-      "source": "src/http/cowork.ts:83",
+      "source": "src/http/cowork.ts:84",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "GET",
       "path": "/api/cowork/knowledge/:id",
-      "source": "src/http/cowork.ts:104",
+      "source": "src/http/cowork.ts:105",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "GET",
       "path": "/api/cowork/knowledge/:id/file",
-      "source": "src/http/cowork.ts:118",
+      "source": "src/http/cowork.ts:119",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "DELETE",
       "path": "/api/cowork/knowledge/:id",
-      "source": "src/http/cowork.ts:134",
+      "source": "src/http/cowork.ts:135",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "GET",
       "path": "/api/cowork/scheduled-tasks",
-      "source": "src/http/cowork.ts:148",
+      "source": "src/http/cowork.ts:149",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "POST",
       "path": "/api/cowork/scheduled-tasks",
-      "source": "src/http/cowork.ts:161",
+      "source": "src/http/cowork.ts:162",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "GET",
       "path": "/api/cowork/scheduled-tasks/:id",
-      "source": "src/http/cowork.ts:181",
+      "source": "src/http/cowork.ts:182",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "PUT",
       "path": "/api/cowork/scheduled-tasks/:id",
-      "source": "src/http/cowork.ts:217",
+      "source": "src/http/cowork.ts:218",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "PATCH",
       "path": "/api/cowork/scheduled-tasks/:id",
-      "source": "src/http/cowork.ts:218",
+      "source": "src/http/cowork.ts:219",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "DELETE",
       "path": "/api/cowork/scheduled-tasks/:id",
-      "source": "src/http/cowork.ts:220",
+      "source": "src/http/cowork.ts:221",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "GET",
       "path": "/api/cowork/scheduled-tasks/:id/history",
-      "source": "src/http/cowork.ts:229",
+      "source": "src/http/cowork.ts:230",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "POST",
       "path": "/api/cowork/scheduled-tasks/:id/run",
-      "source": "src/http/cowork.ts:247",
+      "source": "src/http/cowork.ts:248",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
@@ -635,56 +642,56 @@
     {
       "method": "GET",
       "path": "/api/memory",
-      "source": "src/http/memory.ts:45",
+      "source": "src/http/memory.ts:62",
       "exposure": "frontend",
       "capability": "memory.manage"
     },
     {
       "method": "GET",
       "path": "/api/memory/status",
-      "source": "src/http/memory.ts:60",
+      "source": "src/http/memory.ts:77",
       "exposure": "frontend",
       "capability": "memory.manage"
     },
     {
       "method": "POST",
       "path": "/api/memory",
-      "source": "src/http/memory.ts:91",
+      "source": "src/http/memory.ts:108",
       "exposure": "frontend",
       "capability": "memory.manage"
     },
     {
       "method": "POST",
       "path": "/api/memory/import",
-      "source": "src/http/memory.ts:127",
+      "source": "src/http/memory.ts:152",
       "exposure": "frontend",
       "capability": "memory.manage"
     },
     {
       "method": "POST",
       "path": "/api/memory/enable",
-      "source": "src/http/memory.ts:79",
+      "source": "src/http/memory.ts:96",
       "exposure": "frontend",
       "capability": "memory.manage"
     },
     {
       "method": "POST",
       "path": "/api/memory/disable",
-      "source": "src/http/memory.ts:80",
+      "source": "src/http/memory.ts:97",
       "exposure": "frontend",
       "capability": "memory.manage"
     },
     {
       "method": "DELETE",
       "path": "/api/memory",
-      "source": "src/http/memory.ts:151",
+      "source": "src/http/memory.ts:201",
       "exposure": "frontend",
       "capability": "memory.manage"
     },
     {
       "method": "DELETE",
       "path": "/api/memory/:id",
-      "source": "src/http/memory.ts:159",
+      "source": "src/http/memory.ts:209",
       "exposure": "frontend",
       "capability": "memory.manage"
     },
@@ -1289,6 +1296,48 @@
       "source": "src/http/usage.ts:142",
       "exposure": "frontend",
       "capability": "usage.read"
+    },
+    {
+      "method": "GET",
+      "path": "/api/backup/destinations",
+      "source": "src/http/backup.ts:155",
+      "exposure": "deferred-frontend",
+      "capability": "backup.manage"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/backup/destinations/s3",
+      "source": "src/http/backup.ts:173",
+      "exposure": "deferred-frontend",
+      "capability": "backup.manage"
+    },
+    {
+      "method": "POST",
+      "path": "/api/backup/destinations/s3/test",
+      "source": "src/http/backup.ts:186",
+      "exposure": "deferred-frontend",
+      "capability": "backup.manage"
+    },
+    {
+      "method": "GET",
+      "path": "/api/cowork/pulse/config",
+      "source": "src/http/cowork.ts:267",
+      "exposure": "deferred-frontend",
+      "capability": "cowork.read"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/cowork/pulse/config",
+      "source": "src/http/cowork.ts:279",
+      "exposure": "deferred-frontend",
+      "capability": "cowork.core"
+    },
+    {
+      "method": "GET",
+      "path": "/api/cowork/pulse/fetches",
+      "source": "src/http/cowork.ts:287",
+      "exposure": "deferred-frontend",
+      "capability": "cowork.read"
     }
   ]
 }

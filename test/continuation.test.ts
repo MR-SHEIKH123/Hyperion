@@ -473,7 +473,7 @@ describe('approvals as session rules', () => {
 
 describe('the backup archive', () => {
   test('contains zero task_messages rows', async () => {
-    // `exportBackup` archives the whole database, and `mirrorBackup` copies each
+    // `exportBackup` archives the whole database, and `mirrorToLocalDestination` copies each
     // automatic archive off the machine. A backup today contains *no* project
     // source, so carrying snapshots would add a new category of content to an
     // off-machine artifact — in exchange for a capability the restore cannot

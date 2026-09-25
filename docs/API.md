@@ -825,7 +825,7 @@ MemoryStatus { enabled, available, error: string|null,
 | POST | `/api/memory/enable` | `{ status }` |
 | POST | `/api/memory/disable` | `{ status }` |
 | POST | `/api/memory` | `{ stored: true }` — body `{ text }`, at most 4000 characters |
-| POST | `/api/memory/import` | `{ imported, dropped, found, error }` — body `{ text }` |
+| POST | `/api/memory/import` | `{ imported, dropped, found, error }` — JSON body `{ text }`, or `multipart/form-data` with `files` (at most 50; per-file breakdown in `files[]`) |
 | DELETE | `/api/memory/:id` | `{ deleted: boolean }` |
 | DELETE | `/api/memory` | `{ cleared: boolean }` |
 
@@ -847,6 +847,15 @@ returns its counts with `error` set, because 40 of 60 chunks landing is a real
 outcome and a 500 would throw it away — with one exception: if *nothing* landed,
 the response is the storage error, since a success-shaped answer for zero work is
 the reading this route must not allow.
+
+**A folder uploads as `files`, not as a path.** The import route takes
+`multipart/form-data` with up to 50 files — what a folder picker produces —
+because the server reads uploads, not user-supplied paths (the 1.28 rule). Each
+file is split on blank lines exactly like a paste and all files share the one
+100-chunk / 20 000-character budget in upload order; one file holds at most
+20 000 characters and anything else about it (binary bytes, an over-long name)
+is a per-file `error` while the batch continues. Sending `text` and `files`
+together is refused: the two shapes would silently disagree about what landed.
 
 The list route returns an **empty array rather than an error** when memory is
 disabled or the backend failed to load, so `GET /status` is the single place that
@@ -1319,16 +1328,22 @@ RestoreResult { restored, dryRun, inspection, preRestoreBackup: string|null,
                  restartRequired }
 RestoreAuditEntry { id, createdAt, filename, bytes, sha256, encrypted, dryRun, restored,
                  outcome: 'dry_run'|'restored'|'refused', detail, preRestoreBackup }
+S3Destination { enabled, configured, missing, endpoint, region, bucket, prefix,
+                 accessKeyId, hasSecret }
+S3ProbeStep { step: 'put'|'head'|'delete', ok, status?, etag?, error?, warning? }
 ```
 
 | Method | Path | Response |
 | --- | --- | --- |
 | GET | `/api/backup` | `{ backups: BackupFile[] }` (`.zip` and `.hypbak`) |
 | GET | `/api/backup/export` | **a file download**, not JSON |
-| POST | `/api/backup/export` | **a file download** — `{ passphrase }` *(1.29)* |
+| POST | `/api/backup/export` | **a file download** — `{ passphrase, uploadToS3? }` *(1.29)* |
 | GET | `/api/backup/restores` | `{ restores: RestoreAuditEntry[] }`, newest first *(1.29)* |
 | POST | `/api/backup/inspect` | `{ inspection: ArchiveInspection }` |
 | POST | `/api/backup/import` | `RestoreResult` (bare) |
+| GET | `/api/backup/destinations` | `{ local: { directory, mirror }, s3: S3Destination }` *(1.29)* |
+| PUT | `/api/backup/destinations/s3` | `{ s3: S3Destination }`, partial update *(1.29)* |
+| POST | `/api/backup/destinations/s3/test` | `{ ok, key?, steps: S3ProbeStep[] }` *(1.29)* |
 
 `GET /export` query: `includeKeys` (**default false**), `includeAttachments`
 (default true). The archive bundles the SQLite database and the skills registry.
@@ -1409,6 +1424,54 @@ import overwrites the live database. It takes a pre-restore backup automatically
 and reports it as `preRestoreBackup`. `restartRequired: true` means the process
 must be restarted for the restored database to take effect.
 
+### 10.3 Backup destinations *(new in 1.29)*
+
+A finished archive lands in the backups root first, always. Two destinations
+then carry copies off the machine:
+
+- **Local mirror** — the pre-existing `HYPERION_BACKUP_DEST` copy (env-only,
+  unchanged in behavior, now `mirrorToLocalDestination` in
+  `services/backup/destinations.ts`). `GET /destinations` reports it as
+  `local: { directory, mirror }`, where `mirror` is null when the variable is
+  unset.
+- **S3-compatible object storage** — endpoint, bucket, key prefix and
+  credentials, configured over HTTP because, unlike the mirror, it accepts no
+  local path and so cannot become a file-write primitive (CONTRACTS.md answers
+  the mirror section's standing objection in full).
+
+`PUT /destinations/s3` takes any subset of `endpoint`, `region` (default
+`us-east-1`), `bucket`, `prefix`, `accessKeyId`, `secretAccessKey`, `enabled`.
+Omitted fields are left alone; null or `""` clears a field; unknown fields are
+rejected so a typo cannot read as configured. Validation at write: the endpoint
+must be a bare http(s) origin (no path, query or userinfo), and **plain http is
+accepted only for loopback hosts** — the credential travels in an `Authorization`
+header on every request, and loopback MinIO is the one case with no network to
+sniff. Buckets follow the S3 naming rules (lowercase, 3–63 chars, no IP
+spelling). The secret is keystore-encrypted in the settings table and **never
+returned**: reads carry only `hasSecret`. `GET /destinations` answers
+`configured` plus `missing[]`, and a stored secret that no longer decrypts
+reads as missing-but-present (`hasSecret: true`, `missing` containing
+`secretAccessKey`) so the fix — re-entering it — is obvious.
+
+Uploads are path-style SigV4 (`{endpoint}/{bucket}/{key}`), signed on
+`node:crypto` with no SDK dependency, against any S3-compatible service. Keys
+are `{prefix}/{filename}`. Two callers, two failure contracts: `POST /export`
+with `uploadToS3: true` uploads before the download starts, reports the key in
+the `x-hyperion-s3-key` response header, and **fails the request** on any
+failure (409 `s3_not_configured`, else 500) — but the archive is already on
+disk, so the error names the local file and the download can be retried with
+the flag off. An explicit upload overrides `enabled: false`; the toggle gates
+only the automatic run, whose S3 leg never throws: it degrades to `s3Key: null`,
+a warning, and an `error_log` row the Attention queue surfaces as a backup
+failure.
+
+Two integrity properties: a PUT answered without an `ETag` is treated as a
+failed upload, and objects past the 4 GiB single-request ceiling are refused
+before a byte is read (multipart upload is not implemented).
+`POST /destinations/s3/test` round-trips a small probe object (PUT, HEAD with a
+size check, DELETE) and always answers 200 with `{ ok, steps }` — a failed
+probe is a diagnosis, so it is deliberately *not* written to `error_log`.
+
 ---
 
 ## 11. Settings — `/api/settings`
@@ -1461,6 +1524,7 @@ modules registered at boot — `cowork`, `code`, `design` and the terminal, via
 | GET | `/api/code/rules` | plain JSON *(new in 1.13)* |
 | GET | `/api/code/agents` | plain JSON *(new in 1.13)* |
 | GET | `/api/code/commands` | plain JSON *(new in 1.13)* |
+| POST | `/api/code/agents/import` | multipart `files`, per-file results *(new in 1.28)* |
 | GET | `/api/agents/status` | `{ agents, terminal, registered: { code, cowork, design } }` |
 
 `run-task` body (`TaskInput`): `tool`, `chatId`, `modelId`, `prompt`, `mode?`,
@@ -1670,6 +1734,35 @@ through to the next location and misreporting where the rules came from.
 `null`. Agents additionally carry `tools` (`tools: [read, bash]`, or a lone
 `tool: bash`, normalised to an array) and `model`, both `null` when undeclared.
 Commands carry only `name`, `description` and `path`.
+
+**`POST /api/code/agents/import`** files `.md` agent profiles from a multipart
+upload into the **active** project's `.hyperion/agents/`, alongside the profiles
+already there *(new in 1.28 — the profile set's first writer)*. Fields: `files`
+(at most 50), `onConflict` (`skip` default | `rename` | `overwrite`), and
+`confirm` (`true`, required alongside `overwrite`).
+
+Each file is validated through the same parser that will read it back; only
+`.md` files under 64 KiB that parse as profiles are filed. The response is 200
+with a per-file result:
+
+```json
+// POST /api/code/agents/import
+{
+  "project": { "id": "prj_…", "name": "…" },
+  "imported": 1,
+  "count": 2,
+  "results": [
+    { "filename": "reviewer.md", "name": "Reviewer", "status": "imported", "path": ".hyperion/agents/reviewer.md" },
+    { "filename": "helper.md", "name": "Helper", "status": "skipped", "error": "\"helper.md\" already exists; …" }
+  ]
+}
+```
+
+`status` is `imported` | `overwritten` | `renamed` (`<stem>-2.md`) | `skipped` |
+`invalid` (non-`.md`, oversize, or malformed front matter — each reported, none
+filed). Policy errors refuse the whole request before anything lands: `400`
+for a missing `confirm`, the 50-file cap, or an unknown `onConflict`. With no
+project open there is no destination: `409` naming `no_active_project`.
 
 ### 12.3a Provenance  *(new in Prompt 1.39 A6)*
 
@@ -2682,6 +2775,45 @@ rows are what §16's feed merges as `kind: 'scheduled-task'`.
 The scheduler, including the automatic daily backup, is disabled by
 `HYPERION_SCHEDULER_DISABLED=1` — which is what the test helper sets, so a suite
 that boots the app never fires real Cowork runs against live providers.
+
+### 17.3 Cowork Pulse *(new in 1.30)*
+
+```ts
+PulseConfig { tier: 'off'|'free'|'keyed',
+              freeSources: { id, label }[], keyedSources: { id, label }[] }
+PulseFetch  { id, createdAt, query, tier, sources: PulseSourceOutcome[],
+              items: PulseItem[] }
+PulseSourceOutcome { source, ok, count, error: string|null, ms }
+PulseItem { source, title, url: string|null, snippet: string|null,
+            publishedAt: string|null, score: number|null }
+```
+
+| Method | Path | Response |
+| --- | --- | --- |
+| GET | `/api/cowork/pulse/config` | `PulseConfig` |
+| PUT | `/api/cowork/pulse/config` | `PulseConfig` (`{ tier }`, required) |
+| GET | `/api/cowork/pulse/fetches` | `{ count, fetches: PulseFetch[] }` (`?limit=`, default 50, max 500) |
+
+Pulse is Cowork's on-demand public-web fetching, reached through the
+`pulse.fetch` tool only — there is deliberately no direct-fetch route, no
+poller and no watchlist. The tier starts at **`off`** and the tool is unoffered
+until it moves; reads fail closed (anything that is not a known tier fetches
+nothing). The **free** tier queries Reddit, Hacker News, Polymarket and GitHub
+without keys; the **keyed** tier is a framework in v1 (registry plus plumbing,
+no concrete source — a `keyed` tier with nothing registered refuses with
+`capability_disabled`).
+
+Tool arguments: `query` (required, 1–300 chars), `limit?` (per-source, default
+5, max 10), `sources?` (a subset of the tier's source ids). When
+`redaction_check_enabled` is on, the query is scanned for credential-shaped
+text before anything is sent, and a flagged query is refused with
+`redaction_flagged` — worded for the occasion, because the stock refusal offers
+an acknowledge-and-send-anyway that must not exist for public search APIs.
+
+Fetches fan out in parallel and partial failure is the normal shape: each
+source's outcome (ok, item count, error, milliseconds) rides along with the
+items, and only a total failure throws. Every fetch — including failed ones —
+is recorded to `pulse_fetches` for `/fetches`, newest first.
 
 ---
 

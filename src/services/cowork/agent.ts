@@ -17,13 +17,16 @@ import { createLogger } from '../../util/logger.ts';
 
 import { getMcpProcessManager } from '../../orchestrator/agents.ts';
 import { findServerByName } from '../mcp/registry.ts';
-import { mcpPluginId, isPluginAvailableTo } from '../plugins/availability.ts';
+import { MEMORY_SEARCH_TOOL } from '../../mcp-servers/memory.ts';
+import { MEMORY_PLUGIN_ID, mcpPluginId, isPluginAvailableTo } from '../plugins/availability.ts';
 import { recallForTurn, rememberTurn } from '../memory/index.ts';
 import { ScopeViolationError } from '../../security/fsScope.ts';
 import {
   knowledgePath,
   listKnowledgeSources,
 } from './knowledge.ts';
+import { fetchPulse, formatPulseResult, pulseStatusMessage } from './pulse.ts';
+import { pulseTier } from '../../db/settings.ts';
 import { runAgentLoop } from '../agent/loop.ts';
 import { createPermissionResolver } from '../agent/permissions.ts';
 import { assertKnownTools, permissionLayers, profileSelector, resolveProfile } from '../agent/profiles.ts';
@@ -55,6 +58,9 @@ const log = createLogger('cowork');
 
 const WIGOLO_NAME = 'wigolo';
 const WIGOLO_GUIDANCE = 'Wigolo is unavailable. To set it up, run `npx -y wigolo init`.';
+const MEMORY_MCP_NAME = 'memory';
+const MEMORY_MCP_GUIDANCE = 'Memory tools are unavailable. Enable the Memory plugin, then enable the memory MCP server.';
+const MEMORY_SEARCH_QUALIFIED = `${MEMORY_MCP_NAME}.${MEMORY_SEARCH_TOOL}`;
 const MAX_SOURCE_BYTES = 256 * 1024;
 const MAX_TOOL_OUTPUT = 32_000;
 
@@ -65,6 +71,8 @@ export interface CoworkDependencies {
   rememberTurn?: (prompt: string, reply: string, meta: { tool: 'cowork'; chatId: string }) => void;
   /** The id is needed for the per-tool plugin decision (1.34), not just `enabled`. */
   findWigolo?: () => { id: string; enabled: boolean } | null;
+  /** Same lookup shape for the first-party memory server; same reason. */
+  findMemoryServer?: () => { id: string; enabled: boolean } | null;
   getMcpProcessManager?: () => McpProcessManager | null;
   resolveProfile?: typeof resolveProfile;
   sessionPermissionRules?: (taskId: string) => Record<string, PermissionRule>;
@@ -112,12 +120,13 @@ interface PreparedKnowledge {
 
 type KnowledgeFileReader = (filename: string) => Promise<Buffer>;
 
-function defaultDependencies(): Required<Pick<CoworkDependencies, 'listKnowledgeSources' | 'recallForTurn' | 'rememberTurn' | 'findWigolo' | 'getMcpProcessManager'>> & CoworkDependencies {
+function defaultDependencies(): Required<Pick<CoworkDependencies, 'listKnowledgeSources' | 'recallForTurn' | 'rememberTurn' | 'findWigolo' | 'findMemoryServer' | 'getMcpProcessManager'>> & CoworkDependencies {
   return {
     listKnowledgeSources,
     recallForTurn,
     rememberTurn,
     findWigolo: () => findServerByName(WIGOLO_NAME),
+    findMemoryServer: () => findServerByName(MEMORY_MCP_NAME),
     getMcpProcessManager,
   };
 }
@@ -223,6 +232,66 @@ async function wigoloState(deps: CoworkDependencies): Promise<WigoloState> {
   return { available: true, enabled: true, running: true, manager, tools, message: `Wigolo is live with ${tools.length} supervised tool(s).` };
 }
 
+interface MemoryMcpState {
+  available: boolean;
+  enabled: boolean;
+  running: boolean;
+  manager?: McpProcessManager;
+  tools: McpToolDefinition[];
+  message: string;
+}
+
+function memoryServerStatus(manager: McpProcessManager): McpServerStatus | undefined {
+  return manager.getStatus().find((status) => status.name.toLowerCase() === MEMORY_MCP_NAME);
+}
+
+/**
+ * The first-party memory server, resolved the way Wigolo is — with one extra
+ * gate Wigolo does not need. The MCP server switch says Cowork may use the
+ * *server*; the Memory plugin's own per-tool switch says Cowork may use
+ * *memory*. Offering the tools on the server switch alone would let a user who
+ * switched memory off for Cowork in the Plugins hub receive its tools anyway,
+ * which is the one outcome the hub must not have.
+ */
+async function memoryMcpState(deps: CoworkDependencies): Promise<MemoryMcpState> {
+  const configured = (deps.findMemoryServer ?? defaultDependencies().findMemoryServer)();
+  if (!configured) {
+    return { available: false, enabled: false, running: false, tools: [], message: MEMORY_MCP_GUIDANCE };
+  }
+  if (!configured.enabled) {
+    return { available: true, enabled: false, running: false, tools: [], message: 'Memory is configured but disabled. Enable it in MCP settings; Cowork will not start it automatically.' };
+  }
+  if (!isPluginAvailableTo(mcpPluginId(configured.id), 'cowork')) {
+    return {
+      available: false,
+      enabled: true,
+      running: false,
+      tools: [],
+      message: 'Memory is switched off for Cowork in the Plugins hub. Turn it back on there to let Cowork use it.',
+    };
+  }
+  if (!isPluginAvailableTo(MEMORY_PLUGIN_ID, 'cowork')) {
+    return {
+      available: false,
+      enabled: true,
+      running: false,
+      tools: [],
+      message: 'Memory itself is switched off for Cowork in the Plugins hub. Turn it back on there to let Cowork use it.',
+    };
+  }
+
+  const manager = (deps.getMcpProcessManager ?? defaultDependencies().getMcpProcessManager)();
+  if (!manager) {
+    return { available: true, enabled: true, running: false, tools: [], message: 'Memory is enabled but its MCP supervisor is unavailable. Cowork will not start it.' };
+  }
+  const status = memoryServerStatus(manager);
+  if (!status || status.state !== 'running') {
+    return { available: true, enabled: true, running: false, tools: [], message: 'Memory is enabled but not running. Start it from MCP supervision; Cowork will not spawn it.' };
+  }
+  const tools = await manager.listTools(MEMORY_MCP_NAME);
+  return { available: true, enabled: true, running: true, manager, tools, message: `Memory is live with ${tools.length} supervised tool(s).` };
+}
+
 function sourceLabel(source: KnowledgeSource): string {
   return source.label?.trim() || source.filename;
 }
@@ -240,7 +309,11 @@ function knowledgeBlock(prepared: readonly PreparedKnowledge[]): string {
   return lines.join('\n');
 }
 
-function toolSchemas(tools: readonly McpToolDefinition[]): ToolSchema[] {
+function toolSchemas(
+  wigoloTools: readonly McpToolDefinition[],
+  memoryTools: readonly McpToolDefinition[],
+  pulseOffered: boolean,
+): ToolSchema[] {
   return [
     {
       name: 'cowork.save_artifact',
@@ -257,9 +330,34 @@ function toolSchemas(tools: readonly McpToolDefinition[]): ToolSchema[] {
         },
       },
     },
-    ...tools.map((tool) => ({
+    // Pulse is offered only when the tier is on: a tool the model can see but
+    // never successfully call would read as broken rather than disabled.
+    ...(pulseOffered
+      ? [
+          {
+            name: 'pulse.fetch',
+            description:
+              'Search the live public web via Cowork Pulse. On-demand only: call when the run needs current information the knowledge library does not have.',
+            parameters: {
+              type: 'object',
+              required: ['query'],
+              properties: {
+                query: { type: 'string', minLength: 1 },
+                limit: { type: 'integer', minimum: 1, maximum: 10 },
+                sources: { type: 'array', items: { type: 'string' } },
+              },
+            },
+          },
+        ]
+      : []),
+    ...wigoloTools.map((tool) => ({
       name: `wigolo.${tool.name}`,
       description: tool.description ?? tool.title ?? `Wigolo tool ${tool.name}`,
+      parameters: tool.inputSchema,
+    })),
+    ...memoryTools.map((tool) => ({
+      name: `${MEMORY_MCP_NAME}.${tool.name}`,
+      description: tool.description ?? tool.title ?? `Memory tool ${tool.name}`,
       parameters: tool.inputSchema,
     })),
   ];
@@ -335,12 +433,15 @@ export async function runCoworkTask(
 
     const memory = await (deps.recallForTurn ?? recallForTurn)(input.prompt, 'cowork');
     const wigolo = await wigoloState(deps);
+    const memoryMcp = await memoryMcpState(deps);
     const system = [
       'You are Cowork, a knowledge-first research and productivity agent.',
       'Use only confirmed usable knowledge text as source evidence. Never infer facts from unavailable source status.',
       knowledgeBlock(prepared),
       memory ?? 'No relevant memory was available for this turn.',
       `Wigolo status: ${wigolo.message}`,
+      `Memory tools status: ${memoryMcp.message}`,
+      pulseStatusMessage(),
       'Do not claim Wigolo ran unless a live supervised tool returned a result.',
       'Save an artifact only when the user requested or clearly confirmed it, and only as Markdown or CSV.',
     ].join('\n\n');
@@ -353,10 +454,21 @@ export async function runCoworkTask(
       ? [{ role: 'system', content: system }, { role: 'user', content: input.prompt }]
       : [{ role: 'system', content: system }, ...restored.filter((message) => message.role !== 'system')];
 
-    const manager = wigolo.manager ?? null;
-    const schemas = toolSchemas(wigolo.tools);
+    const manager = wigolo.manager ?? memoryMcp.manager ?? null;
+    // Read once, at run start, like Wigolo's status: a tier flipped mid-run
+    // takes effect on offering for the next run, while execution re-checks on
+    // every call (the safe direction — off mid-run refuses).
+    const schemas = toolSchemas(wigolo.tools, memoryMcp.tools, pulseTier() !== 'off');
     const policy = {
-      effect: (name: string) => name === 'cowork.save_artifact' ? 'mutate' as const : name.startsWith('wigolo.') ? 'read' as const : undefined,
+      // Search reads; everything else under `memory.` — the add tool, and any
+      // tool a future server version adds — falls through to the loop's
+      // mutate default, which is the safe direction for a store that keeps.
+      effect: (name: string) =>
+        name === 'cowork.save_artifact'
+          ? ('mutate' as const)
+          : name === 'pulse.fetch' || name.startsWith('wigolo.') || name === MEMORY_SEARCH_QUALIFIED
+            ? ('read' as const)
+            : undefined,
     };
 
     // Cowork has no project directory, so only the built-ins and the session
@@ -367,7 +479,13 @@ export async function runCoworkTask(
       mode: input.mode,
       ...(profileSelector(input) === undefined ? {} : { selector: profileSelector(input) }),
     });
-    const knownTools = new Set(schemas.map((schema) => schema.name));
+    // `pulse.fetch` is registered even when the tier leaves it unoffered: a
+    // profile granting Pulse must not break the run when the user toggles the
+    // tier off — the tool is merely absent from the schemas, and a call that
+    // arrives anyway (a race with a settings write) is refused below with
+    // `capability_disabled`. Wigolo's names stay conditional because a down
+    // supervisor is an outage, not a setting.
+    const knownTools = new Set([...schemas.map((schema) => schema.name), 'pulse.fetch']);
     assertKnownTools(profile, knownTools);
     const session = (deps.sessionPermissionRules ?? sessionPermissionRules)(ctx.taskId);
     const permissions = createPermissionResolver({
@@ -401,12 +519,47 @@ export async function runCoworkTask(
         ctx.emit('artifact', { artifactKey: artifactKey.trim(), version: saved.version, format });
         return `Saved ${format} artifact ${artifactKey.trim()} version ${saved.version}.`;
       }
-      if (!call.name.startsWith('wigolo.') || !manager) {
-        throw new AppError('capability_disabled', 'Wigolo is unavailable, disabled, or not running; no tool was called.');
+      if (call.name === 'pulse.fetch') {
+        // Shape here, values in the service: the tool narrows the JSON types,
+        // `fetchPulse` owns the bounds, the tier gate and the redaction scan.
+        const query = args.query;
+        if (typeof query !== 'string') {
+          throw new AppError('bad_request', 'Pulse fetch requires a query string.');
+        }
+        const limit = args.limit;
+        if (limit !== undefined && (typeof limit !== 'number' || !Number.isInteger(limit))) {
+          throw new AppError('bad_request', 'Pulse limit must be an integer.');
+        }
+        const sources = args.sources;
+        if (sources !== undefined && (!Array.isArray(sources) || !sources.every((source) => typeof source === 'string'))) {
+          throw new AppError('bad_request', 'Pulse sources must be an array of source names.');
+        }
+        const result = await fetchPulse({
+          query,
+          ...(limit === undefined ? {} : { limit }),
+          ...(sources === undefined ? {} : { sources: sources as string[] }),
+        });
+        return formatPulseResult(result);
       }
-      const actualName = call.name.slice('wigolo.'.length);
-      const result = await manager.callTool(WIGOLO_NAME, actualName, args);
-      return serialiseToolResult(result);
+      if (call.name.startsWith('wigolo.')) {
+        if (!manager) {
+          throw new AppError('capability_disabled', 'Wigolo is unavailable, disabled, or not running; no tool was called.');
+        }
+        const result = await manager.callTool(WIGOLO_NAME, call.name.slice('wigolo.'.length), args);
+        return serialiseToolResult(result);
+      }
+      if (call.name.startsWith(`${MEMORY_MCP_NAME}.`)) {
+        if (!manager) {
+          throw new AppError('capability_disabled', 'Memory is unavailable, disabled, or not running; no tool was called.');
+        }
+        const result = await manager.callTool(
+          MEMORY_MCP_NAME,
+          call.name.slice(MEMORY_MCP_NAME.length + 1),
+          args,
+        );
+        return serialiseToolResult(result);
+      }
+      throw new AppError('bad_request', `Unknown tool "${call.name}".`);
     };
 
     // The window is the model's real one when a provider cache knows it.

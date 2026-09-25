@@ -24,6 +24,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { Router } from 'express';
+import multer from 'multer';
 
 
 import {
@@ -88,9 +89,12 @@ import { AppError, toAppError } from '../util/errors.ts';
 
 import { createLogger } from '../util/logger.ts';
 import { redactSecrets } from '../util/redact.ts';
+import { env } from '../config/env.ts';
+import { importProfiles, parseOnConflict } from '../services/code/profileImport.ts';
 import { attachDownloadHeaders } from './download.ts';
 import { wrap } from './errors.ts';
 import {
+  asBool,
   asEnum,
   asPositiveInteger,
   asString,
@@ -746,6 +750,57 @@ agentsRouter.get('/code/agents', wrap(async (req, res) => {
   const agents = await listProjectAgents(projectQuery(req));
   res.json({ count: agents.length, agents });
 }));
+
+/**
+ * Profile uploads, in memory: the service files buffers, and a file over the
+ * 64 KiB profile limit is a per-file `invalid`, not a rejected request — so the
+ * transport cap stays the shared upload maximum rather than the policy limit.
+ */
+const profileUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: env.maxUploadBytes },
+});
+
+/**
+ * Files `.md` agent profiles into the active project's `.hyperion/agents/`
+ * (1.28) — the profile set's first writer.
+ *
+ * Multipart `files` (at most 50; each at most 64 KiB to be filed, larger ones
+ * reported per file rather than failing the batch). `onConflict` is `skip`
+ * (default), `rename` (`<stem>-2.md`), or `overwrite`, which additionally
+ * requires `confirm: true` — the policy is validated before the first byte
+ * lands, so a missing confirmation refuses the whole request. The file count is
+ * enforced in the service as a 400: a multer-level file-count limit would
+ * surface as a 500 with an error-log row asserting a server fault for a client
+ * error (the S17 lesson), which is why this route deliberately differs from the
+ * skills intake's `files: 200`.
+ *
+ * 200 with a per-file result each; `imported` counts the files that landed.
+ * 409 `conflict` (`no_active_project`) when no project is open — with no
+ * project there is no destination to file into.
+ */
+agentsRouter.post(
+  '/code/agents/import',
+  profileUpload.array('files'),
+  wrap(async (req, res) => {
+    const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+    if (files.length === 0) {
+      throw new AppError('bad_request', 'No files were uploaded.', {
+        details: { field: 'files' },
+      });
+    }
+    const payload = body(req);
+    const confirm = asBool(payload.confirm, 'confirm');
+    const outcome = importProfiles(
+      files.map((file) => ({ filename: file.originalname || 'profile.md', buffer: file.buffer })),
+      {
+        onConflict: parseOnConflict(asOptionalString(payload.onConflict, 'onConflict')),
+        ...(confirm === undefined ? {} : { confirm }),
+      },
+    );
+    res.json({ ...outcome, count: outcome.results.length });
+  }),
+);
 
 /** Custom commands declared for a project, for `GET /api/code/commands`. */
 agentsRouter.get('/code/commands', wrap(async (req, res) => {

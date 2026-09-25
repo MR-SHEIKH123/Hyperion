@@ -1102,6 +1102,28 @@ filename. A file that declares nothing still has to appear in the list as
 something the user recognises — dropping it, or showing it as `(untitled)`, would
 hide a rule that is genuinely in effect.
 
+### Import never overwrites without confirmation (added in 1.28)
+
+`POST /api/code/agents/import` is this file family's first writer — every route
+above only reads — so its policy is stated as refusals. A colliding name
+defaults to skipping the file; `rename` files it under `<stem>-2.md`, the same
+suffix scheme `freePath` uses for worktrees; `overwrite` additionally requires
+`confirm: true`, and the policy is validated before the first byte lands, so a
+missing confirmation refuses the whole request rather than importing half the
+batch. Only `.md` files under 64 KiB that parse as profiles are filed, and each
+rejection is reported per file rather than failing the batch — except the policy
+errors (`confirm`, the 50-file cap, an unknown `onConflict`), which refuse
+everything, because they describe the request rather than a file.
+
+Validation runs through `parseProfileDocument` plus `profileFields` — the same
+two functions that will read the file back — so an import the scanner cannot
+read is unrepresentable. The destination is the active project's agents
+directory through the `projects` scope (which follows the active project,
+managed or not); with no project open there is no destination, and the answer
+is a 409 naming `no_active_project` rather than a write into the scope
+fallback. No cache is invalidated because none exists: profiles are read on
+demand (D9), so an imported file is visible to the next read.
+
 ---
 
 ## Settings are not all public (found by HTTP smoke testing)
@@ -1749,6 +1771,47 @@ The unwritable destination is simulated by replacing the directory with a
 *file*, so `mkdirSync` fails. Permission bits are not usable here: Windows
 largely ignores them on directories, so a chmod-based test would pass on CI and
 silently do nothing locally.
+
+## S3 backup destinations answer the mirror's standing objection (added in 1.29)
+
+The section above ends with an instruction — *do not add a route or a setting
+for the mirror without re-reading this paragraph* — and this section is the
+re-reading, for a destination that takes the other branch. The mirror stays
+env-only because it accepts a **filesystem path**, and a path in a request body
+is an arbitrary file-write primitive. The S3 destination accepts an endpoint, a
+bucket, a key prefix and credentials: none of them names a local file, the only
+write the module performs is a `PUT` of a finished archive to the remote
+bucket, and the secret is keystore-encrypted in the settings table, redacted
+from public settings (`SECRET_SETTING_KEYS`) and never returned by any read —
+so HTTP configuration buys no capability the mirror paragraph forbids.
+
+**Why the failure contract is asymmetric.** An explicit upload
+(`POST /api/backup/export` with `uploadToS3`) throws on any failure, because
+the user asked for the upload and a silent skip would lie about where the
+archive is — and the error still names the local file, which was written first.
+The automatic leg (`maybeUploadToS3`) never throws, for the mirror's own
+reason: the archive is already safely written, so a downed endpoint degrades to
+`s3Key: null`, a warning, and an `error_log` row under
+`/api/backup/destinations/s3`, which the Attention queue already reads as a
+backup failure. The round-trip probe writes no such row: a user pressing "test"
+is not a backup failing, and logging it there would cry wolf in the queue.
+
+**Why a 200 without an ETag fails the upload.** S3 answers every successful PUT
+with an ETag. Its absence means something between here and the bucket is not
+speaking S3; accepting the 200 would make the archive's presence a guess.
+
+**Why signing is hand-rolled, and how it is pinned.** There is no SDK
+dependency: SigV4 over `node:crypto`, path-style URLs only (every S3-compatible
+service accepts them). The canonical-request builder is pinned against the AWS
+documentation's worked IAM example, and the suite asserts the Authorization
+structure, credential scope and payload-hash-against-actual-bytes of every
+upload — but it does not reimplement signature verification, which would only
+prove the test agrees with itself. Live-provider proof is operational: point
+the config at the bucket and press test.
+
+**Why `enabled` does not gate explicit uploads.** The toggle is the automatic
+run's switch. An explicit per-request upload overrides it the way pressing
+"back up now" would override a disabled schedule — the request *is* the intent.
 
 ## A backup exported without keys carries no plaintext credential *(S18)*
 
@@ -4564,12 +4627,14 @@ your data" — the same reasoning as the enumerated `healthStatus` and provider
 type, now applied where the label has privacy semantics.
 
 **What has no data source, and therefore no UI.** The same item lists proxy
-profile, attachment/URL egress and Pulse source tier. None of the three exists in
-this backend (`grep -r 'proxyProfile\|attachmentEgress\|pulse'` finds nothing),
-so the composer shows no control for them: an unlabelled toggle or a permanently
+profile, attachment/URL egress and Pulse source tier. The first two still have
+no backend (`grep -r 'proxyProfile\|attachmentEgress'` finds nothing), so the
+composer shows no control for them: an unlabelled toggle or a permanently
 "unknown" chip would read as a limitation of the provider rather than of the
-feature. When any of them gets a backend field, it is rendered from that field or
-not at all — never defaulted.
+feature. The Pulse tier got its backend field in 1.30
+(`GET /api/cowork/pulse/config`) and the composer *still* shows no control for
+it — the exposure surface that would carry it was cut to a stretch goal, so the
+field is rendered nowhere rather than defaulted somewhere.
 
 ## The development state harness *(added in Prompt 1.39, item A4)*
 
@@ -5003,10 +5068,13 @@ provider that never cooled sends `null` rather than an absent field — an absen
 field is a client's default, and the default for this fact must not be "not
 cooling" when the answer is unknown.
 
-**What 1.36 names and this does not implement: `ModelSlot`.** The addendum lists
-it with no mechanism, and nothing in this tree resembles a slot abstraction over
-models, so inventing one would be a guess wearing the addendum's name. It is
-recorded in the register as unavailable rather than approximated.
+**What 1.36 named and this deliberately does not implement: `ModelSlot`
+(dropped 2026-09-24).** The addendum listed it with no mechanism, and nothing in
+this tree resembles a slot abstraction over models. The owner decision drops it
+as a named requirement rather than approximating it: every surface that needs a
+model control already has one (per-conversation on Chat, per-run on Code), so a
+slot abstraction would be indirection with no consumer. Do not build one without
+an explicit owner decision.
 
 ---
 
@@ -5149,10 +5217,79 @@ and three deliberate properties:
    is signed in to". The finding names the marker it matched.
 
 Not done, and recorded rather than implied: **no tool consumes it yet.** Cowork
-reads one MCP server by name (`wigolo`), so an availability override for
-browser-use is a real stored decision that no code path consults today — which is
-exactly what `consumers: []` on its hub entry says. Wiring a second server into a
-tool's context is per-tool MCP selection, and that is Prompt-2 work.
+read one MCP server by name (`wigolo`) when this was written, so an availability
+override for browser-use is a real stored decision that no code path consults
+today — which is exactly what `consumers: []` on its hub entry says. The memory
+server below made it two servers by name; *general* per-tool MCP selection (any
+server into any tool's context) is still Prompt-2 work.
+
+## Memory over MCP: the first-party server (2026-09-25)
+
+Cowork is the only MCP-aware agent — the shared loop, the Code subagents and the
+other tools have no MCP consumption path — and until now it read exactly one
+server by name (`wigolo`). It now reads two: `memory`, Hyperion's own
+recall/store served over MCP (`src/mcp-servers/memory.ts`), exposing
+`memory_search` and `memory_add`. The tools are pure wiring over `listMemories`
+and `addMemory`, the same functions the Settings routes call against the same
+mem0 store — an agent and an external MCP client get the same answers because
+they are the same calls. There is no new memory infrastructure, and the server
+adds no extraction, dedup, or pruning of its own (see below for what mem0
+itself does).
+
+Four properties are deliberate:
+
+1. **Seeded disabled, like the setup-required defaults.** The server needs no
+   setup — it runs on this Node and inherits the app environment — but its
+   tools refuse until the opt-in Memory plugin is on, and an enabled server
+   whose every tool refuses reads as broken. The seed resolves the script from
+   the installation root (`env.appRoot`), never the working directory, which
+   the supervisor inherits from whatever launched the app.
+2. **Two gates, not one.** The MCP server switch says Cowork may use the
+   server; the Memory plugin's own per-tool switch says Cowork may use memory.
+   Offering the tools on the server switch alone would hand memory to a tool
+   the user switched memory off for — the one outcome the Plugins hub must not
+   have. Both are consulted where the decision becomes behaviour.
+3. **Search reads, add mutates.** `memory.memory_search` is a `read` effect and
+   runs in every mode; `memory.memory_add` falls through to the loop's mutate
+   default, so Plan mode collects it into the plan instead of storing. Anything
+   a future server version adds lands on the safe side for the same reason.
+4. **The child owns its stdio.** JSON-RPC on stdout means the Hyperion logger
+   is silenced in the child (`setLogSilent` — an `info` line mid-stream would
+   corrupt the protocol) and `console.*`, mem0's failure channel, is redirected
+   to `~/Hyperion/mcp/memory/server.log`, because the supervisor pipes the
+   child's stderr but never drains it. A spawned test (`test/mcpmemory.test.ts`)
+   proves the discipline end to end: reaching `running` through the real
+   handshake is the assertion.
+
+The seed's absolute script path tripped the stdio config check's "outside the
+allowed roots" finding, so the check exempts the installation root: a server
+pointed at its own shipped implementation is granted no access, and the tree's
+rule is that a seed must pass its own check. The exemption is prefix-exact
+(`appRoot + sep`), and a sibling-prefix test pins that.
+
+### What mem0 does and does not do (read from mem0ai 3.1.2, not assumed)
+
+Before building any pruning, the integration was checked line by line
+(`node_modules/mem0ai/dist/oss/index.mjs`). What `add()` with inference —
+Hyperion's mode — does internally: embed the messages, vector-search the ten
+closest existing memories, run one LLM extraction with them as context, dedup
+by exact-text md5, insert new rows with history `ADD` records, link entities.
+What it does not do: resolve contradictions (a changed preference stores a
+second row beside the first — the old ADD/UPDATE/DELETE pass is gone from this
+version's add path), expire anything on its own, or prune, decay, or cap the
+store in any way. `expirationDate` is write-once metadata honoured only at
+read time (`search`/`getAll` hide expired rows unless asked), and Hyperion
+never sets it — so today nothing expires, near-duplicates persist, and the
+store grows monotonically. The user-driven prune surface is the delete routes
+(one fact, all facts). Any future pruning rides mem0's own
+`delete`/`update`/`expirationDate`, never a parallel store.
+
+One adjacent finding from the same read, fixed rather than filed: mem0 phones
+PostHog on every add/search unless `MEM0_TELEMETRY=false`, and `add()` awaits
+the POST. That contradicts the local-first rule ("nothing leaves the machine"),
+so importing the memory module now defaults the variable to off — an explicit
+setting in the environment is still respected. The MCP server child inherits
+the default by importing the same module.
 
 ## Cache and reasoning accounting: silence is not zero (1.28)
 
@@ -5889,3 +6026,51 @@ import with `.ts` extensions, which its config forbids), and the backend's Node 
 runner cannot import frontend sources (they import without extensions, which Node
 does not resolve). `frontend/scripts/*.mjs` is the one place both resolve, which is
 where the contract check already lived.
+
+## Cowork Pulse fetches on demand, through the tool, and says what it did (1.30)
+
+Pulse is the one path on which model-chosen text leaves for public search
+APIs, so the shape is deliberately narrow: one tool (`pulse.fetch`), one
+switch (the tier), one audit table (`pulse_fetches`). There is no direct-fetch
+HTTP route, no poller and no watchlist — not as missing pieces but as the
+design. A fetch answers a question the run is asking right now; anything on a
+timer would be egress nobody asked for, unattended.
+
+**Why the tier starts off and reads fail closed.** Fetching is network egress
+the user did not type. `off` is the default, the tool is unoffered while it
+holds, and a stored value that is not a known tier fetches nothing rather than
+guessing. The tool is *registered* even when unoffered, which diverges from
+Wigolo's conditional names on purpose: Wigolo's absence is an outage, while the
+tier is a setting the user flips — and a profile granting `pulse.fetch` must
+not break the run when they flip it off. A call that arrives anyway (a race
+with a settings write) is refused at execution with `capability_disabled`.
+
+**Why the refusal wording is Pulse's own.** The tree has one `redaction_flagged`
+refusal, and Pulse reuses its code and its details shape (`kinds`, `hits`) —
+but not its sentence, because the stock text offers an
+acknowledge-and-send-anyway. That affordance exists for sending to the user's
+own provider; a public search API is not the user's provider, and no
+acknowledgement should post a suspected secret to one. The refusal names the
+kinds and tells the model to rephrase, which is the only recourse and is
+stated as such. The scan itself runs only under `redaction_check_enabled`,
+like every other outbound scan.
+
+**Why partial failure is the normal shape.** Four sources answer in parallel
+and any of them can be down, rate-limited (GitHub allows ten unauthenticated
+searches a minute) or reshaped without notice. One slow source must not erase
+the three that answered, so per-source outcomes ride along with the items and
+only a total failure throws — and even that records its row first, because a
+failed fetch is exactly what the history is for.
+
+**Why SSRF is excluded by construction rather than by validation.** Source
+hosts are fixed constants, the tool schema carries no URL field, and the only
+endpoint override in the module is a test seam no route or tool argument
+reaches. There is no input to validate because there is no input that names a
+host.
+
+**Why the keyed tier has no sources.** Framework first, credentials never: the
+registry, the tier plumbing, the scan and the audit trail are real and are
+proven by a test fixture, while no concrete keyed source ships — so there is
+nothing to configure yet, and the config write surface is the tier alone. A
+future source is one registered object; its secrets stay with its own module,
+read at fetch time and never written to the fetch table.

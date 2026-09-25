@@ -207,8 +207,8 @@ function snapshotDatabase(): string {
  * backup today contains *no* project source at all — only the database, the MCP
  * config, the skills tree and (optionally) attachments — so carrying snapshots
  * would introduce a new *category* of content to an off-machine artifact rather
- * than more of an existing one. `mirrorBackup` copies each automatic archive to
- * `HYPERION_BACKUP_DEST`, so "off-machine" is the normal case.
+ * than more of an existing one. `mirrorToLocalDestination` copies each automatic
+ * archive to `HYPERION_BACKUP_DEST`, so "off-machine" is the normal case.
  *
  * Nothing real is lost, and that is an argument rather than an assumption:
  * continuation across a restore is impossible regardless. This archive has never
