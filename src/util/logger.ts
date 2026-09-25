@@ -12,7 +12,24 @@ export type LogLevel = keyof typeof LEVELS;
 
 const threshold = LEVELS[env.logLevel as LogLevel] ?? LEVELS.info;
 
+/**
+ * Discard every log line instead of writing it.
+ *
+ * For children that own their stdio: an MCP server speaks JSON-RPC on stdout,
+ * so an `info` line landing mid-stream would corrupt the protocol, and its
+ * stderr is piped but never drained, so even warnings would eventually block
+ * it. Set by the entry point, not by configuration — the parent process always
+ * wants its logs.
+ */
+let silent = false;
+
+/** Silence (or re-enable) all logging process-wide. Used by the MCP server entry; tests restore it. */
+export function setLogSilent(on: boolean): void {
+  silent = on;
+}
+
 function emit(level: LogLevel, scope: string, message: string, extra?: unknown): void {
+  if (silent) return;
   if (LEVELS[level] > threshold) return;
 
   const line = `${new Date().toISOString()} ${level.toUpperCase().padEnd(5)} [${scope}] ${message}`;

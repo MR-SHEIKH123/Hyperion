@@ -30,12 +30,12 @@ describe('seeded MCP defaults', () => {
     await cleanupHome();
   });
 
-  it('seeds filesystem enabled, and the three setup-required servers disabled', async () => {
+  it('seeds filesystem enabled, and the four setup-required servers disabled', async () => {
     const { seedDefaultServers } = await import('../src/services/mcp/defaults.ts');
     const { listServers } = await import('../src/services/mcp/registry.ts');
 
     const result = seedDefaultServers();
-    assert.deepEqual(result.created.sort(), ['browser-use', 'filesystem', 'graphify', 'wigolo']);
+    assert.deepEqual(result.created.sort(), ['browser-use', 'filesystem', 'graphify', 'memory', 'wigolo']);
 
     const byName = new Map(listServers().map((server) => [server.name, server]));
     assert.equal(byName.get('filesystem')?.enabled, true);
@@ -46,6 +46,9 @@ describe('seeded MCP defaults', () => {
     // browser-use (1.35) needs `uv` and an API key of its own, and it drives a
     // real browser — the last thing that should start because a seed said so.
     assert.equal(byName.get('browser-use')?.enabled, false);
+    // memory needs no setup, but its tools refuse until the opt-in Memory
+    // plugin is on — an enabled server whose every tool refuses reads as broken.
+    assert.equal(byName.get('memory')?.enabled, false);
   });
 
   it('seeds browser-use with its documented launch, and no invented credential', async () => {
@@ -72,7 +75,25 @@ describe('seeded MCP defaults', () => {
     const { seedDefaultServers } = await import('../src/services/mcp/defaults.ts');
     const result = seedDefaultServers();
     assert.deepEqual(result.created, []);
-    assert.deepEqual(result.skippedSeeded.sort(), ['browser-use', 'filesystem', 'graphify', 'wigolo']);
+    assert.deepEqual(result.skippedSeeded.sort(), ['browser-use', 'filesystem', 'graphify', 'memory', 'wigolo']);
+  });
+
+  it('seeds memory on this Node with the installation-relative script, disabled', async () => {
+    const { defaultServers } = await import('../src/services/mcp/defaults.ts');
+    const { env } = await import('../src/config/env.ts');
+
+    const entry = defaultServers().find((server) => server.input.name === 'memory');
+    assert.ok(entry, 'memory should be part of the seed set');
+    assert.equal(entry.input.type, 'local');
+    // The running interpreter, not a PATH lookup: the supervisor inherits the
+    // app's environment, so this Node is the one that can run the script.
+    assert.equal(entry.input.command, process.execPath);
+    // Absolute from the installation root, never from the working directory —
+    // the supervisor inherits whatever cwd the app was launched with.
+    assert.deepEqual(entry.input.args, [path.join(env.appRoot, 'src', 'mcp-servers', 'memory.ts')]);
+    assert.ok(fs.existsSync(entry.input.args?.[0] ?? ''), 'the seeded script must exist');
+    assert.equal(entry.input.enabled, false);
+    assert.match(entry.note, /Memory plugin/);
   });
 
   it('points graphify at its own venv interpreter and graph, not at PATH', async () => {
@@ -155,6 +176,26 @@ describe('static config check for stdio servers', () => {
     assert.equal(result.static, true);
   });
 
+  it('accepts the app installation itself, which the seeded memory server points at', async () => {
+    const { env } = await import('../src/config/env.ts');
+    const { createServer } = await import('../src/services/mcp/registry.ts');
+    const { testServer } = await import('../src/services/mcp/test.ts');
+
+    // The seed's own shape: this Node running the shipped script. The script
+    // is the server's implementation, not data it was granted — flagging it
+    // would mean our own seed fails its own config check.
+    const server = createServer({
+      name: 'memory-scope',
+      type: 'local',
+      command: process.execPath,
+      args: [path.join(env.appRoot, 'src', 'mcp-servers', 'memory.ts')],
+    });
+
+    const result = await testServer(server);
+    assert.equal(result.ok, true, result.message);
+    assert.equal(result.static, true);
+  });
+
   it('still rejects a path outside every allowed root', async () => {
     const { createServer } = await import('../src/services/mcp/registry.ts');
     const { testServer } = await import('../src/services/mcp/test.ts');
@@ -165,6 +206,26 @@ describe('static config check for stdio servers', () => {
       type: 'local',
       command: 'npx',
       args: ['-y', '@modelcontextprotocol/server-filesystem', outside],
+    });
+
+    const result = await testServer(server);
+    assert.equal(result.ok, false);
+    assert.equal(result.static, true);
+    assert.match(result.message, /outside the allowed roots/);
+  });
+
+  it('does not confuse a sibling prefix with the installation', async () => {
+    const { env } = await import('../src/config/env.ts');
+    const { createServer } = await import('../src/services/mcp/registry.ts');
+    const { testServer } = await import('../src/services/mcp/test.ts');
+
+    // Shares every character of the installation path but is not under it —
+    // a bare prefix match would let it through.
+    const server = createServer({
+      name: 'sibling-prefix',
+      type: 'local',
+      command: 'npx',
+      args: [`${env.appRoot}-other`, 'server.mjs'],
     });
 
     const result = await testServer(server);

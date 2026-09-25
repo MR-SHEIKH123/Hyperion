@@ -20,7 +20,7 @@ const { createCoworkAgent, readKnowledgeSource, runCoworkTask } = await import('
 const { saveKnowledgeSource } = await import('../src/services/cowork/knowledge.ts');
 const { listRunKnowledge } = await import('../src/db/runKnowledge.ts');
 const { setPluginAvailability } = await import('../src/db/plugins.ts');
-const { mcpPluginId } = await import('../src/services/plugins/availability.ts');
+const { MEMORY_PLUGIN_ID, mcpPluginId } = await import('../src/services/plugins/availability.ts');
 
 type StreamPlan = { chunks?: StreamChunk[]; error?: unknown };
 
@@ -73,6 +73,7 @@ function source(filename: string, mimeType: string | null = 'text/plain'): Knowl
 function makeManager(
   status: McpProcessManager['getStatus'] extends () => infer T ? T : never,
   result: McpToolCallResult,
+  tools: McpToolDefinition[] = [{ name: 'search', inputSchema: { type: 'object' }, description: 'Search the web.' }],
 ): {
   manager: McpProcessManager;
   starts: string[];
@@ -82,7 +83,6 @@ function makeManager(
   const starts: string[] = [];
   const listed: string[] = [];
   const calls: { name: string; tool: string; args: Record<string, unknown> }[] = [];
-  const tools: McpToolDefinition[] = [{ name: 'search', inputSchema: { type: 'object' }, description: 'Search the web.' }];
   const value = {
     getStatus: () => status,
     start: async (name: string) => { starts.push(name); },
@@ -210,6 +210,136 @@ describe('the additive Cowork agent', () => {
     assert.deepEqual(live.starts, []);
     const prompt = run.requests[0]?.messages.map((message) => message.content).join('\n') ?? '';
     assert.match(prompt, /switched off for Cowork in the Plugins hub/);
+  });
+
+  it('offers Memory tools only when the server is enabled and running', async () => {
+    const live = makeManager([{ name: 'MEMORY', state: 'running' }], {
+      content: [{ type: 'text', text: '{"memories":[]}' }],
+      isError: false,
+    });
+    const run = context([
+      { chunks: [call('c1', 'memory.search', { query: 'tabs' })] },
+      { chunks: [token('Memory consulted.')] },
+    ]);
+    const result = await runCoworkTask(input(), run.ctx, {
+      dependencies: {
+        listKnowledgeSources: () => [],
+        findWigolo: () => null,
+        findMemoryServer: () => ({ id: 'memory-server-live', enabled: true }),
+        getMcpProcessManager: () => live.manager,
+        recallForTurn: async () => null,
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(live.listed, ['memory']);
+    assert.deepEqual(live.starts, []);
+    assert.deepEqual(live.calls, [{ name: 'memory', tool: 'search', args: { query: 'tabs' } }]);
+    assert.match(run.requests[0]?.messages[0]?.content ?? '', /Memory is live/);
+  });
+
+  it('explains the Memory setup without starting anything', async () => {
+    const run = context([{ chunks: [token('No server needed.')] }]);
+    let starts = 0;
+    const result = await runCoworkTask(input(), run.ctx, {
+      dependencies: {
+        listKnowledgeSources: () => [],
+        recallForTurn: async () => null,
+        findWigolo: () => null,
+        findMemoryServer: () => null,
+        getMcpProcessManager: () => ({ start: async () => { starts++; } } as unknown as McpProcessManager),
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.match(run.requests[0]?.messages[0]?.content ?? '', /enable the memory MCP server/);
+    assert.equal(starts, 0);
+  });
+
+  it('withholds Memory tools when the Plugins hub has the server switched off for Cowork', async () => {
+    const memoryId = 'memory-server-huboff';
+    setPluginAvailability(mcpPluginId(memoryId), 'cowork', false);
+    try {
+      const live = makeManager([{ name: 'memory', state: 'running' }], { content: [], isError: false });
+      const run = context([{ chunks: [token('I will work without memory tools.')] }]);
+      const result = await runCoworkTask(input(), run.ctx, {
+        dependencies: {
+          listKnowledgeSources: () => [],
+          findWigolo: () => null,
+          findMemoryServer: () => ({ id: memoryId, enabled: true }),
+          getMcpProcessManager: () => live.manager,
+          recallForTurn: async () => null,
+        },
+      });
+
+      assert.equal(result.ok, true);
+      assert.deepEqual(live.listed, [], 'the tools are not even listed');
+      const prompt = run.requests[0]?.messages.map((message) => message.content).join('\n') ?? '';
+      assert.match(prompt, /switched off for Cowork in the Plugins hub/);
+    } finally {
+      setPluginAvailability(mcpPluginId(memoryId), 'cowork', true);
+    }
+  });
+
+  it('withholds Memory tools when memory itself is switched off for Cowork, even with the server on', async () => {
+    // The second gate Wigolo has no analogue for: the server switch says
+    // Cowork may use the server, but the Memory plugin's own switch says
+    // whether Cowork may use memory. The server-side decision must not
+    // override the plugin-side one.
+    setPluginAvailability(MEMORY_PLUGIN_ID, 'cowork', false);
+    try {
+      const live = makeManager([{ name: 'memory', state: 'running' }], { content: [], isError: false });
+      const run = context([{ chunks: [token('I will work without memory tools.')] }]);
+      const result = await runCoworkTask(input(), run.ctx, {
+        dependencies: {
+          listKnowledgeSources: () => [],
+          findWigolo: () => null,
+          findMemoryServer: () => ({ id: 'memory-server-dual', enabled: true }),
+          getMcpProcessManager: () => live.manager,
+          recallForTurn: async () => null,
+        },
+      });
+
+      assert.equal(result.ok, true);
+      assert.deepEqual(live.listed, [], 'the tools are not even listed');
+      const prompt = run.requests[0]?.messages.map((message) => message.content).join('\n') ?? '';
+      assert.match(prompt, /Memory itself is switched off/);
+    } finally {
+      setPluginAvailability(MEMORY_PLUGIN_ID, 'cowork', true);
+    }
+  });
+
+  it('treats memory_search as a read and memory_add as a plan action in Plan mode', async () => {
+    const live = makeManager(
+      [{ name: 'memory', state: 'running' }],
+      { content: [{ type: 'text', text: '{"memories":[]}' }], isError: false },
+      [
+        { name: 'memory_search', inputSchema: { type: 'object' }, description: 'Search memory.' },
+        { name: 'memory_add', inputSchema: { type: 'object' }, description: 'Store a memory.' },
+      ],
+    );
+    const run = context([
+      { chunks: [call('c1', 'memory.memory_search', { query: 'tabs' })] },
+      { chunks: [call('c2', 'memory.memory_add', { text: 'I prefer tabs.' })] },
+      { chunks: [token('Search ran; the add waits for approval.')] },
+    ]);
+    const result = await runCoworkTask(input('plan'), run.ctx, {
+      dependencies: {
+        listKnowledgeSources: () => [],
+        findWigolo: () => null,
+        findMemoryServer: () => ({ id: 'memory-server-plan', enabled: true }),
+        getMcpProcessManager: () => live.manager,
+        recallForTurn: async () => null,
+      },
+    });
+
+    assert.equal(result.ok, false);
+    assert.deepEqual(
+      live.calls.map((item) => item.tool),
+      ['memory_search'],
+      'the read ran; the write was collected, not executed',
+    );
+    assert.equal(result.plan?.[0]?.toolName, 'memory.memory_add');
   });
 
   it('keeps Ask refusal, Plan actions, and Act artifact versions on the shared loop', async () => {

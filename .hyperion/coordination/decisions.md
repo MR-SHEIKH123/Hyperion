@@ -1985,6 +1985,53 @@ including for corrections). One bullet per row it supersedes:
   followed), that is the `assertNoSymlinkedTraversal` call sites to drop. Both edits
   are one line plus its test.
 
+## Memory: folder import, MCP tools, and the prune check (2026-09-25)
+
+A self-contained Memory requirement in four items, worked verify-first: two
+items were already landed and were verified rather than rebuilt.
+
+1. **`POST /api/memory` — verified landed (1.21).** Single-fact add through
+   `addMemory`, the same mem0 client and `USER_ID` store the reads serve.
+2. **Bulk import — the paste half verified (1.21), the folder half built.**
+   `POST /api/memory/import` takes `multipart/form-data` with up to 50
+   `files` (the 1.28 upload shape — a folder picker POSTs the folder's files
+   unchanged; the server never reads a user-supplied path). Each file splits
+   on blank lines through the shared splitter, all files share the one
+   100-chunk / 20 000-character budget in upload order, and each file reports
+   `{ imported, dropped, found, error }` while the batch continues past
+   invalid files. The write path is byte-identical to the paste importer's —
+   sequential `mem.add` with the same metadata — and mem0's array form was
+   checked and rejected as the bulk mechanism: it joins the array into one
+   extraction context, which would merge per-file chunks into LLM-decided
+   memories.
+3. **Memory over MCP — built.** `memory_search` / `memory_add` served by a
+   first-party stdio server (`src/mcp-servers/memory.ts`), seeded disabled,
+   consumed by Cowork (verified the only MCP-aware agent) through the
+   standard supervised-server path. Two gates — the server switch and the
+   Memory plugin's own per-tool switch — because the server decision must not
+   override the plugin one; search is a read, add falls through to mutate.
+   The child owns its stdio (logger silenced, `console.*` to a file: stderr
+   is piped but never drained).
+4. **Prune check — report only, by decision.** mem0ai 3.1.2 read line by line:
+   extraction, exact-text-md5 dedup, read-time expiry filtering, history and
+   entity linking are covered; contradiction resolution and all automatic
+   pruning (GC, decay, caps) are genuinely uncovered, and Hyperion never sets
+   `expirationDate`, so nothing expires. Any future pruning rides mem0's own
+   `delete`/`update`/`expirationDate`. No pruning built.
+
+Adjacent fix from the same read: mem0 phones PostHog inside `add()` unless
+`MEM0_TELEMETRY=false` — contradicting the local-first rule — so the memory
+module now defaults it to off (explicit environment respected).
+
+Tests: `test/memorywrite.test.ts` (+11: files route, file chunking,
+telemetry default), `test/mcpmemory.test.ts` (new, 16: handler units, served
+surface, logger silence, live spawn round trip), `test/coworkagent.test.ts`
+(+5: offering, guidance, both hub gates, plan-mode read/mutate),
+`test/mcpdefaults.test.ts` (+3: seed shape, app-root exemption,
+sibling-prefix rejection). Docs: `docs/API.md` (import row + folder
+paragraph), `docs/CONTRACTS.md` ("Memory over MCP" + the mem0 read),
+`frontend/contracts/gaps.md` (M17 files note, second-server status).
+
 ---
 
 # Master Plan v4 — verbatim record

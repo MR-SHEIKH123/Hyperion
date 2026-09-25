@@ -141,8 +141,9 @@ behavior in the browser.
   catalogue with an offline scan, and `PATCH /api/plugins/:id/availability` stores a per-tool decision
   (migration `025`, default available). What is still missing is a *frontend* Plugins surface — the tool
   is a placeholder. browser-use *is* registered now (1.35, a seeded MCP server), and the hub reads it as a
-  browser-driving server; what is still missing on that front is per-tool MCP selection, so no tool consumes a
-  second MCP server yet — Cowork reads `wigolo` by name.
+  browser-driving server; what is still missing on that front is *general* per-tool MCP selection. Cowork
+  read only `wigolo` by name until 2026-09-25, when the first-party `memory` server became its second
+  named server (`memory.memory_search` / `memory.memory_add`); any-server-into-any-tool is still open.
 - ~~No Chat fork endpoint~~ **Closed 2026-09-21 (1.27)**: `POST /api/chat/:id/fork` branches a
   conversation without touching it. A dedicated Chat state endpoint is still missing
   (`chat.state` above): runs and paused runs are the only chat-state reads.

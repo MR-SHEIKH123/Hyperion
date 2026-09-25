@@ -5217,10 +5217,79 @@ and three deliberate properties:
    is signed in to". The finding names the marker it matched.
 
 Not done, and recorded rather than implied: **no tool consumes it yet.** Cowork
-reads one MCP server by name (`wigolo`), so an availability override for
-browser-use is a real stored decision that no code path consults today — which is
-exactly what `consumers: []` on its hub entry says. Wiring a second server into a
-tool's context is per-tool MCP selection, and that is Prompt-2 work.
+read one MCP server by name (`wigolo`) when this was written, so an availability
+override for browser-use is a real stored decision that no code path consults
+today — which is exactly what `consumers: []` on its hub entry says. The memory
+server below made it two servers by name; *general* per-tool MCP selection (any
+server into any tool's context) is still Prompt-2 work.
+
+## Memory over MCP: the first-party server (2026-09-25)
+
+Cowork is the only MCP-aware agent — the shared loop, the Code subagents and the
+other tools have no MCP consumption path — and until now it read exactly one
+server by name (`wigolo`). It now reads two: `memory`, Hyperion's own
+recall/store served over MCP (`src/mcp-servers/memory.ts`), exposing
+`memory_search` and `memory_add`. The tools are pure wiring over `listMemories`
+and `addMemory`, the same functions the Settings routes call against the same
+mem0 store — an agent and an external MCP client get the same answers because
+they are the same calls. There is no new memory infrastructure, and the server
+adds no extraction, dedup, or pruning of its own (see below for what mem0
+itself does).
+
+Four properties are deliberate:
+
+1. **Seeded disabled, like the setup-required defaults.** The server needs no
+   setup — it runs on this Node and inherits the app environment — but its
+   tools refuse until the opt-in Memory plugin is on, and an enabled server
+   whose every tool refuses reads as broken. The seed resolves the script from
+   the installation root (`env.appRoot`), never the working directory, which
+   the supervisor inherits from whatever launched the app.
+2. **Two gates, not one.** The MCP server switch says Cowork may use the
+   server; the Memory plugin's own per-tool switch says Cowork may use memory.
+   Offering the tools on the server switch alone would hand memory to a tool
+   the user switched memory off for — the one outcome the Plugins hub must not
+   have. Both are consulted where the decision becomes behaviour.
+3. **Search reads, add mutates.** `memory.memory_search` is a `read` effect and
+   runs in every mode; `memory.memory_add` falls through to the loop's mutate
+   default, so Plan mode collects it into the plan instead of storing. Anything
+   a future server version adds lands on the safe side for the same reason.
+4. **The child owns its stdio.** JSON-RPC on stdout means the Hyperion logger
+   is silenced in the child (`setLogSilent` — an `info` line mid-stream would
+   corrupt the protocol) and `console.*`, mem0's failure channel, is redirected
+   to `~/Hyperion/mcp/memory/server.log`, because the supervisor pipes the
+   child's stderr but never drains it. A spawned test (`test/mcpmemory.test.ts`)
+   proves the discipline end to end: reaching `running` through the real
+   handshake is the assertion.
+
+The seed's absolute script path tripped the stdio config check's "outside the
+allowed roots" finding, so the check exempts the installation root: a server
+pointed at its own shipped implementation is granted no access, and the tree's
+rule is that a seed must pass its own check. The exemption is prefix-exact
+(`appRoot + sep`), and a sibling-prefix test pins that.
+
+### What mem0 does and does not do (read from mem0ai 3.1.2, not assumed)
+
+Before building any pruning, the integration was checked line by line
+(`node_modules/mem0ai/dist/oss/index.mjs`). What `add()` with inference —
+Hyperion's mode — does internally: embed the messages, vector-search the ten
+closest existing memories, run one LLM extraction with them as context, dedup
+by exact-text md5, insert new rows with history `ADD` records, link entities.
+What it does not do: resolve contradictions (a changed preference stores a
+second row beside the first — the old ADD/UPDATE/DELETE pass is gone from this
+version's add path), expire anything on its own, or prune, decay, or cap the
+store in any way. `expirationDate` is write-once metadata honoured only at
+read time (`search`/`getAll` hide expired rows unless asked), and Hyperion
+never sets it — so today nothing expires, near-duplicates persist, and the
+store grows monotonically. The user-driven prune surface is the delete routes
+(one fact, all facts). Any future pruning rides mem0's own
+`delete`/`update`/`expirationDate`, never a parallel store.
+
+One adjacent finding from the same read, fixed rather than filed: mem0 phones
+PostHog on every add/search unless `MEM0_TELEMETRY=false`, and `add()` awaits
+the POST. That contradicts the local-first rule ("nothing leaves the machine"),
+so importing the memory module now defaults the variable to off — an explicit
+setting in the environment is still respected. The MCP server child inherits
+the default by importing the same module.
 
 ## Cache and reasoning accounting: silence is not zero (1.28)
 
