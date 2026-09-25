@@ -642,56 +642,56 @@
     {
       "method": "GET",
       "path": "/api/memory",
-      "source": "src/http/memory.ts:45",
+      "source": "src/http/memory.ts:62",
       "exposure": "frontend",
       "capability": "memory.manage"
     },
     {
       "method": "GET",
       "path": "/api/memory/status",
-      "source": "src/http/memory.ts:60",
+      "source": "src/http/memory.ts:77",
       "exposure": "frontend",
       "capability": "memory.manage"
     },
     {
       "method": "POST",
       "path": "/api/memory",
-      "source": "src/http/memory.ts:91",
+      "source": "src/http/memory.ts:108",
       "exposure": "frontend",
       "capability": "memory.manage"
     },
     {
       "method": "POST",
       "path": "/api/memory/import",
-      "source": "src/http/memory.ts:127",
+      "source": "src/http/memory.ts:152",
       "exposure": "frontend",
       "capability": "memory.manage"
     },
     {
       "method": "POST",
       "path": "/api/memory/enable",
-      "source": "src/http/memory.ts:79",
+      "source": "src/http/memory.ts:96",
       "exposure": "frontend",
       "capability": "memory.manage"
     },
     {
       "method": "POST",
       "path": "/api/memory/disable",
-      "source": "src/http/memory.ts:80",
+      "source": "src/http/memory.ts:97",
       "exposure": "frontend",
       "capability": "memory.manage"
     },
     {
       "method": "DELETE",
       "path": "/api/memory",
-      "source": "src/http/memory.ts:151",
+      "source": "src/http/memory.ts:201",
       "exposure": "frontend",
       "capability": "memory.manage"
     },
     {
       "method": "DELETE",
       "path": "/api/memory/:id",
-      "source": "src/http/memory.ts:159",
+      "source": "src/http/memory.ts:209",
       "exposure": "frontend",
       "capability": "memory.manage"
     },

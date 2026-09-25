@@ -1,5 +1,7 @@
 import { Router } from 'express';
+import multer from 'multer';
 
+import { env } from '../config/env.ts';
 import { AppError } from '../util/errors.ts';
 import { wrap } from './errors.ts';
 import { asString, body, pathParam, queryLimit, queryString } from './params.ts';
@@ -10,6 +12,7 @@ import {
   clearMemories,
   deleteMemory,
   importMemories,
+  importMemoryFiles,
   listMemories,
   memoryStatus,
   resetMemory,
@@ -24,6 +27,20 @@ import {
  * it was allowed to read.
  */
 const MEMORY_IMPORT_MAX_REQUEST_CHARS = MEMORY_IMPORT_MAX_CHARS * 5;
+
+/**
+ * File uploads, in memory: the service validates names and bytes per file, and
+ * a file over one file's character bound is a per-file `error`, not a rejected
+ * request — so the transport cap stays the shared upload maximum rather than
+ * the policy limit. No file-count limit here on purpose: a multer-level count
+ * would surface as a 500 asserting a server fault for a client error (the S17
+ * lesson, same as the 1.28 profile import), so the 50-file batch cap is
+ * enforced in the service as a 400.
+ */
+const memoryUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: env.maxUploadBytes },
+});
 
 /** Memory is opt-in, so a write against a disabled plugin is a capability answer, not a failure. */
 function assertMemoryEnabled(): void {
@@ -115,20 +132,53 @@ memoryRouter.post(
 );
 
 /**
- * Import pasted text as memories (item 1.21).
+ * Import pasted text as memories (item 1.21), or the files of an uploaded
+ * folder in one pass.
  *
- * The counts are the answer, including a partial one: a paste is not one piece
- * of work, and a route that answered 500 because chunk 41 of 60 failed would
- * throw away the fact that 40 landed. So the response always carries
+ * Two bodies, one route. JSON `{ text }` is the paste the route opened with,
+ * unchanged. `multipart/form-data` with `files` is a folder picker's upload:
+ * each file is split on blank lines like a paste, all files share the one
+ * import budget, and the response adds a per-file breakdown to the same
+ * top-level counts. Sending both is a refusal — the two shapes would silently
+ * disagree about which one was stored.
+ *
+ * The counts are the answer, including a partial one: an import is not one
+ * piece of work, and a route that answered 500 because chunk 41 of 60 failed
+ * would throw away the fact that 40 landed. So the response always carries
  * `imported`/`dropped`/`found`, and `error` names what stopped a run early —
  * with one exception, where nothing at all was stored, because a success-shaped
  * response for zero work is the one reading this route must not allow.
  */
 memoryRouter.post(
   '/import',
+  memoryUpload.array('files'),
   wrap(async (req, res) => {
     assertMemoryEnabled();
-    const text = asString(body(req).text, 'text');
+    const uploaded = (req.files as Express.Multer.File[] | undefined) ?? [];
+    const payload = body(req);
+    if (uploaded.length > 0) {
+      if (payload.text !== undefined) {
+        throw new AppError('bad_request', 'Provide either text or files, not both.', {
+          details: { field: 'text' },
+        });
+      }
+      const outcome = await importMemoryFiles(
+        uploaded.map((file) => ({ name: file.originalname || 'import.txt', buffer: file.buffer })),
+      );
+      if (outcome.imported === 0 && outcome.error !== null) {
+        throw new AppError('storage_error', 'No memories were imported: the memory backend is not available.', {
+          details: { reason: memoryStatus().error, found: outcome.found, files: outcome.files },
+        });
+      }
+      res.json(outcome);
+      return;
+    }
+    if (payload.text === undefined && req.files !== undefined) {
+      throw new AppError('bad_request', 'No files were uploaded.', {
+        details: { field: 'files' },
+      });
+    }
+    const text = asString(payload.text, 'text');
     if (text.length > MEMORY_IMPORT_MAX_REQUEST_CHARS) {
       throw new AppError('bad_request', `text must be at most ${MEMORY_IMPORT_MAX_REQUEST_CHARS} characters`, {
         details: { field: 'text', max: MEMORY_IMPORT_MAX_REQUEST_CHARS },

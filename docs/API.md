@@ -825,7 +825,7 @@ MemoryStatus { enabled, available, error: string|null,
 | POST | `/api/memory/enable` | `{ status }` |
 | POST | `/api/memory/disable` | `{ status }` |
 | POST | `/api/memory` | `{ stored: true }` — body `{ text }`, at most 4000 characters |
-| POST | `/api/memory/import` | `{ imported, dropped, found, error }` — body `{ text }` |
+| POST | `/api/memory/import` | `{ imported, dropped, found, error }` — JSON body `{ text }`, or `multipart/form-data` with `files` (at most 50; per-file breakdown in `files[]`) |
 | DELETE | `/api/memory/:id` | `{ deleted: boolean }` |
 | DELETE | `/api/memory` | `{ cleared: boolean }` |
 
@@ -847,6 +847,15 @@ returns its counts with `error` set, because 40 of 60 chunks landing is a real
 outcome and a 500 would throw it away — with one exception: if *nothing* landed,
 the response is the storage error, since a success-shaped answer for zero work is
 the reading this route must not allow.
+
+**A folder uploads as `files`, not as a path.** The import route takes
+`multipart/form-data` with up to 50 files — what a folder picker produces —
+because the server reads uploads, not user-supplied paths (the 1.28 rule). Each
+file is split on blank lines exactly like a paste and all files share the one
+100-chunk / 20 000-character budget in upload order; one file holds at most
+20 000 characters and anything else about it (binary bytes, an over-long name)
+is a per-file `error` while the batch continues. Sending `text` and `files`
+together is refused: the two shapes would silently disagree about what landed.
 
 The list route returns an **empty array rather than an error** when memory is
 disabled or the backend failed to load, so `GET /status` is the single place that

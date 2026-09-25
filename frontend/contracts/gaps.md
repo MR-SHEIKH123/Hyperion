@@ -182,5 +182,8 @@ behavior in the browser.
 - ~~Memory has no direct-add or text-import endpoint.~~ **Closed 2026-09-21**: `POST /api/memory`
   (one memory, bounded to a paragraph) and `POST /api/memory/import` (pasted text, split on blank
   lines, bounded to 100 chunks / 20 000 characters, dropped pieces counted rather than truncated).
+  Extended 2026-09-25: the import route also takes `multipart/form-data` with up to 50 `files`
+  (one shared chunk budget, per-file breakdown), so a folder picker can POST a folder's files
+  unchanged — the 1.28 upload shape, not a server-side path read.
   The Settings surface that will call them does not exist yet — the routes are ready and the
   placeholder tool is not.

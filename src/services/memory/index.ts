@@ -38,7 +38,16 @@ import { isTemporaryChat } from '../../db/temporaryChats.ts';
 import { MEMORY_PLUGIN_ID, isPluginAvailableTo } from '../plugins/availability.ts';
 import { getBoolSetting, setSetting } from '../../db/settings.ts';
 import type { ToolName } from '../../types/core.ts';
+import { AppError } from '../../util/errors.ts';
 import { createLogger } from '../../util/logger.ts';
+
+// mem0 phones PostHog on every add/search unless told not to: its telemetry
+// defaults on, and `add()` awaits the POST. Rule 4 above says nothing leaves
+// the machine, so the default here is off. mem0 reads this variable at its own
+// module load, which happens inside `getMemory()`'s dynamic import — long
+// after this line runs, including in the MCP server child, which imports this
+// module too. An explicit setting in the environment is respected either way.
+process.env.MEM0_TELEMETRY ??= 'false';
 
 const log = createLogger('memory');
 
@@ -358,6 +367,19 @@ export const MEMORY_IMPORT_MAX_CHARS = 20_000;
 export const MEMORY_MAX_CHARS = 4_000;
 
 /**
+ * The split both importers share: blank lines separate memories, single
+ * newlines inside a paragraph are kept. Private because the *bounded* entry
+ * points (`chunkImportText`, `chunkImportFiles`) are the contract — an
+ * unbounded splitter handed out on its own would let a caller skip the bounds.
+ */
+function splitImportPieces(input: string): string[] {
+  return input
+    .split(/\n\s*\n+/)
+    .map((piece) => piece.trim())
+    .filter((piece) => piece.length > 0);
+}
+
+/**
  * Split pasted text into the units that will be stored.
  *
  * Blank lines separate memories, which is what a pasted list or a set of notes
@@ -367,6 +389,10 @@ export const MEMORY_MAX_CHARS = 4_000;
  *
  * Pure and exported so the rule can be tested without a memory backend: the
  * whole point of the bounds is that they are checkable without one.
+ *
+ * The split itself lives in `splitImportPieces`, shared with the multi-file
+ * importer below: one rule for what counts as a memory, however the text
+ * arrived.
  */
 export function chunkImportText(
   input: string,
@@ -375,10 +401,7 @@ export function chunkImportText(
   const maxChunks = options.maxChunks ?? MEMORY_IMPORT_MAX_CHUNKS;
   const maxChars = options.maxChars ?? MEMORY_IMPORT_MAX_CHARS;
 
-  const pieces = input
-    .split(/\n\s*\n+/)
-    .map((piece) => piece.trim())
-    .filter((piece) => piece.length > 0);
+  const pieces = splitImportPieces(input);
 
   const kept: string[] = [];
   let used = 0;
@@ -482,6 +505,193 @@ export async function importMemories(
   }
   log.info(`imported ${imported} memories`, { dropped });
   return { imported, dropped, found: chunks.length, error: null };
+}
+
+/** More files than this in one import is a script, not an import (mirrors 1.28 profiles). */
+export const MEMORY_IMPORT_MAX_FILES = 50;
+
+/**
+ * Filenames are echoed in results, never written to disk, so the only bound is
+ * a reporting one: past this a name is truncated data, not an identifier.
+ */
+export const MEMORY_IMPORT_MAX_FILENAME_CHARS = 255;
+
+export interface MemoryImportFile {
+  name: string;
+  buffer: Buffer;
+}
+
+export interface FileImportOutcome {
+  /** The filename as uploaded, so the caller can match results to files. */
+  name: string;
+  imported: number;
+  dropped: number;
+  found: number;
+  /** Human reason this file contributed nothing, or the backend error that stopped the run on it. */
+  error: string | null;
+}
+
+export interface FilesImportOutcome extends ImportOutcome {
+  files: FileImportOutcome[];
+}
+
+/**
+ * Split each file's text into the units that will be stored, under one shared
+ * budget.
+ *
+ * The 100-chunk / 20 000-character bounds exist to cap extraction cost per
+ * import *run*, so a batch of files shares them in upload order rather than
+ * each file getting its own hundred extractions. Pieces past the budget count
+ * as dropped on their file — said out loud, like the single-text importer,
+ * never silently truncated.
+ *
+ * Pure and exported for the same reason as `chunkImportText`: the bounds are
+ * checkable without a backend.
+ */
+export function chunkImportFiles(
+  files: readonly { name: string; text: string }[],
+  options: { maxChunks?: number; maxChars?: number } = {},
+): {
+  chunks: { file: number; text: string }[];
+  files: { name: string; found: number; dropped: number }[];
+} {
+  const maxChunks = options.maxChunks ?? MEMORY_IMPORT_MAX_CHUNKS;
+  const maxChars = options.maxChars ?? MEMORY_IMPORT_MAX_CHARS;
+
+  const chunks: { file: number; text: string }[] = [];
+  const perFile: { name: string; found: number; dropped: number }[] = [];
+  let used = 0;
+  files.forEach((file, index) => {
+    const pieces = splitImportPieces(file.text);
+    let dropped = 0;
+    for (const piece of pieces) {
+      const cost = piece.length + (chunks.length > 0 ? 1 : 0);
+      if (chunks.length >= maxChunks || used + cost > maxChars) {
+        dropped += 1;
+        continue;
+      }
+      chunks.push({ file: index, text: piece });
+      used += cost;
+    }
+    perFile.push({ name: file.name, found: pieces.length, dropped });
+  });
+  return { chunks, files: perFile };
+}
+
+/**
+ * Import uploaded files as memories: the folder half of the import route.
+ *
+ * Shape mirrors the 1.28 profile import deliberately — same 50-file batch cap
+ * enforced here in the service as a 400 (a multer-level limit would surface as
+ * a 500 asserting a server fault for a client error, the S17 lesson), same
+ * per-file reporting, same policy-before-bytes order — because a folder picker
+ * will POST here exactly the way it POSTs there.
+ *
+ * Per-file validity, in order: the name fits the reporting bound, the bytes
+ * are text (a NUL byte means binary, the same test knowledge intake uses),
+ * the decoded text fits one file's 20 000 characters. Anything else is a
+ * per-file `error`, never a failed batch: one README must not refuse forty
+ * notes. Files that pass share the single-text importer's chunk budget
+ * (`chunkImportFiles`) and its write path — sequential `mem.add` calls with
+ * identical metadata, stopping at the first backend error with the failed
+ * chunk and everything after it counted as dropped. A batch with nothing
+ * valid to store never loads the backend, so an all-invalid batch is a 200
+ * with reasons rather than a storage error.
+ */
+export async function importMemoryFiles(
+  files: readonly MemoryImportFile[],
+  options: { maxChunks?: number; maxChars?: number } = {},
+): Promise<FilesImportOutcome> {
+  if (files.length > MEMORY_IMPORT_MAX_FILES) {
+    throw new AppError(
+      'bad_request',
+      `At most ${MEMORY_IMPORT_MAX_FILES} files may be imported at once.`,
+      { details: { field: 'files', count: files.length } },
+    );
+  }
+  const outcomes: FileImportOutcome[] = files.map((file) => ({
+    name: file.name,
+    imported: 0,
+    dropped: 0,
+    found: 0,
+    error: null,
+  }));
+  if (!memoryEnabled()) {
+    return { imported: 0, dropped: 0, found: 0, error: 'disabled', files: outcomes };
+  }
+
+  const decoded: { name: string; text: string }[] = [];
+  const order: number[] = [];
+  for (let index = 0; index < files.length; index += 1) {
+    const file = files[index]!;
+    if (file.name.length > MEMORY_IMPORT_MAX_FILENAME_CHARS) {
+      outcomes[index]!.error =
+        `The filename is ${file.name.length} characters; at most ${MEMORY_IMPORT_MAX_FILENAME_CHARS} fit in a result.`;
+      continue;
+    }
+    if (file.buffer.includes(0)) {
+      outcomes[index]!.error = 'The file is not text, so it contributed no memories.';
+      continue;
+    }
+    const text = file.buffer.toString('utf8');
+    if (text.length > MEMORY_IMPORT_MAX_CHARS) {
+      outcomes[index]!.error =
+        `The file is ${text.length} characters; one file holds at most ${MEMORY_IMPORT_MAX_CHARS}.`;
+      continue;
+    }
+    decoded.push({ name: file.name, text });
+    order.push(index);
+  }
+
+  const { chunks, files: budgeted } = chunkImportFiles(decoded, options);
+  for (let position = 0; position < budgeted.length; position += 1) {
+    const original = order[position]!;
+    outcomes[original]!.found = budgeted[position]!.found;
+    outcomes[original]!.dropped = budgeted[position]!.dropped;
+  }
+  const dropEveryKeptChunk = (): void => {
+    for (const chunk of chunks) outcomes[order[chunk.file]!]!.dropped += 1;
+  };
+  const summed = (): ImportOutcome => ({
+    imported: outcomes.reduce((total, outcome) => total + outcome.imported, 0),
+    dropped: outcomes.reduce((total, outcome) => total + outcome.dropped, 0),
+    found: outcomes.reduce((total, outcome) => total + outcome.found, 0),
+    error: null,
+  });
+
+  if (chunks.length === 0) {
+    return { ...summed(), files: outcomes };
+  }
+
+  const mem = await getMemory();
+  if (!mem) {
+    dropEveryKeptChunk();
+    return { ...summed(), error: 'unavailable', files: outcomes };
+  }
+
+  let position = 0;
+  for (const chunk of chunks) {
+    const original = order[chunk.file]!;
+    try {
+      await mem.add([{ role: 'user', content: chunk.text }], {
+        userId: USER_ID,
+        metadata: { tool: 'settings', source: 'import' },
+      });
+      outcomes[original]!.imported += 1;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      log.warn('memory file import stopped early', error);
+      for (let rest = position; rest < chunks.length; rest += 1) {
+        outcomes[order[chunks[rest]!.file]!]!.dropped += 1;
+      }
+      outcomes[original]!.error = message;
+      return { ...summed(), error: message, files: outcomes };
+    }
+    position += 1;
+  }
+  const result = summed();
+  log.info(`imported ${result.imported} memories from ${files.length} files`, { dropped: result.dropped });
+  return { ...result, files: outcomes };
 }
 
 // --- management surface (Settings UI) --------------------------------------
