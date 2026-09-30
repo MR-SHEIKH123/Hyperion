@@ -9,6 +9,19 @@ endpoint surface" in `docs/SPEC.md`, that is called out in the last section.
 - **There is no authentication, no CORS, no rate limiting and no request logging.**
   This is deliberate per the spec: single trusted user, loopback bind, remote
   access via Tailscale. Do not expose this port publicly.
+- **Two browser-shaped requests are refused before any route runs**, both with
+  **403 `scope_violation`** (`src/http/networkGuard.ts`):
+  - the `Host` header must name loopback (`127.0.0.1`, `localhost`, `[::1]`, on
+    any port), the `HYPERION_BIND` address, or an entry in
+    `HYPERION_ALLOWED_HOSTS`. This is what stops DNS rebinding; it is not
+    authentication.
+  - on `POST`/`PUT`/`PATCH`/`DELETE`, an `Origin` header that is present must
+    match the API's own origin or an entry in `HYPERION_APP_ORIGINS` (default
+    `http://127.0.0.1:4318,http://localhost:4318`). An **absent** `Origin` is
+    allowed, so curl and scripts are unaffected; `Origin: null` is refused.
+  - No CORS headers are sent, before or after this change. See
+    "The API answers to a host, and accepts writes from an origin" in
+    `docs/CONTRACTS.md`.
 - Request bodies are JSON (`express.json`, 25 MB limit) except the two multipart
   upload routes. `x-powered-by` and ETags are disabled.
 

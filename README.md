@@ -69,6 +69,13 @@ attachments, knowledge library, skills, MCP venvs) — override with
 refuse-to-start guard against wildcard binds; see `.env.example`). For a
 long-running install, `ecosystem.config.cjs` is the PM2 entry point.
 
+The API also refuses requests whose `Host` it does not recognise, and
+state-changing requests carrying an `Origin` it does not know — DNS rebinding
+and cross-origin form posts, the two things a loopback bind cannot see. Reaching
+it over Tailscale means setting `HYPERION_ALLOWED_HOSTS` and
+`HYPERION_APP_ORIGINS`; both are documented in `.env.example`. Neither is
+authentication.
+
 ```bash
 npm run typecheck  # tsc --noEmit, must be clean
 npm test           # full suite: real servers, no stubs

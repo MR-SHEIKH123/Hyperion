@@ -29,6 +29,19 @@ function int(name: string, fallback: number): number {
   return parsed;
 }
 
+/**
+ * A comma-separated list. Empty entries are dropped rather than kept as ''.
+ *
+ * Used by the Host and Origin allow-lists, where an empty string would be a
+ * value that matches nothing and reads like an oversight.
+ */
+function list(name: string, fallback: string): string[] {
+  return str(name, fallback)
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== '');
+}
+
 function bool(name: string, fallback: boolean): boolean {
   const raw = process.env[name];
   if (raw === undefined || raw.trim() === '') return fallback;
@@ -136,6 +149,28 @@ export const env = {
   host: bind.host,
   port: int('HYPERION_PORT', 4317),
   bindIsLoopback: bind.isLoopback,
+
+  /**
+   * Extra hostnames the API will answer to, beyond loopback and the bind
+   * address — a Tailscale MagicDNS name or a 100.x.y.z address.
+   *
+   * This is the Host guard's allow-list (`src/http/networkGuard.ts`). A
+   * loopback bind does not stop a page on an attacker's domain that resolves
+   * to 127.0.0.1 from reaching this API, and the `Host` header is the only
+   * thing that tells the two apart. Ports are ignored: the dev proxy forwards
+   * the browser's `Host`, which carries the frontend's port, not the API's.
+   */
+  allowedHosts: list('HYPERION_ALLOWED_HOSTS', ''),
+
+  /**
+   * Origins allowed to make state-changing (POST/PUT/PATCH/DELETE) requests.
+   *
+   * The default is the Vite dev server on both loopback spellings. The API's
+   * own origins are always allowed and are not listed here. Ports are explicit
+   * on purpose — "any loopback port" would let anything else the user happens
+   * to be running locally drive this API from a page.
+   */
+  appOrigins: list('HYPERION_APP_ORIGINS', 'http://127.0.0.1:4318,http://localhost:4318'),
 
   paths,
 

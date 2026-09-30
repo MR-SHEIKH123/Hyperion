@@ -6074,3 +6074,125 @@ proven by a test fixture, while no concrete keyed source ships — so there is
 nothing to configure yet, and the config write surface is the tier alone. A
 future source is one registered object; its secrets stay with its own module,
 read at fetch time and never written to the fetch table.
+
+## The API answers to a host, and accepts writes from an origin (2026-09-30)
+
+**Who depends on this:** anything that calls the API from a browser — the Vite
+dev server's proxy today, and anything later that runs model-written JavaScript
+next to it. Also anyone running Hyperion over Tailscale, who now has an env var
+to set.
+
+Two middlewares, mounted first in `createApp()` (`src/http/networkGuard.ts`),
+ahead of every route and ahead of both body parsers.
+
+### The Host rule
+
+The request's hostname must be one of:
+
+- `127.0.0.1`, `localhost` or `[::1]`, **on any port**;
+- the `HYPERION_BIND` address, when it names a specific address;
+- an entry in `HYPERION_ALLOWED_HOSTS` (comma-separated; Tailscale names and
+  addresses go here).
+
+Anything else is **403 `scope_violation`**, including on the SSE routes and on
+paths that do not exist.
+
+**Why the port is ignored.** The Vite dev server proxies `/api` with
+`changeOrigin: false`, so the `Host` the backend sees in development is the
+*browser's* — `localhost:4318` — not the API's own `127.0.0.1:4317`. Matching
+the port would break the dev workflow and buy nothing: a rebinding attack
+controls the name, not the port.
+
+**Why this exists.** A loopback bind decides which interface accepts the
+connection; it says nothing about who asked for it. A page on
+`http://evil.test:4317`, where `evil.test` has been made to resolve to
+`127.0.0.1`, is same-origin with the API as far as the browser is concerned,
+and its requests arrive on the loopback socket like any other. The `Host`
+header is the only thing that distinguishes them, and nothing was reading it.
+
+**Why `X-Forwarded-Host` is ignored.** `trust proxy` is explicitly off. That
+header is caller-supplied, and honouring it would hand the attacker the very
+field the guard is reading.
+
+**Matching is exact, after normalization.** The value is parsed as a URL
+authority, which strips the port, lower-cases, punycodes an international name
+and canonicalizes an IPv6 literal; a single trailing dot is dropped. There is no
+substring or suffix matching — `notlocalhost` and `localhost.evil.test` are
+both refused — and a value that is not purely an authority (`evil.test/127.0.0.1`,
+`127.0.0.1@evil.test`) is refused rather than repaired.
+
+### The Origin rule
+
+On `POST`, `PUT`, `PATCH` and `DELETE` (in the implementation: every method
+except `GET`, `HEAD` and `OPTIONS`, which is the same set plus anything a
+browser cannot send):
+
+- an **absent** `Origin` is allowed;
+- a **present** `Origin` must match, exactly, either an entry in
+  `HYPERION_APP_ORIGINS` (default `http://127.0.0.1:4318,http://localhost:4318`
+  — the Vite dev server) or one of the API's own origins (every hostname it
+  answers to, on `HYPERION_PORT`, over `http`);
+- `Origin: null` is refused. It is what a sandboxed iframe, a `data:` document
+  and some redirect chains send, which is exactly the shape an attacker gets for
+  free.
+
+**Why an absent Origin is allowed.** A browser always sends `Origin` on these
+methods. Nothing else has to. Refusing an absent one would break curl, the test
+suite and every local script without stopping a single browser attack — and it
+would be pretending to be authentication, which this is not.
+
+**Why ports are explicit and there is no "any loopback port" shortcut.** Another
+app the user is running locally, or a preview served from a second listener on
+this machine, must not be able to drive this API from a page. The dev server's
+port is allowed because it is *configured*; nothing else inherits that. The same
+goes for the scheme: `https://localhost:4318` is refused, because the API
+terminates no TLS.
+
+**Why this exists.** A cross-origin `fetch` cannot *read* the answer without
+CORS headers, and there are none. But a `multipart/form-data` POST is a CORS
+*simple request*: it is sent, and its side effects happen, before the browser
+considers whether the caller may see the response. Backup import, skills upload,
+Cowork knowledge upload, memory import and profile import are all of that shape,
+so "the attacker cannot read the reply" was never the protection it sounded
+like.
+
+### What both rules are not
+
+**They are not authentication.** They say "this request came from a page
+Hyperion is willing to be called by", not "this request came from the owner".
+Any non-browser client can set or omit either header at will, and an absent
+`Origin` is allowed by design. The bind address is still the access control;
+these two guards close the holes a bind address cannot see. Authentication,
+CSRF tokens, TLS and rate limiting remain out of scope.
+
+**They are not CORS.** No `Access-Control-*` header is sent, before or after
+this change, and none is sent on an allowed request either. An allowed `Origin`
+means the request proceeds, not that the response becomes readable
+cross-origin.
+
+### The refusal
+
+**403 `scope_violation`**, reusing the existing code rather than adding one. It
+is already the code for "this request asked to cross a boundary the server
+enforces" (its other user is `fsScope`), it already maps to 403, and — the
+deciding factor — it is already in the frontend's `errorCodeSchema`. A new code
+would have been a wire change in a fix whose whole point is that nothing else
+changes.
+
+`details` carries the **normalized** hostname or origin (never the raw header —
+the value is attacker-chosen and is echoed to the caller and written to the log)
+plus `setting`, naming the env var that changes the answer.
+
+### Consequences for a remote (Tailscale) setup
+
+Reaching the UI over Tailscale needs **both** vars, because they answer
+different questions:
+
+```
+HYPERION_ALLOWED_HOSTS=hyperion.tailnet.ts.net,100.80.1.2
+HYPERION_APP_ORIGINS=http://hyperion.tailnet.ts.net:4318,http://127.0.0.1:4318,http://localhost:4318
+```
+
+The first is the name the request arrives under; the second is the page the
+request comes from. Setting only the first gets a 403 on every write with the
+`HYPERION_APP_ORIGINS` message, which is the intended (if blunt) way to be told.
