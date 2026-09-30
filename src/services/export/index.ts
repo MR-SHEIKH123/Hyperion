@@ -20,6 +20,12 @@ import { existsSync, readFileSync } from 'node:fs';
 import { getDb } from '../../db/adapter.ts';
 import { listMessages, requireChat } from '../../db/chats.ts';
 import { resolveInScope } from '../../security/fsScope.ts';
+import {
+  GIT_FILTER_QUERY,
+  GIT_SAFE_CONFIG,
+  GIT_SAFE_DIFF_FLAGS,
+  filterOverrides,
+} from '../code/gitHardening.ts';
 import { getWorktree } from '../code/worktree.ts';
 import { AppError } from '../../util/errors.ts';
 
@@ -201,12 +207,17 @@ export interface CodeTaskExport {
   content: string;
 }
 
-/** Run git for a read-only query, with the same non-interactive guards as worktree.ts. */
+/**
+ * Run git for a read-only query, with the same non-interactive guards as
+ * worktree.ts — and with `GIT_SAFE_CONFIG` in front of every subcommand, so a
+ * `core.fsmonitor` or a hook written into the repository the agent was editing
+ * cannot execute here. See `services/code/gitHardening.ts`.
+ */
 function git(args: string[], cwd: string): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(
       'git',
-      args,
+      [...GIT_SAFE_CONFIG, ...args],
       {
         cwd,
         timeout: 15_000,
@@ -261,7 +272,23 @@ export async function exportCodeTask(taskId: string): Promise<CodeTaskExport> {
     );
   }
 
-  const content = await git(['diff', worktree.baseCommit], worktree.dir);
+  /*
+   * This is the one command here that reads file *content*, and content is
+   * what textconv, an external diff driver and a clean filter all hook into.
+   * Without the guards below, `git diff` executes whatever the repository's
+   * own `.git/config` names, as Hyperion, with no approval in the loop.
+   *
+   * Two mechanisms, because one does not cover both:
+   *   - `--no-ext-diff --no-textconv` for the diff drivers. An empty `-c`
+   *     override is not usable there: git then fails the whole command.
+   *   - explicit `-c filter.<driver>.clean=` for the filters, because *no*
+   *     diff flag suppresses them — measured, not assumed.
+   */
+  const declaredFilters = await git([...GIT_FILTER_QUERY], worktree.dir).catch(() => '');
+  const content = await git(
+    [...filterOverrides(declaredFilters), 'diff', ...GIT_SAFE_DIFF_FLAGS, worktree.baseCommit],
+    worktree.dir,
+  );
 
   return {
     filename: `${safeStem(taskId, 'task')}.patch`,

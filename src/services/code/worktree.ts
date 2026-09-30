@@ -44,6 +44,7 @@ import { getRoot, resolveInScope, resolveInSubtree } from '../../security/fsScop
 import { assertNoSymlinkedTraversal, assertStillInside } from '../../security/toctou.ts';
 import { AppError } from '../../util/errors.ts';
 import { createLogger } from '../../util/logger.ts';
+import { GIT_FILTER_QUERY, GIT_SAFE_CONFIG, filterOverrides } from './gitHardening.ts';
 
 const log = createLogger('code:worktree');
 
@@ -298,16 +299,26 @@ async function create(taskId: string, project: string): Promise<Worktree> {
   }
 
   const branch = `hyperion-task-${taskId}`;
+
+  // This is the one git call here that *checks files out*, and a checkout
+  // converts content — which is where `filter.<driver>.smudge` runs, as
+  // Hyperion, from whatever the repository's own config says. Neither the
+  // hooks override nor the diff flags reach it, and git has no global switch,
+  // so the drivers are enumerated and overridden by name. Reading config
+  // executes nothing; no matches exits non-zero, which is the normal case.
+  const declaredFilters = await git([...GIT_FILTER_QUERY], { cwd: repo });
+  const noFilters = filterOverrides(declaredFilters.ok ? declaredFilters.stdout : '');
+
   // `-b` first, so the task's commits stay reachable by name after the scratch
   // directory is gone. Detaching is the fallback, not the goal.
-  let added = await git(['worktree', 'add', '-b', branch, dir, baseCommit], {
+  let added = await git([...noFilters, 'worktree', 'add', '-b', branch, dir, baseCommit], {
     cwd: repo,
     timeoutMs: CHECKOUT_TIMEOUT_MS,
   });
   let named = added.ok;
 
   if (!added.ok) {
-    added = await git(['worktree', 'add', '--detach', dir, baseCommit], {
+    added = await git([...noFilters, 'worktree', 'add', '--detach', dir, baseCommit], {
       cwd: repo,
       timeoutMs: CHECKOUT_TIMEOUT_MS,
     });
@@ -941,7 +952,11 @@ function git(
   const timeoutMs = options.timeoutMs ?? QUERY_TIMEOUT_MS;
 
   return new Promise((resolve) => {
-    const child = spawn('git', args, {
+    // GIT_SAFE_CONFIG in front of every subcommand: `core.fsmonitor` and a
+    // `post-checkout` hook are both commands git reads out of a config file
+    // and runs, and this repository is one an agent has been editing. See
+    // `gitHardening.ts` for the measurement behind that.
+    const child = spawn('git', [...GIT_SAFE_CONFIG, ...args], {
       cwd: options.cwd,
       windowsHide: true,
       env: {

@@ -2126,6 +2126,75 @@ vars), `README.md`.
 
 ---
 
+## Git config was a code-execution primitive, and the write tool could arm it (2026-09-30)
+
+Found while verifying the Canvas prompt's claim about `worktree.ts`. The claim
+was right about the risk and wrong about the scope: `services/export/index.ts`
+has a second `git()` helper the prompt never mentions, and it is the one on a
+GET route.
+
+**The exploit, as proven, needing no approved shell command.**
+`files.ts::locate` enforced containment and nothing else. In `direct` mode the
+task root *is* the project directory, so `<project>/.git/config` is inside the
+root: an ordinary write-tool call could add a `diff.<driver>.textconv`, a
+`filter.<driver>.clean`, a `core.fsmonitor` or `.git/hooks/post-checkout`, plus
+the `.gitattributes` line that selects the driver. It then fires the next time
+Hyperion runs git — `GET /api/code/tasks/:taskId/export`, a worktree release,
+or the **orphan scan at boot, with nobody watching**.
+
+**Built (one PR, deliberately small).** `services/code/gitHardening.ts`, shared
+by both `git()` helpers:
+
+- `GIT_SAFE_CONFIG` = `-c core.fsmonitor=false -c core.hooksPath=/dev/null`,
+  prepended to **every** invocation, because the alternative is a per-call-site
+  judgement that goes stale at the next call site.
+- `GIT_SAFE_DIFF_FLAGS` = `--no-ext-diff --no-textconv` on the export diff.
+- `filterOverrides()` — enumerate the repo's filter drivers, then pass
+  `-c filter.<d>.smudge= .clean= .process=` for each, at the two sites that
+  convert content (the checkout in `worktree.ts`, the diff in `export/index.ts`).
+- `files.ts::locate` refuses any `.git` path **segment**, read or write, 403
+  `scope_violation`; case-insensitive, trailing dots and spaces stripped
+  (Windows opens `.git.` as `.git`). `.gitignore`, `.gitattributes`, `.github/`
+  stay writable.
+
+**Two measurements that cost a round of wrong answers each, recorded so the
+next person does not repeat them.**
+
+1. `git --no-ext-diff diff …` — the flag *before* the subcommand — **exits
+   129**. It is not a top-level option. An earlier canary that did not check
+   the exit status read that failure as "the filter was blocked" and produced a
+   hardening matrix claiming `--no-ext-diff` stops the clean filter. It does
+   not. With separate markers per lever: `git diff --no-ext-diff --no-textconv`
+   blocks textconv and the external driver and **the clean filter still runs**.
+   Only `-c filter.<d>.clean=` stops it.
+2. Once a dirty file has been staged, git's stat cache means the clean filter
+   does not run at all, so every measurement has to re-dirty the file
+   immediately before the command or it silently reports "blocked".
+
+**The canary found a lever the analysis had missed.** With `.gitattributes`
+committed (so the worktree carries it), `git worktree add` ran the **smudge**
+filter — checkout is content conversion. `core.hooksPath` does not cover it and
+no flag does; the name-by-name override does, and the checked-out content is
+still correct. The test failed on exactly this before the fix existed, which is
+the argument for writing the canary before believing the matrix.
+
+**Mutation-checked.** Six guards removed one at a time, each caught:
+fsmonitor 4 failures, hooksPath 1, worktree-add filter overrides 3, export
+filter overrides 1, diff flags 1, the `.git` denial 2. Baseline 8/8.
+
+**Accepted consequences, in CONTRACTS.md rather than left to be rediscovered:**
+git-lfs will not materialize files in a task worktree (`post-checkout` is how
+it does that), and repository-configured smudge filters do not run there.
+
+**Residual gap, stated plainly:** an approved shell command can still run
+`git config` and can still run git without these flags. There is no way to make
+git ignore a repository's own config wholesale — `GIT_CONFIG_GLOBAL` /
+`GIT_CONFIG_SYSTEM` cover only the other two scopes. What is closed is the
+no-approval path: arming it through the file tools, and executing it through
+the commands Hyperion issues on its own initiative.
+
+---
+
 # Master Plan v4 — verbatim record
 
 > Appended 2026-09-11. This is the plan text as recorded in session; the
@@ -2350,4 +2419,3 @@ Phase E (🆕 V4, quality):         18             [observability + evals]
 ---
 
 This v4 preserves every original commitment and adds only verifiable, gap-grounded upgrades. The immediate next action is unchanged: the detached full-suite run has never been started. Reconcile-open question for you: do you want V4 proposals ratified into the plan now, or held as provisional until Phase A lands?
-

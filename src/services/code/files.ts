@@ -195,6 +195,18 @@ export async function restoreArtifactVersion(
   return { path: location.relative, sha256: hash(artifact.content), version: undo.version };
 }
 
+/**
+ * Segment spellings that name git's own directory.
+ *
+ * Compared after lower-casing and after stripping trailing dots and spaces,
+ * because Windows silently strips both when opening a path: `.git.` and
+ * `.git ` open `.git` there, and a check that compared the literal string
+ * would wave them through on the one platform where it matters.
+ */
+function isGitSegment(segment: string): boolean {
+  return segment.toLowerCase().replace(/[. ]+$/, '') === '.git';
+}
+
 function locate(candidate: string, services: CodeFileServices): {
   absolute: string;
   relative: string;
@@ -213,6 +225,28 @@ function locate(candidate: string, services: CodeFileServices): {
   if (!relative || relative === '.' || relative.startsWith('../')) {
     throw new AppError('bad_request', 'A Code file path must name a file inside the task workspace.');
   }
+
+  // Containment is not enough for `.git`. In `direct` mode the task root *is*
+  // the project directory, so `.git/config` is legitimately inside the
+  // boundary — and writing it turns `diff.<driver>.textconv`, `filter.*.clean`,
+  // `core.fsmonitor` and `.git/hooks/post-checkout` into commands Hyperion
+  // itself will execute, unapproved, the next time it runs git (the patch
+  // export, a worktree release, or the orphan scan at boot). In worktree mode
+  // `.git` is a *file* holding the gitdir pointer, and rewriting it redirects
+  // the repository wholesale.
+  //
+  // `gitHardening.ts` neutralizes the execution at each git call site; this
+  // closes the write that arms it. Two layers, because the whole class of bug
+  // is "one path missed the check". `.gitignore`, `.gitattributes` and
+  // `.github/` are ordinary tracked files and stay writable — only the `.git`
+  // directory (or pointer file) itself is refused.
+  const offending = relative.split('/').find((segment) => isGitSegment(segment));
+  if (offending !== undefined) {
+    throw new AppError('scope_violation', 'A Code file path may not reach into the .git directory.', {
+      details: { path: relative, segment: offending },
+    });
+  }
+
   return { absolute, relative, artifactKey: `code:file:${services.taskId}:${relative}` };
 }
 

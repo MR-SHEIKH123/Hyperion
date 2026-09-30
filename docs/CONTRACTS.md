@@ -6196,3 +6196,89 @@ HYPERION_APP_ORIGINS=http://hyperion.tailnet.ts.net:4318,http://127.0.0.1:4318,h
 The first is the name the request arrives under; the second is the page the
 request comes from. Setting only the first gets a 403 on every write with the
 `HYPERION_APP_ORIGINS` message, which is the intended (if blunt) way to be told.
+
+---
+
+## Git configuration is not an execution primitive (2026-09-30)
+
+Hyperion runs `git` against repositories an agent has been editing. Several
+git features are *configured commands*: git reads a value out of a config file
+and executes it — as Hyperion, with Hyperion's privileges, at a moment nobody
+is being asked to approve anything.
+
+| Config | Executes on |
+| --- | --- |
+| `diff.<driver>.textconv`, `diff.<driver>.command` | `git diff`, for paths a `.gitattributes` line marks `diff=<driver>` |
+| `filter.<driver>.clean` | `git diff`, when the working tree differs from the index |
+| `filter.<driver>.smudge` / `.process` | the **checkout** inside `git worktree add` |
+| `core.fsmonitor` | essentially every command that reads the index, `git status` included |
+| `core.hooksPath`, `.git/hooks/*` | `post-checkout` on `git worktree add` |
+
+This was reachable **without an approved shell command**. `files.ts::locate`
+enforced containment and nothing else, and in `direct` mode the task root *is*
+the project directory — so `<project>/.git/config` was inside the root, and an
+ordinary write-tool call could put any of the above in place. The payload then
+fired the next time Hyperion itself ran git: the patch export
+(`GET /api/code/tasks/:taskId/export`), a worktree release, or the **orphan
+scan, which runs at boot, unattended**.
+
+### The two contracts
+
+**1. Every git invocation carries `GIT_SAFE_CONFIG`.**
+`-c core.fsmonitor=false -c core.hooksPath=/dev/null`, prepended in both
+`git()` helpers (`services/code/worktree.ts`, `services/export/index.ts`) — on
+*every* call, not only the read-only ones. The alternative is a per-call-site
+judgement about whether a command touches the index, which is exactly the kind
+of judgement that goes stale when someone adds the next call site.
+
+**2. Where git converts content, the drivers are disabled by name.**
+Content conversion is the other half, and it needs two different mechanisms:
+
+- `git diff` gets `--no-ext-diff --no-textconv` for the diff drivers. An empty
+  `-c diff.<driver>.textconv=` is *not* usable: git fails the whole command.
+- Filters get an explicit `-c filter.<driver>.clean= .smudge= .process=` for
+  every driver the repository declares, because **no diff flag suppresses
+  filters**. Git has no global "no filters" switch, so the drivers are
+  enumerated first with `git config --name-only --get-regexp '^filter\..*'`
+  (a config read executes nothing) and then overridden. This runs at the two
+  call sites that convert content — the checkout in `worktree.ts` and the diff
+  in `export/index.ts`. Everything else (`status`, `rev-parse`, `worktree
+  remove`, `worktree prune`) converts no content.
+
+### The write path is closed too
+
+`files.ts::locate` now refuses any path with a `.git` **segment**, for reads
+and writes alike, with 403 `scope_violation`. Matching is case-insensitive and
+strips trailing dots and spaces, because Windows opens `.git.` and `.git ` as
+`.git`. `.gitignore`, `.gitattributes` and `.github/` are *not* affected —
+only a segment that is exactly `.git`. Defence that depends on one check never
+being bypassed is not defence, which is why both halves exist.
+
+### Known consequences
+
+- **git-lfs will not materialize.** `core.hooksPath=/dev/null` suppresses the
+  legitimate `post-checkout` too, and that is how git-lfs fetches its objects.
+  An LFS repository will show pointer files in a task worktree. This is the
+  accepted trade: a hook in a repository the agent can write to is the exact
+  thing being closed.
+- **Repository-configured filters do not run in task worktrees.** A repo whose
+  `.gitattributes` relies on a smudge filter (keyword expansion, encryption
+  helpers) will see unfiltered content in the worktree and in the exported
+  patch. The patch itself is still correct — it is the *stored* form.
+- **An approved shell command can still do all of this directly.** Nothing here
+  constrains what the operator approves; it constrains what git does on
+  Hyperion's behalf when nobody was asked.
+
+### The residual gap
+
+A `.git/config` that already exists on disk before Hyperion ever touches the
+repository — written by an approved shell command, or by anything else on the
+machine — is still that repository's config. The guards above stop it being
+*executed* by the commands Hyperion issues, and `locate` stops it being
+*written* through the Code file tools. Neither stops an approved
+`git config ...`, and there is no flag that makes git ignore a repository's own
+config wholesale (`GIT_CONFIG_GLOBAL` / `GIT_CONFIG_SYSTEM` cover the other two
+scopes, which Hyperion already pins in tests but does not pin at runtime).
+`test/gitexec.test.ts` is the canary: it arms a repository with all five levers,
+proves a plain git command fires them, and then asserts that Hyperion's own
+provisioning, export, release and orphan scan do not.
