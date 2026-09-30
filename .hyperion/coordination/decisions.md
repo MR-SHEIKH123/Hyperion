@@ -2034,6 +2034,98 @@ paragraph), `docs/CONTRACTS.md` ("Memory over MCP" + the mem0 read),
 
 ---
 
+## The Host and Origin guards — what a loopback bind cannot see (2026-09-30)
+
+A search of `src/` found no CORS, `Host`-header or `Origin` handling anywhere:
+the bind address was the whole of the network access control, and it is blind
+to two things.
+
+1. **DNS rebinding.** A page on `http://evil.test:4317`, where `evil.test` has
+   been made to resolve to `127.0.0.1`, is same-origin with the API as far as
+   the browser is concerned. Its requests arrive on the loopback socket like
+   any other, and the `Host` header — which nothing read — was the only thing
+   that distinguished them.
+2. **Simple cross-origin requests.** "No CORS headers" stops a cross-origin
+   caller *reading* the answer. It does not stop the request: a
+   `multipart/form-data` POST is a CORS simple request, sent with no preflight,
+   and its side effects happen before readability is ever considered. Backup
+   import, skills upload, Cowork knowledge upload, memory import and profile
+   import are all of that shape.
+
+**Built.** `src/http/networkGuard.ts`, two middlewares mounted first in
+`createApp()` — ahead of every route, the SSE routes and the 404 handler
+included, and ahead of both body parsers, so a refused upload is refused before
+a byte is buffered. `trust proxy` is now explicitly `false` next to them:
+honouring `X-Forwarded-Host` would hand a caller the field the guard reads.
+
+- **Host:** loopback (`127.0.0.1` / `localhost` / `[::1]`) on **any port**, the
+  `HYPERION_BIND` address when specific, or an entry in the new
+  `HYPERION_ALLOWED_HOSTS`. Exact match after URL-authority normalization — no
+  substring or suffix matching.
+- **Origin:** checked on every method except GET/HEAD/OPTIONS. Absent is
+  allowed (a browser always sends one on those methods; curl does not, and this
+  is not authentication). Present must match an entry in the new
+  `HYPERION_APP_ORIGINS` (default `http://127.0.0.1:4318,http://localhost:4318`,
+  the Vite dev server) or one of the API's own origins. `Origin: null` is
+  refused. No "any loopback port" rule, by requirement and by test.
+- **No CORS headers added.** An allowed Origin means the request proceeds, not
+  that the response becomes readable.
+
+**The code is `scope_violation` (403), reused, not new.** It is already "this
+request asked to cross a boundary the server enforces" (`fsScope` is its other
+user), it already maps to 403, and it is already in the frontend's
+`errorCodeSchema` — a new code would have been a wire change in a fix whose
+premise is that nothing else changes.
+
+**The dev workflow was measured, not assumed.** `frontend/vite.config.ts`
+proxies `/api` with `changeOrigin: false`. Captured from a stand-in backend
+behind the real proxy: `Host: localhost:4318`, `Origin: http://localhost:4318`
+(and `127.0.0.1:4318` for that spelling), with no `X-Forwarded-*` added. So the
+`Host` the backend sees in development carries the *frontend's* port — which is
+why the Host rule matches the hostname only, and why matching the port would
+have been a self-inflicted regression. Against the real guarded backend through
+the real proxy: `GET /api/health` 200, `POST /api/chat` 201, and the same POST
+with `Host: evil.test:4318` 403.
+
+**Two ambiguities, resolved and recorded rather than guessed past.**
+
+1. *"The API's own origin(s)"* is plural for a reason: the API answers to every
+   name in the Host allow-list. Those names, on `HYPERION_PORT`, over `http`,
+   are treated as self-origins. This never widens the rule to another port.
+2. A Tailscale user needs **both** vars — the name the request arrives under
+   (`HYPERION_ALLOWED_HOSTS`) and the page it comes from
+   (`HYPERION_APP_ORIGINS`), because the browser's address bar is on the
+   frontend's port, not the API's. Setting only the first yields a 403 on every
+   write whose message names the second. Deriving the app origin from the host
+   list was rejected: it would mean guessing a port, and the requirement is that
+   ports are explicit.
+
+**Also found while measuring:** an HTTP/1.1 request with no `Host` header never
+reaches Express — Node's parser answers 400 first — so the guard's
+"(missing or unreadable)" branch is defence in depth, and the test asserts
+"no route ran" rather than a specific status.
+
+Tests: `test/networkguard.test.ts` (new, 30). Driven over `node:http` rather
+than `fetch`, because `Host` is a forbidden header for `fetch` — which is
+exactly the situation being simulated, a browser writing the header itself for
+a name that resolves to loopback. Mutation-checked: disabling the Host guard
+(5 failures), matching hosts by suffix (1), accepting `Origin: null` (2),
+checking only POST (1), mounting the guards after the body parsers (1), and
+dropping trailing-dot normalization (3) each fail. The first pass of the
+"any loopback port" mutation **survived**, because only the pure matcher was
+covered; the end-to-end case (`http://127.0.0.1:5173` refused by the live
+middleware) was added in response and now catches it.
+
+Gate: backend 1383/1383 (baseline 1353, +30, nothing modified), `tsc --noEmit`
+clean, frontend typecheck / lint / 42 test files / contracts / wire all green —
+`wire` boots the real app, so it is also evidence the guards do not break it.
+
+Docs: `docs/CONTRACTS.md` ("The API answers to a host, and accepts writes from
+an origin"), `docs/API.md` (the conventions preamble), `.env.example` (both
+vars), `README.md`.
+
+---
+
 # Master Plan v4 — verbatim record
 
 > Appended 2026-09-11. This is the plan text as recorded in session; the

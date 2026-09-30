@@ -3,6 +3,11 @@
  * Localhost-only, single-user: there is deliberately no authentication layer.
  * Remote access is expected to go through Tailscale, and `src/index.ts` warns
  * loudly if the server binds to a non-loopback address.
+ *
+ * The two things a bind address cannot see — a rebound DNS name pointed at
+ * 127.0.0.1, and a cross-origin form POST from a page the user has open — are
+ * handled by the Host and Origin guards mounted first below. They are not
+ * authentication; see `networkGuard.ts`.
  */
 import express from 'express';
 
@@ -20,6 +25,7 @@ import { exportsRouter } from './exports.ts';
 
 import { healthRouter } from './health.ts';
 
+import { hostGuard, originGuard } from './networkGuard.ts';
 import { mcpRouter } from './mcp.ts';
 import { memoryRouter } from './memory.ts';
 import { projectsRouter } from './projects.ts';
@@ -42,6 +48,17 @@ export function createApp(): Express {
 
   app.disable('x-powered-by');
   app.set('etag', false);
+  // Left off deliberately. The Host guard reads the `Host` header, and enabling
+  // trust-proxy would make `X-Forwarded-Host` — a header any caller can set —
+  // outrank it. Hyperion sits behind no reverse proxy that rewrites either.
+  app.set('trust proxy', false);
+
+  // First, before every route and before every body parser: a request from a
+  // host this API does not answer to, or a state-changing request from an
+  // origin it does not know, is refused before anything is parsed or buffered.
+  // See src/http/networkGuard.ts for why a loopback bind is not enough.
+  app.use(hostGuard);
+  app.use(originGuard);
 
   // Uploads are handled by multer inside the routers that need them; the JSON
   // limit only has to cover message payloads and settings blobs.
