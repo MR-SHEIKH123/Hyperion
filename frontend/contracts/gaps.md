@@ -174,7 +174,11 @@ behavior in the browser.
   - **The diff is text, not a hunk model.** `patch` is the unified diff the exporter already
     produced; there are no per-hunk objects, no line ranges, no "apply this hunk" affordance,
     and a direct-mode task gets the exporter's 400 rather than an empty patch. A rendering
-    surface parses the text itself.
+    surface parses the text itself. **In `direct` mode the Diff tab must show that honest
+    empty state** — "no base to compare against", from the refusal's `details.mode`/`reason`,
+    never a blank panel and never a rendered empty diff — while **the file tree, the file read
+    and the preview keep working**, because a task that shares the project directory still has
+    a workspace. Only the diff needs a base commit.
   - **A per-project history of code tasks is still absent**, and so is walkthrough
     retrieval. (`GET /api/code/tasks` reports the live lane — running slots and held
     worktrees — which is what a task rail needs for *active* work, and the Code surface
@@ -191,7 +195,29 @@ behavior in the browser.
   through `services/code/files.ts` — **vanishes when the worktree is released**, because the
   path it names is inside the task's worktree; only the inline `content` rows outlive the
   task. A version timeline that outlives a task therefore has to say which rows are still
-  resolvable, rather than rendering a stack of links that 404.
+  resolvable, rather than rendering a stack of links that 404. That means **labelling the
+  versions that are unavailable after release**, not quietly omitting them: a row that
+  vanishes teaches the user the edit never happened.
+- **`errorCodeSchema` lags the backend by three codes, and nothing checks it (found 2026-10-03,
+  pre-existing).** The frontend's closed enum in `src/contracts/wire/common.ts` lists 25 codes;
+  `src/util/errors.ts` has 28. Missing: `approval_required`, `permission_denied`,
+  `zdr_requirement_unmet` — and no extras, so the enum is a subset, not a divergent set.
+  Measured by diffing the two declarations, not by reading them. Today the gap is **latent**,
+  and it is worth saying exactly why so nobody "fixes" the wrong thing:
+  - the chat stream's refusal reaches the client as an **SSE error frame**, whose
+    `chatSseErrorSchema` types `code` as `z.string()` — so a ZDR refusal still displays its
+    real message rather than failing to parse;
+  - the other two codes are thrown only by `POST /api/code/execute-command`, which has no
+    frontend client at all (the terminal routes are `deferred-frontend`).
+
+  It stops being latent the first time a surface parses a *JSON* error envelope carrying one
+  of those codes: `responseError` in `src/api/errors.ts` runs `errorEnvelopeSchema.safeParse`
+  and falls back to `invalid_response` — "Hyperion returned an unreadable error response" —
+  which is exactly the failure a closed enum that lags produces. The Canvas routes do not
+  widen the gap (they reuse `capability_disabled`, `scope_violation`, `bad_request`,
+  `not_found`), which is the point of not minting a new code for a disabled preview.
+  **2.4's first commit should sync the enum to the backend union and add the drift test**, as
+  its own revertable commit.
 - No Design file tree, version timeline, rendered diff, or design-system context contract. (1.31's "Design environment" clause lives here now: reclassified out of Prompt 1 to Design's Prompt 2 build, 2026-09-24.)
 - ~~No general artifact lineage/list endpoint.~~ **Partly closed 2026-09-21**: `GET /api/artifacts/versions?key=…`
   lists one artifact's version chain with its derived parent (Prompt 1.39 A6). There is still no

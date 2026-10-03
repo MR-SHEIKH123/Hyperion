@@ -3831,7 +3831,12 @@ isolation" means.
 That last part is why a `direct`-mode task is the exporter's own **400
 `bad_request`** with `details.mode` and `details.reason`, and not an empty patch:
 an empty patch reads as "this task changed nothing", which is a different claim
-from "this task had no base commit to diff against".
+from "this task had no base commit to diff against". A caller renders that as an
+honest empty state — "no base to compare against" — not as a blank panel.
+
+Only the diff needs a base commit. **`/files`, `/file` and the preview all work
+in `direct` mode**, because a task that shares the project directory still has a
+workspace; `mode` in the listing says which of the two it is.
 
 ### 27.4 `POST /api/code/tasks/:taskId/preview` and `DELETE .../preview`
 
