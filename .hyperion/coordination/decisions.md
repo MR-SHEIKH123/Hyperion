@@ -2322,6 +2322,29 @@ Four of those zeros are worth stating plainly rather than burying:
   takes, kept because the two checks are one `refuseGit` and the cost of the
   second is a `find` over a short array.
 
+**Boot-level smoke, because `test/*.test.ts` never runs `src/index.ts`.** The real
+entry point (`node src/index.ts`) was started twice in a throwaway `HYPERION_HOME`,
+with the background jobs disabled:
+
+- **Both ports free.** API up, `[preview] preview listener on
+  http://127.0.0.1:<port>/p/<token>/` at boot, `/api/health` 200, an unknown task's
+  mint 404 `not_found` (so the route is mounted and the gate runs in the right
+  order), and a bad token 404 on the preview port. With a **parked** preview
+  socket open — a partial request line, no terminator — `SIGINT` exited in **0.11 s**
+  (the force-exit ceiling is 6 s), which is the "closed first, not awaited" claim
+  measured rather than asserted.
+- **Preview port already held** by another listener: the API booted anyway,
+  `/api/health` 200, the log read `port <n> is already in use, so previews are
+  disabled`, and minting answered 403 `capability_disabled` with
+  `details.setting = "HYPERION_PREVIEW_PORT"`. Degrade the feature, not the boot.
+
+One trap worth recording for whoever repeats this: a shell helper that sets the
+environment but does not `echo` it gives `env $(helper) node …` an empty word list,
+and the app silently boots on the defaults — 4317/4320, and the **repo root** as
+`HYPERION_HOME`. That is the documented default and all of it is gitignored, but it
+writes runtime directories into the checkout; the first run of this smoke did
+exactly that and was cleaned up.
+
 **Gates.** `npm test` **1432 tests / 259 suites / 0 fail** (115.5 s).
 Frontend, unchanged by this PR and run to prove it: `npm run typecheck` exit 0,
 `npm run lint` exit 0, `npm test` **42 files / 264 tests**, and both contract
