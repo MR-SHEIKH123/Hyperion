@@ -42,6 +42,14 @@ is active at a time, with standby failover to alternates.
   task id whose checkout the re-run adopts. Cowork, Design, Playground,
   Plugins, Skills, and Settings still resolve to a placeholder that says so.
 
+The **Code Canvas backend** (1.40) is done and unreferenced by any screen: a
+read-only file listing, file read and task diff for a Code task's workspace, plus
+a sandboxed browser preview served by a **second HTTP server** on
+`HYPERION_PREVIEW_PORT` (default 4320; `0` disables). Nothing calls those routes
+yet — the panel is the Code surface's next pass — which is why they are recorded
+as `missing` contracts in `frontend/contracts/gaps.md` rather than as work the
+frontend already has.
+
 ## The agent architecture
 
 One shared loop (`src/services/agent/loop.ts`), three agents plugged into it —
@@ -75,6 +83,12 @@ and cross-origin form posts, the two things a loopback bind cannot see. Reaching
 it over Tailscale means setting `HYPERION_ALLOWED_HOSTS` and
 `HYPERION_APP_ORIGINS`; both are documented in `.env.example`. Neither is
 authentication.
+
+Reaching a **Code Canvas preview** (`/api/code/tasks/:taskId/preview`, §27) over
+Tailscale needs the preview hostname in `HYPERION_ALLOWED_HOSTS` as well — the
+listener runs the same Host guard — and the preview port (`HYPERION_PREVIEW_PORT`,
+default 4320) open to the browser, since it is a second listener rather than a
+path on 4317. The preview port must **not** be added to `HYPERION_APP_ORIGINS`.
 
 ```bash
 npm run typecheck  # tsc --noEmit, must be clean

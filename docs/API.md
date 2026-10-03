@@ -2311,6 +2311,14 @@ rather than killing the run — iteration is the core loop here.
 | --- | --- | --- |
 | GET | `/api/design/preview/:versionId` | the draft bytes — `text/html`, or `image/svg+xml` for `.svg` keys |
 
+This is Design's preview and it is **not** the Code Canvas preview (§27.6): this
+one is a route on the API serving one artifact's bytes, with scripts off by
+policy (`default-src 'none'`). The Canvas preview serves a whole task workspace
+from a second HTTP server on its own port, with scripts on and the origin as the
+isolation, because a workspace is a page that has to run. Different threat, so
+different mechanism — do not carry a header or an assumption from one to the
+other.
+
 Drafts are model output and therefore untrusted markup. The response carries
 `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; img-src
 data:` — no scripts, no network, no fonts — plus `X-Content-Type-Options:
@@ -3871,6 +3879,12 @@ escaped as a **500 naming an absolute filesystem path** instead of the ordinary
 `.gitignore`, `.gitattributes` and `.github/` remain ordinary files.
 
 ### 27.6 The preview listener — a second HTTP server
+
+This is the Code Canvas preview. **Design's sandboxed preview (§23) is a
+different mechanism**: a route on the API that serves one artifact's bytes with
+scripts off, meant to be framed with a `sandbox` attribute. The two are separate
+on purpose — a workspace preview is a page that has to *run*, so scripts are on
+and the isolation is the origin rather than the header.
 
 The preview URL is served by a **second HTTP server** on its own port
 (`HYPERION_PREVIEW_PORT`, default 4320, `0` disables), never by a route on this
