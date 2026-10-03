@@ -1541,6 +1541,10 @@ modules registered at boot — `cowork`, `code`, `design` and the terminal, via
 | POST | `/api/code/agents/import` | multipart `files`, per-file results *(new in 1.28)* |
 | GET | `/api/agents/status` | `{ agents, terminal, registered: { code, cowork, design } }` |
 
+Five more routes share the `/api/code` mount but not this router: the Code Canvas
+— a task's file tree, one file, its diff, and the preview mint/revoke pair — is
+mounted ahead of these by `src/http/canvas.ts` and documented in **§27**.
+
 `run-task` body (`TaskInput`): `tool`, `chatId`, `modelId`, `prompt`, `mode?`,
 `cwd?`, `attachments?`, `options?`. Input parsing, agent lookup and the busy check
 all happen **before** the SSE headers, so a 501 or 400 is a normal JSON error.
