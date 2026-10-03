@@ -2193,6 +2193,149 @@ git ignore a repository's own config wholesale — `GIT_CONFIG_GLOBAL` /
 no-approval path: arming it through the file tools, and executing it through
 the commands Hyperion issues on its own initiative.
 
+## A Canvas over a task's workspace, a second origin for previews, and the 500 that named a filesystem path (2026-10-03)
+
+**1.40 backend, one PR, no frontend.** Five routes on a new `src/http/canvas.ts`
+mounted at `/api/code`, ahead of the agents router:
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| GET | `/api/code/tasks/:taskId/files` | BFS listing, bounded, `?path=` subtree (default `.`) |
+| GET | `/api/code/tasks/:taskId/file` | `?path=` required; sha256 + bytes |
+| GET | `/api/code/tasks/:taskId/diff` | delegates to `exportCodeTask` |
+| POST | `/api/code/tasks/:taskId/preview` | `201` `MintedPreview` |
+| DELETE | `/api/code/tasks/:taskId/preview` | `{ revoked: boolean }` |
+
+Caps are named constants and reported, never silent: `MAX_ENTRIES 2000`,
+`MAX_DEPTH 12`, `MAX_VIEW_BYTES 2 MiB`, `SKIPPED_DIRS` = `node_modules`, `.next`,
+`dist`, `build`, `.venv`, `__pycache__`. A tree that is short says so
+(`truncated`, `skipped`); the viewer stats a file before reading it and puts the
+size in the 400. Repeated `?path=` keys are refused rather than read as
+first-element (`querySingleString`), because a caller who asked two questions
+must not be answered with the one they did not name.
+
+**The defect this PR exists to fix, reproduced rather than reasoned about.**
+`files.ts::locate` refused a `.git` segment only on the *resolved* path, after
+`assertNoSymlinkedTraversal` had already walked the spelling. In worktree mode
+`.git` is a **file** holding the gitdir pointer, so `.git/hooks/post-checkout`
+made the walk `lstat` through a non-directory. Previously that was read off the
+code ("`isMissing` is ENOENT-only, so ENOTDIR propagates"); this round it was
+observed. With the spelling check temporarily removed — the mutation, not a
+contrived call — a direct-mode task whose `.git` is a file answered:
+
+```
+code:     ENOTDIR
+message:  ENOTDIR: not a directory, lstat '/tmp/hyperion-enotdir-.../projects/enotdir-task/.git/hooks'
+```
+
+`/tmp` is gone by morning and the path in the message is the user's. Through the
+HTTP layer that is a 500 whose body names an absolute filesystem path, for a
+request whose answer is a 403. Nothing was readable either way; the defect was
+what the caller was told, which is what a client branches on.
+
+The fix is that the refusal runs **twice** through one shared
+`refuseGit(shown, segment)`: on the **spelling**, before any syscall (and before
+the resolver canonicalises symlinks away), and again on the resolved path. The
+predicate is exported as `isGitPathSegment` and the listing uses that same export
+to omit `.git` — one comparison, not two that can drift. `.gitignore`,
+`.gitattributes` and `.github/` stay accessible, including after Windows'
+trailing-dot/space normalisation. With the check in place the same call answers
+`scope_violation`, `details {path: ".git/hooks/post-checkout", segment: ".git"}`,
+and the message names no filesystem path.
+
+`locate` stays private; the one new export is
+`resolveCodePath(candidate, services) → { absolute, relative }` — no
+`artifactKey`, because that names a *write* target and handing it to a reader
+invites a second writer that skips the expected-hash check and the pre-image row.
+
+**The preview is a second HTTP server, and the second port is the isolation.**
+A preview served from the API's origin is same-origin with the API: a page an
+agent wrote could `fetch('/api/settings')` and read every stored provider key,
+and no CSP recovers that. `HYPERION_PREVIEW_PORT` (default 4320, `0` disables,
+busy port degrades the feature rather than boot), 256-bit base64url token
+compared in constant time, one session per task, 30-minute TTL, revoked when the
+worktree is released, `capability_disabled` + `details.setting` while nothing is
+listening. Same Host guard as the API; CSP as a **header** with
+`sandbox allow-scripts …` and no `allow-same-origin`, naming both `'self'` and
+the explicit origin from the validated `Host`; `frame-ancestors` from
+`HYPERION_APP_ORIGINS`; the preview port is deliberately **not** in that list;
+`access-control-allow-origin: *` on this listener only. `installShutdownHandlers`
+closes it first and does not wait on it.
+
+One bug in this PR's own first draft was found by the tests: `refusalFor` used
+`instanceof AppError`, while `fsScope.ts` throws its own `ScopeViolationError`
+(deliberately free of HTTP-layer imports), so a traversal answered 500. It now
+normalizes with `toAppError` and answers 403.
+
+**The browser-measured half is the owner's to run.** `test/fixtures/preview-conformance/`
+plus `scripts/preview-conformance.mjs` serve a page whose seven rows state their
+expected result — external `.js`, module script, `fetch` of JSON, image, inline
+script, `localStorage`, `postMessage` — and the one thing Node cannot answer:
+under `sandbox`, does `'self'` match the document's own URL, or is the explicit
+origin doing the work? **Not yet run in a real browser; the outcome belongs in
+this file when it is.** The script was smoke-tested against the real listener:
+`index.html` 200 with the full CSP, `data.json` 200 `application/json`,
+`pixel.png` 200 `image/png`, `module.mjs` 200 `text/javascript`.
+
+**Mutation-checked: ten mutations, each run against the full suite** (`# fail`
+after each; `list-dotgit` was run twice, before and after the test change the
+first run prompted):
+
+| Mutation | Failing |
+| --- | --- |
+| add `allow-same-origin` to the CSP sandbox | 1 |
+| bypass the token comparison | 5 |
+| ignore the TTL / fail every token compare | 13 |
+| remove the `.git` spelling check | 1 |
+| remove the resolved-path `.git` check | 0 |
+| the listing stops omitting `.git` | 0 → **1** after the test below |
+| a Canvas reader that resolves and reads for itself, bypassing the seam | 5 |
+| remove `assertNoSymlinkedTraversal` from `locate` | 1 (the write path in `gitexec.test.ts`) |
+| remove `assertStillInside` from `locate` | 0 |
+| replace the Canvas's `resolveCodePath` call with a naive `path.resolve` | 0 (not a real bypass) |
+
+Four of those zeros are worth stating plainly rather than burying:
+
+- **The shallow Canvas mutation was not a bypass.** `readCanvasFile` hands the
+  caller's *relative* path to `readCodeFile`, which resolves it through the seam
+  again, so replacing the earlier call changed nothing. Redone as a reader that
+  does its own resolution and its own `readFile`, it fails 5 tests — the seam is
+  pinned by that shape, not the first.
+- **The listing's `.git` omission was not independently pinned.** Without the
+  predicate the directory still never appears in `entries`, because descending
+  into it is refused by the seam and the catch reports it in `skipped`. It was
+  therefore *effectively* omitted but *reported*, and the test only asserted the
+  former. The test now also asserts `.git` is absent from `skipped`, and the
+  mutation fails 1 test. `.git` is omitted, not listed as skipped: `skipped` is
+  for content the caller might want.
+- **`assertStillInside` in `locate` is not distinguishable by any test**, and the
+  reason is structural: for a registered task, `containAgentCwd` itself calls
+  `resolveInSubtree` and `assertStillInside` (worktree.ts:887-888), so removing the
+  second check changes no observable behavior. It stays as defence in depth; the
+  honest statement is that the per-task boundary is enforced in `containAgentCwd`,
+  and no test can prove the duplicate is load-bearing.
+- **So is the resolved-path `.git` check**, on the same evidence: the spelling
+  check refuses every `.git` case the suite constructs, so removing the second
+  check fails nothing. Its remaining value is a resolver that maps an innocent
+  spelling *into* `.git` — which today needs a symlinked directory, refused
+  earlier by the traversal walk — so it is the belt for a route nothing currently
+  takes, kept because the two checks are one `refuseGit` and the cost of the
+  second is a `find` over a short array.
+
+**Gates.** `npm test` **1432 tests / 259 suites / 0 fail** (115.5 s).
+Frontend, unchanged by this PR and run to prove it: `npm run typecheck` exit 0,
+`npm run lint` exit 0, `npm test` **42 files / 264 tests**, and both contract
+gates exit 0 — `check-contracts.mjs` reports **196 backend routes / 44 frontend
+contracts** (5 new `missing` rows for the Canvas: the backend exists, no client
+until 2.4), `check-wire.mjs` 59/59 matched. `npx tsc --noEmit` clean.
+
+What the Canvas is **not** is recorded in `frontend/contracts/gaps.md`: read-only,
+not a dev server, one preview per task, no preview for a released task, diff is
+text rather than a hunk model — and the version stack cannot be joined to a step
+list (`artifact_versions` rows are pre-images with no run or step id, and
+`rel_path`-backed rows die with the worktree), so a UI must show the two side by
+side and never claim "content as of step k".
+
 ---
 
 # Master Plan v4 — verbatim record

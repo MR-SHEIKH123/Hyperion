@@ -123,6 +123,41 @@
     },
     {
       "method": "GET",
+      "path": "/api/code/tasks/:taskId/files",
+      "source": "src/http/canvas.ts:33",
+      "exposure": "deferred-frontend",
+      "capability": "code.core"
+    },
+    {
+      "method": "GET",
+      "path": "/api/code/tasks/:taskId/file",
+      "source": "src/http/canvas.ts:41",
+      "exposure": "deferred-frontend",
+      "capability": "code.core"
+    },
+    {
+      "method": "GET",
+      "path": "/api/code/tasks/:taskId/diff",
+      "source": "src/http/canvas.ts:57",
+      "exposure": "deferred-frontend",
+      "capability": "code.core"
+    },
+    {
+      "method": "POST",
+      "path": "/api/code/tasks/:taskId/preview",
+      "source": "src/http/canvas.ts:72",
+      "exposure": "deferred-frontend",
+      "capability": "code.core"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/code/tasks/:taskId/preview",
+      "source": "src/http/canvas.ts:89",
+      "exposure": "deferred-frontend",
+      "capability": "code.core"
+    },
+    {
+      "method": "GET",
       "path": "/api/code/rules",
       "source": "src/http/agents.ts:737",
       "exposure": "frontend",

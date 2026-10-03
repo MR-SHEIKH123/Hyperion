@@ -32,6 +32,7 @@ import {
 } from './services/storage/cleanup.ts';
 import { registerProductionModules } from './services/agent/composition.ts';
 import { createApp } from './http/app.ts';
+import { startPreviewServer } from './http/previewServer.ts';
 import { createLogger } from './util/logger.ts';
 
 import type { Server } from 'node:http';
@@ -160,7 +161,7 @@ function startServer(): Server {
  * Graceful shutdown. PM2 sends SIGINT and waits `kill_timeout` (8s) before
  * SIGKILL, so everything here is bounded well under that budget.
  */
-function installShutdownHandlers(server: Server): void {
+function installShutdownHandlers(server: Server, preview: Server | null): void {
   let shuttingDown = false;
 
   const shutdown = (signal: string): void => {
@@ -173,6 +174,19 @@ function installShutdownHandlers(server: Server): void {
       process.exit(0);
     }, 6000);
     forceExit.unref();
+
+    // The preview listener goes first, and it is deliberately not awaited. It
+    // holds no database handle and no child process, so there is nothing to
+    // flush; what it can hold is a browser parked on a preview for as long as
+    // the tab is open, and `close()` does not call back until that socket ends.
+    // Waiting would mean the 6 s force-exit is the only thing that ever
+    // finishes a shutdown. Connections are dropped so a client notices now
+    // rather than at the force-exit, and the close is left to settle on its
+    // own.
+    if (preview !== null) {
+      preview.closeAllConnections?.();
+      preview.close();
+    }
 
     server.close(async () => {
       try {
@@ -274,7 +288,12 @@ function main(): void {
 
   registerProductionModules();
   const server = startServer();
-  installShutdownHandlers(server);
+  // Started synchronously and before the shutdown handlers, so a signal in the
+  // first milliseconds of boot cannot leave a second listener orphaned. It
+  // never throws: a port already in use leaves previews switched off with a
+  // reason recorded, and the API keeps serving (see `http/previewServer.ts`).
+  const preview = startPreviewServer();
+  installShutdownHandlers(server, preview.server);
 
   // Background jobs start last, once the process is otherwise up. All three are
   // unref'd interval timers with staggered boot delays, so none of them can

@@ -156,11 +156,42 @@ behavior in the browser.
   closes a session yet, and no screen sends the two headers. They exist because a token
   no server mints is not a mechanism, and the minting half is what makes the exemption
   structural rather than a flag a client could set.
-- No Code file-tree, file-read, task-diff, or walkthrough retrieval contracts. (`GET /api/code/tasks`
-  reports the live lane — running slots and held worktrees — which is what a task rail needs for
-  *active* work; a per-project *history* of code tasks is still absent, and `GET /api/code/tasks/:id/export`
-  covers one task's diff. The Code surface (`src/tools/code/`) therefore shows the lane and says
-  that a finished task leaves no row here, rather than caching rows the server never sent.)
+- **The Canvas backend exists and has no client (1.40, 2026-10-03).** The file tree, the
+  file read, the task diff and the sandboxed preview are real routes now
+  (`GET /api/code/tasks/:taskId/files|file|diff`, `POST|DELETE /api/code/tasks/:taskId/preview`,
+  `docs/API.md` §27), and the five ledger rows are `missing` — the backend half of the
+  contract is what landed, no screen calls it yet, so no `specifiedPath` is recorded. What the
+  Canvas still does not offer, and what a UI must not pretend it does:
+  - **Read-only.** No write, rename, delete or create route; the preview serves files, it
+    does not accept them.
+  - **Not a dev server.** The preview is a static read: no build step, no bundler, no hot
+    reload, no websocket, no directory listing — a page whose `fetch` or module graph needs
+    a toolchain will not run. Files are served as they are on disk at request time.
+  - **A preview only exists for a task that still holds a worktree.** Parking, releasing or
+    forgetting a task takes its token with it (released tasks answer as unknown), and there is
+    exactly **one** session per task: minting again revokes the previous URL. A screen cannot
+    show two previews of one task side by side.
+  - **The diff is text, not a hunk model.** `patch` is the unified diff the exporter already
+    produced; there are no per-hunk objects, no line ranges, no "apply this hunk" affordance,
+    and a direct-mode task gets the exporter's 400 rather than an empty patch. A rendering
+    surface parses the text itself.
+  - **A per-project history of code tasks is still absent**, and so is walkthrough
+    retrieval. (`GET /api/code/tasks` reports the live lane — running slots and held
+    worktrees — which is what a task rail needs for *active* work, and the Code surface
+    (`src/tools/code/`) still says that a finished task leaves no row here rather than
+    caching rows the server never sent.)
+- **The version stack and the step list cannot be joined, and a UI must not imply it
+  (1.40, 2026-10-03).** `artifact_versions` rows are **pre-images** — version 1 is the state
+  *before* the first edit, which is what makes the first change undoable — and they carry
+  `artifact_key`, `tool`, `version`, `content`/`rel_path` and a label, **not** a run id, a
+  step id or a timestamped position in a transcript. There is no step↔version link anywhere
+  in the schema, so "content as of step k" is a claim the backend cannot support and a UI
+  must not make: show the version stack and the step list **side by side**, as two timelines
+  of the same task. And a version backed by `rel_path` — the large-artifact half, resolved
+  through `services/code/files.ts` — **vanishes when the worktree is released**, because the
+  path it names is inside the task's worktree; only the inline `content` rows outlive the
+  task. A version timeline that outlives a task therefore has to say which rows are still
+  resolvable, rather than rendering a stack of links that 404.
 - No Design file tree, version timeline, rendered diff, or design-system context contract. (1.31's "Design environment" clause lives here now: reclassified out of Prompt 1 to Design's Prompt 2 build, 2026-09-24.)
 - ~~No general artifact lineage/list endpoint.~~ **Partly closed 2026-09-21**: `GET /api/artifacts/versions?key=…`
   lists one artifact's version chain with its derived parent (Prompt 1.39 A6). There is still no

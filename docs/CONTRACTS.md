@@ -6282,3 +6282,88 @@ scopes, which Hyperion already pins in tests but does not pin at runtime).
 `test/gitexec.test.ts` is the canary: it arms a repository with all five levers,
 proves a plain git command fires them, and then asserts that Hyperion's own
 provisioning, export, release and orphan scan do not.
+
+---
+
+## One path seam, and a second origin for previews (1.40, 2026-10-03)
+
+The Canvas reads a Code task's workspace, and the preview listener lets a browser
+look at it. Two decisions carry the whole feature, and both are about not having
+two answers to one question.
+
+### One path seam
+
+`services/code/canvas.ts` implements **no path validation of its own**. It builds
+the same services object `orchestrator/agentContext.ts` builds for the agent —
+`resolvePath` bound to `containAgentCwd(taskId)`, no `emit` because nothing
+writes — and every path goes through `services/code/files.ts`. The per-task
+subtree boundary, the symlink refusal and the `.git` refusal are therefore one
+implementation used by the writer, the agent's reader, the Canvas reader and the
+preview listener.
+
+`locate` stays private. The one exported reader seam is `resolveCodePath`, which
+returns `{ absolute, relative }` and **not** `artifactKey`: the artifact key
+belongs to the writing path, and handing it to a reader invites a second writer
+that bypasses `writeCodeFile`, its expected-hash check and its pre-image row.
+Canvas add no second seam; that is how two checks drift until one of them is the
+way in.
+
+### The `.git` refusal runs twice
+
+The refusal added with the git-hardening work ran on the *resolved* path, after
+the symlink pre-check — and in worktree mode `.git` is a **file** holding the
+gitdir pointer. `assertNoSymlinkedTraversal` therefore `lstat`ed `<root>/.git`
+(a file, not a symlink, so it passed) and then `<root>/.git/hooks`, which raised
+raw `ENOTDIR` and escaped as a **500 naming an absolute filesystem path** for a
+request that should have been the ordinary 403. Nothing was readable either way;
+the defect was in what the caller was told.
+
+So `locate` refuses a `.git` segment twice through one shared `refuseGit(shown,
+segment)`: first on the **spelling**, before any syscall (which is also before
+the resolver canonicalises symlinks away), then on the **resolved** path. The
+predicate is exported as `isGitPathSegment`, and the Canvas listing uses that
+same export to omit `.git` — a tree that lists an entry the viewer refuses is a
+tree offering a refusal. `.gitignore`, `.gitattributes` and `.github/` stay
+ordinary files, including after trailing-dot and case normalisation.
+
+### The preview listener is a second origin, on purpose
+
+A preview served from an API route would be **same-origin with the API**: a page
+an agent wrote could `fetch('/api/settings')`, read every stored provider key and
+post anything it liked, and no CSP recovers that — CSP constrains what a document
+may *do*, not what its origin may *read*. So the preview is a second HTTP server
+on `HYPERION_PREVIEW_PORT` (default 4320, `0` disables, a busy port degrades the
+feature rather than failing boot), and the separate port **is** the isolation.
+
+- 256-bit token, constant-time comparison, one session per task, 30-minute TTL.
+  Re-minting replaces and therefore revokes; `DELETE .../preview` revokes; and a
+  token whose task no longer holds a worktree stops resolving. That last check is
+  load-bearing rather than tidy: `containAgentCwd` falls back to the *projects
+  scope* for a task the registry does not know, so a token outliving its worktree
+  would be served from a wider boundary than the task ever had.
+- The **same Host guard** as the API, against the same `HYPERION_ALLOWED_HOSTS`.
+  A proxied deployment (Tailscale included) must list the preview hostname there
+  as well; the preview port must **not** be added to `HYPERION_APP_ORIGINS`.
+- CSP as a **header**, so it binds in a tab as well as inside an iframe, with
+  `sandbox allow-scripts …` and **no `allow-same-origin`**. `sandbox` gives the
+  document an opaque origin, where `'self'` is not guaranteed to match the
+  document's own URL, so the header names both `'self'` and the explicit origin
+  built from the validated `Host`. `test/fixtures/preview-conformance/` is the
+  browser-verified fixture that measures which one did the work.
+- `access-control-allow-origin: *` is correct **on this listener only**. The API
+  still emits no CORS header, and no rule here widens `HYPERION_APP_ORIGINS` to
+  "any loopback port".
+- Refusals are plain text and name no filesystem path. The seam's own messages do
+  name absolute paths (deliberately, for the API's JSON errors); the listener maps
+  them to a sentence about the request and keeps the detail in the log.
+- `installShutdownHandlers` takes the preview server, closes it **first** and does
+  not wait on it: it holds no database handle and no child process, so nothing is
+  lost, and a browser parked on a preview must not hold shutdown open.
+
+### The Canvas diff is the exporter
+
+`canvasDiff` delegates to `exportCodeTask` — no new git call site, no re-derived
+flags, and the `direct`-mode task keeps the exporter's reasoned 400 rather than an
+empty patch that reads as "this task changed nothing". `test/gitexec.test.ts`
+gains two cases: a Canvas diff of the hostile repository runs no configured
+command, and a Canvas read refuses `.git` by spelling when `.git` is a file.

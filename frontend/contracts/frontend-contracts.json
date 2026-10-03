@@ -266,6 +266,41 @@
       "method": "GET",
       "expectedPath": "/api/attention",
       "status": "implemented"
+    },
+    {
+      "id": "canvas.files",
+      "method": "GET",
+      "expectedPath": "/api/code/tasks/:taskId/files",
+      "status": "missing",
+      "reason": "The Code Canvas file tree is real (`docs/API.md` \u00a727) and read-only, bounded and breadth-first; the Code surface that renders it is the 2.4 frontend pass, so no client calls it yet."
+    },
+    {
+      "id": "canvas.file",
+      "method": "GET",
+      "expectedPath": "/api/code/tasks/:taskId/file",
+      "status": "missing",
+      "reason": "The Canvas file read is real (\u00a727.2) \u2014 sha256, bytes, and a refusal that carries the size instead of truncating. No screen shows a file yet."
+    },
+    {
+      "id": "canvas.diff",
+      "method": "GET",
+      "expectedPath": "/api/code/tasks/:taskId/diff",
+      "status": "missing",
+      "reason": "The Canvas diff is real (\u00a727.3) and delegates to the exporter, so there is one git call site; it is the exporter's text patch, not a hunk model. No screen renders one yet."
+    },
+    {
+      "id": "canvas.preview",
+      "method": "POST",
+      "expectedPath": "/api/code/tasks/:taskId/preview",
+      "status": "missing",
+      "reason": "Minting is real (\u00a727.4): one session per task, 30-minute TTL, revoked with the worktree, and `capability_disabled` while nothing is listening. The preview panel is the 2.4 frontend pass, so nothing mints yet."
+    },
+    {
+      "id": "canvas.preview-revoke",
+      "method": "DELETE",
+      "expectedPath": "/api/code/tasks/:taskId/preview",
+      "status": "missing",
+      "reason": "Revocation is real (\u00a727.4) and answers `{revoked:false}` for a session that was already gone. No screen calls it yet."
     }
   ]
 }

@@ -222,6 +222,28 @@ export function queryString(req: Request, name: string): string | undefined {
   return value.trim();
 }
 
+/**
+ * A query-string value that must appear **at most once**.
+ *
+ * `?path=a&path=b` arrives as an array rather than a string, and the temptation
+ * is to take the first element as `queryString` does. That is the wrong answer
+ * for a parameter that selects *what is read*: the caller asked for two
+ * different things, the server silently read one of them, and whichever half
+ * the caller did not expect is now a question about the server instead of about
+ * the request. It is refused with the field named, like every other malformed
+ * input here.
+ *
+ * `queryString` keeps its first-element behaviour: for a filter or a limit the
+ * duplicate is harmless, and changing it would alter routes this has nothing to
+ * do with.
+ */
+export function querySingleString(req: Request, name: string): string | undefined {
+  const raw: unknown = req.query[name];
+  if (Array.isArray(raw)) fail(`${name} must be given at most once.`, name);
+  if (typeof raw !== 'string' || raw.trim() === '') return undefined;
+  return raw.trim();
+}
+
 /** Query-string values preserving repeated keys, with boundary validation. */
 export function queryStrings(req: Request, name: string): string[] {
   const raw: unknown = req.query[name];

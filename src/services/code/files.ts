@@ -7,6 +7,12 @@
  * read. The previous state is stored inline before replacement; file-backed
  * artifact references are intentionally never used for undo because they are
  * mutable by definition.
+ *
+ * Read-only callers (the Canvas routes and the preview listener) come through
+ * `resolveCodePath` and the readers below rather than re-implementing any of
+ * this: this module is the one seam where the per-task subtree boundary, the
+ * symlink refusal and the `.git` refusal are decided, and a second seam would
+ * drift from it.
  */
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
@@ -202,9 +208,51 @@ export async function restoreArtifactVersion(
  * because Windows silently strips both when opening a path: `.git.` and
  * `.git ` open `.git` there, and a check that compared the literal string
  * would wave them through on the one platform where it matters.
+ *
+ * Exported because the Canvas listing omits the same directory, and a second
+ * comparison there is how the two drift: a tree that lists an entry the viewer
+ * will refuse is a tree offering a refusal.
  */
-function isGitSegment(segment: string): boolean {
+export function isGitPathSegment(segment: string): boolean {
   return segment.toLowerCase().replace(/[. ]+$/, '') === '.git';
+}
+
+/**
+ * The one refusal, shared by both checks below.
+ *
+ * `shown` is what the caller is told the offending path was: the spelling at
+ * the first check, the workspace-relative path at the second. Never a path the
+ * caller did not send, and never an absolute filesystem path — the message and
+ * its details go out on the wire.
+ */
+function refuseGit(shown: string, segment: string): never {
+  throw new AppError('scope_violation', 'A Code file path may not reach into the .git directory.', {
+    details: { path: shown, segment },
+  });
+}
+
+/**
+ * Refuse a `.git` segment in the **spelling**, before any syscall runs.
+ *
+ * The resolved-path check further down is the one that knows where a path
+ * actually lands, and it runs *after* `assertNoSymlinkedTraversal` — which is
+ * too late for one shape. In worktree mode `.git` is a **file** holding the
+ * gitdir pointer, so `assertNoSymlinkedTraversal` walks into `.git/hooks` and
+ * the `lstat` there raises raw `ENOTDIR`; that escaped as a 500 whose message
+ * named an absolute filesystem path, for a request that should have been the
+ * ordinary 403. Nothing was readable either way — the defect was in what the
+ * caller was told, which is also what a client branches on.
+ *
+ * Checking the spelling first also means the refusal happens before the
+ * resolver has canonicalised symlinks away, so the two checks are not two
+ * spellings of the same question: this one cannot be crashed or re-pointed,
+ * and the resolved one is what catches a path that arrives somewhere else
+ * entirely.
+ */
+function assertNoGitSpelling(candidate: string): void {
+  for (const segment of candidate.split(/[\\/]+/)) {
+    if (isGitPathSegment(segment)) refuseGit(candidate, segment);
+  }
 }
 
 function locate(candidate: string, services: CodeFileServices): {
@@ -212,6 +260,11 @@ function locate(candidate: string, services: CodeFileServices): {
   relative: string;
   artifactKey: string;
 } {
+  // The spelling first of all — before the resolver, before the traversal walk,
+  // before any syscall that a `.git`-as-a-file could turn into a crash. See
+  // `assertNoGitSpelling`.
+  assertNoGitSpelling(candidate);
+
   const root = services.resolvePath('.');
   // Point-of-use revalidation (prompt-1 item P1-S4), in the only order that
   // works: the spelling first, because the resolver below canonicalises symlinks
@@ -240,14 +293,35 @@ function locate(candidate: string, services: CodeFileServices): {
   // is "one path missed the check". `.gitignore`, `.gitattributes` and
   // `.github/` are ordinary tracked files and stay writable — only the `.git`
   // directory (or pointer file) itself is refused.
-  const offending = relative.split('/').find((segment) => isGitSegment(segment));
-  if (offending !== undefined) {
-    throw new AppError('scope_violation', 'A Code file path may not reach into the .git directory.', {
-      details: { path: relative, segment: offending },
-    });
-  }
+  //
+  // The same refusal as the spelling check above, run again on where the path
+  // actually landed: a spelling can canonicalise (`nested/../.git/config`) and,
+  // more importantly, no pre-check can see a route the resolver takes that the
+  // spelling did not spell.
+  const offending = relative.split('/').find((segment) => isGitPathSegment(segment));
+  if (offending !== undefined) refuseGit(relative, offending);
 
   return { absolute, relative, artifactKey: `code:file:${services.taskId}:${relative}` };
+}
+
+/**
+ * The path seam for readers, and only for readers.
+ *
+ * `locate` stays private because it also mints `artifactKey`, which names a
+ * *write* target: handing it to a reader would invite a second writer that
+ * bypasses `writeCodeFile`, its expected-hash check and its pre-image row. A
+ * reader gets where the path is, and nothing that names it for storage.
+ *
+ * Everything else is unchanged: the symlink refusal, the per-task subtree
+ * boundary and the twice-run `.git` refusal all still happen here, in this
+ * order, for whoever calls it.
+ */
+export function resolveCodePath(
+  candidate: string,
+  services: CodeFileServices,
+): { absolute: string; relative: string } {
+  const { absolute, relative } = locate(candidate, services);
+  return { absolute, relative };
 }
 
 async function readState(absolute: string): Promise<FileState> {
