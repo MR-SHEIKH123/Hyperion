@@ -18,7 +18,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
 import path from 'node:path';
-import { after, before, describe, it } from 'node:test';
+import { after, before, beforeEach, describe, it } from 'node:test';
 import type { Server } from 'node:http';
 
 import { cleanupHome, freshDb, testHome, unusedPort } from './helpers.ts';
@@ -204,6 +204,12 @@ before(async () => {
   previewServer.startPreviewServer({ port: previewPort });
   const status = await previewServer.previewReady();
   if (!status.running) throw new Error(`the preview listener did not start: ${status.reason ?? ''}`);
+});
+
+// Sessions are process-global state, so every test starts from none: a token
+// another test minted must not be able to make this one pass (or fail).
+beforeEach(() => {
+  previews.resetPreviews();
 });
 
 after(async () => {

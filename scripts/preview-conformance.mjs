@@ -48,7 +48,9 @@ fs.mkdirSync(workspace, { recursive: true });
 fs.cpSync(fixture, workspace, { recursive: true });
 
 const worktree = await provisionWorktree('preview-conformance', workspace);
-if (worktree.taskId !== 'preview-conformance') throw new Error('the task was not registered');
+if (!fs.existsSync(path.join(worktree.dir, 'index.html'))) {
+  throw new Error(`the fixture was not copied into ${worktree.dir}`);
+}
 
 // A free port, taken the way the tests take one: `0` is the *disabled* value
 // for HYPERION_PREVIEW_PORT, so "pick one for me" is not something the listener
@@ -68,7 +70,7 @@ const port = await new Promise((resolve, reject) => {
   });
 });
 
-const status = startPreviewServer({ port });
+startPreviewServer({ port });
 const listener = await previewReady();
 if (!listener.running) {
   console.error(`The preview listener did not start: ${listener.reason ?? 'unknown reason'}`);
@@ -100,8 +102,6 @@ if (!listener.running) {
   console.log('    | <name + version> | runs | runs | 200 | 1x1 | runs | blocked | posted | <self or explicit origin did the work> |');
   console.log('');
   console.log('  Press Ctrl+C to stop the listener.');
-
-  void status;
 }
 
 for (const signal of ['SIGINT', 'SIGTERM']) {
