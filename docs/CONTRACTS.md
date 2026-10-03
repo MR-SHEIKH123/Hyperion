@@ -6282,3 +6282,58 @@ scopes, which Hyperion already pins in tests but does not pin at runtime).
 `test/gitexec.test.ts` is the canary: it arms a repository with all five levers,
 proves a plain git command fires them, and then asserts that Hyperion's own
 provisioning, export, release and orphan scan do not.
+
+
+## Canvas reads through the Code file seam, and previews live on another origin (1.40, 2026-10-03)
+
+Canvas is read-only, but “read-only” does not make a second path resolver safe.
+Its contract is that `canvasServices(taskId)` builds the same `CodeFileServices`
+shape as the Code agent context: `resolvePath` is `containAgentCwd` bound to the
+registered task, and there is no artifact emitter. Tree roots, entries, file
+views, and preview resources then cross `files.ts` through `resolveCodePath` or
+`readCodeFile`. `resolveCodePath` exposes only `{absolute, relative}`; the private
+`artifactKey` remains available only to `writeCodeFile` and restore. A reader
+therefore cannot grow into a second artifact writer by reusing a convenience
+return value.
+
+`.git` is rejected twice by that one seam. The lexical spelling is checked
+before the first syscall because a linked worktree's `.git` is a pointer **file**:
+walking `.git/hooks/post-checkout` otherwise throws `ENOTDIR` and turns a refusal
+into a 500 that names the absolute checkout. The workspace-relative canonical
+answer is checked again because an injected resolver can map an innocuous
+spelling onto `.git`. Both checks use the same normalised segment predicate and
+one refusal. The tree uses that exported predicate to omit `.git`; it does not
+promise an entry that the file endpoint can only refuse. `.gitignore`,
+`.gitattributes`, and `.github/` remain ordinary content.
+
+A Canvas diff is an adapter over `exportCodeTask`, not another git invocation.
+This is a security contract as much as a reuse choice: there stays one diff call
+site carrying `GIT_SAFE_CONFIG`, filter-driver overrides, and
+`GIT_SAFE_DIFF_FLAGS`. Direct mode consequently retains the exporter's reasoned
+400 and has no invented base commit.
+
+Task-controlled browser bytes are never served by `createApp()`. The preview
+listener's separate port is the origin boundary; putting the same bytes under an
+API route would make the document same-origin with an API that intentionally has
+no login, and no CSP could reverse that. A session is one 256-bit token per task,
+compared in constant time, with a 30-minute TTL and release/revoke invalidation.
+The response CSP is a **header** (so it binds in a tab as well as an iframe) and
+contains `sandbox allow-scripts` without `allow-same-origin`. Resource directives
+carry both `'self'` and the explicit origin made from the validated Host because
+the sandbox origin is opaque and browser treatment of `'self'` there is not
+assumed. `frame-ancestors` comes from the configured app origins. CORS `*` exists
+only on this isolated read-only listener; it is still absent from the API.
+
+A preview bind conflict degrades this capability rather than application boot.
+Minting then uses the existing `capability_disabled` wire code with
+`details.setting = HYPERION_PREVIEW_PORT`; no error-code vocabulary changed. A
+reverse proxy must list its preview hostname in `HYPERION_ALLOWED_HOSTS`, and the
+preview origin does not enter `HYPERION_APP_ORIGINS` merely because the listener
+started.
+
+The view is intentionally bounded and non-executing. It does not run a dev
+server, install or build dependencies, hot reload, or preserve a released task.
+The file route is UTF-8 text capped at 2 MiB; the tree is breadth-first, capped
+at 2,000 entries and 12 levels, and reports omitted dependency/build directories
+instead of silently looking complete. Preview serves a content-type allow-list
+through the same path seam. It does not make Canvas a write mechanism.

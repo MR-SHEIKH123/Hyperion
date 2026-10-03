@@ -1338,6 +1338,41 @@
       "source": "src/http/cowork.ts:287",
       "exposure": "deferred-frontend",
       "capability": "cowork.read"
+    },
+    {
+      "method": "GET",
+      "path": "/api/code/tasks/:taskId/files",
+      "source": "src/http/canvas.ts:19",
+      "exposure": "deferred-frontend",
+      "capability": "code.core"
+    },
+    {
+      "method": "GET",
+      "path": "/api/code/tasks/:taskId/file",
+      "source": "src/http/canvas.ts:28",
+      "exposure": "deferred-frontend",
+      "capability": "code.core"
+    },
+    {
+      "method": "GET",
+      "path": "/api/code/tasks/:taskId/diff",
+      "source": "src/http/canvas.ts:38",
+      "exposure": "deferred-frontend",
+      "capability": "code.core"
+    },
+    {
+      "method": "POST",
+      "path": "/api/code/tasks/:taskId/preview",
+      "source": "src/http/canvas.ts:45",
+      "exposure": "deferred-frontend",
+      "capability": "code.core"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/code/tasks/:taskId/preview",
+      "source": "src/http/canvas.ts:56",
+      "exposure": "deferred-frontend",
+      "capability": "code.core"
     }
   ]
 }

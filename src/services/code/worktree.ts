@@ -45,6 +45,7 @@ import { assertNoSymlinkedTraversal, assertStillInside } from '../../security/to
 import { AppError } from '../../util/errors.ts';
 import { createLogger } from '../../util/logger.ts';
 import { GIT_FILTER_QUERY, GIT_SAFE_CONFIG, filterOverrides } from './gitHardening.ts';
+import { revokePreview } from './preview.ts';
 
 const log = createLogger('code:worktree');
 
@@ -375,6 +376,9 @@ function freePath(taskId: string): string | null {
  */
 export async function releaseWorktree(taskId: string): Promise<WorktreeRelease> {
   const id = safeTaskId(taskId);
+  // Preview authority ends with workspace ownership, whether the directory is
+  // removed, retained for safety, or was a direct-mode project we never owned.
+  revokePreview(id);
   const worktree = worktrees.get(id);
   worktrees.delete(id);
 
@@ -477,9 +481,14 @@ export function holdWorktree(taskId: string): Worktree | null {
   const id = safeTaskId(taskId);
   const worktree = worktrees.get(id);
   if (!worktree) return null;
-  if (worktree.mode === 'direct') return worktree; // owns no directory to hold
+  // A parked task has no live Canvas surface. Do not leave a browser tab with
+  // authority merely because its checkout is retained for continuation.
+  revokePreview(id);
   if (worktree.heldSince !== null) return worktree;
 
+  // Direct mode owns no directory to preserve, but it still needs the parked
+  // marker: Canvas must distinguish a runnable task from a parked registry
+  // entry, and the held-worktree reaper must eventually deregister both modes.
   const held: Worktree = { ...worktree, heldSince: Date.now() };
   worktrees.set(id, held);
   log.info(`task ${id}: holding ${held.dir} for a parked run`);

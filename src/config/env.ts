@@ -148,6 +148,12 @@ export const env = {
 
   host: bind.host,
   port: int('HYPERION_PORT', 4317),
+  /**
+   * Isolated listener for task-controlled browser content. Zero disables it;
+   * the API port is never used as a fallback because origin separation is the
+   * security boundary.
+   */
+  previewPort: int('HYPERION_PREVIEW_PORT', 4320),
   bindIsLoopback: bind.isLoopback,
 
   /**

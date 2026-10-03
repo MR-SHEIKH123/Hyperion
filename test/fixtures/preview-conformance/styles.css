@@ -1,0 +1,7 @@
+:root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+body { margin: 2rem; }
+table { border-collapse: collapse; width: min(70rem, 100%); }
+th, td { border: 1px solid #8888; padding: .55rem; text-align: left; }
+td[data-ok="true"] { color: #14833b; font-weight: 700; }
+td[data-ok="false"] { color: #c52b2b; font-weight: 700; }
+img { width: 1px; height: 1px; }

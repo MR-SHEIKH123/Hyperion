@@ -156,11 +156,25 @@ behavior in the browser.
   closes a session yet, and no screen sends the two headers. They exist because a token
   no server mints is not a mechanism, and the minting half is what makes the exemption
   structural rather than a flag a client could set.
-- No Code file-tree, file-read, task-diff, or walkthrough retrieval contracts. (`GET /api/code/tasks`
-  reports the live lane — running slots and held worktrees — which is what a task rail needs for
-  *active* work; a per-project *history* of code tasks is still absent, and `GET /api/code/tasks/:id/export`
-  covers one task's diff. The Code surface (`src/tools/code/`) therefore shows the lane and says
-  that a finished task leaves no row here, rather than caching rows the server never sent.)
+- ~~No Code file-tree, file-read, or task-diff contract.~~ **Backend closed in 1.40
+  (2026-10-03), frontend deliberately pending until 2.4.** Canvas now exposes a bounded
+  read-only tree, UTF-8 file view, unified text patch, and tokenised sandbox preview for a
+  currently registered Code task. The five ledger rows are `missing`, not `implemented`,
+  because no frontend client calls them yet. What this deliberately does **not** do:
+  - no live dev server, build command, dependency install, or hot reload;
+  - no preview for a parked checkout after it is released, and no reopening a released or
+    historical task (the worktree registry is in-process);
+  - one preview session per task, replaced on mint and revoked on release;
+  - no writes of any kind;
+  - diff is unified patch text, not a parsed hunk model; and
+  - no walkthrough retrieval contract.
+
+  The timeline has a separate, stricter limit. `artifact_versions` rows are **pre-images**
+  captured before replacement; there is no task-step ↔ artifact-version link. Rows backed by
+  `rel_path` vanish as readable content when their worktree is released. A UI must therefore
+  show the version stack and step list **side by side** and must never label a version
+  “content as of step k”. `GET /api/code/tasks` still reports only the live lane, not a
+  per-project history.
 - No Design file tree, version timeline, rendered diff, or design-system context contract. (1.31's "Design environment" clause lives here now: reclassified out of Prompt 1 to Design's Prompt 2 build, 2026-09-24.)
 - ~~No general artifact lineage/list endpoint.~~ **Partly closed 2026-09-21**: `GET /api/artifacts/versions?key=…`
   lists one artifact's version chain with its derived parent (Prompt 1.39 A6). There is still no

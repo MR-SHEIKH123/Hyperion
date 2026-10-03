@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hyperion preview CSP conformance</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main>
+    <h1>Preview CSP conformance</h1>
+    <p>Each row states the intended sandbox result. The status is filled by the external script.</p>
+    <table>
+      <thead><tr><th>Capability</th><th>Expected</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr id="external"><td>External classic JavaScript</td><td>allowed</td><td>waiting</td></tr>
+        <tr id="module"><td>External module script</td><td>allowed</td><td>waiting</td></tr>
+        <tr id="fetch"><td>fetch(data.json)</td><td>allowed by explicit preview origin / CORS fallback</td><td>waiting</td></tr>
+        <tr id="image"><td>Image</td><td>allowed</td><td>waiting</td></tr>
+        <tr id="inline"><td>Inline JavaScript</td><td>blocked</td><td>waiting</td></tr>
+        <tr id="storage"><td>localStorage</td><td>blocked by opaque sandbox origin</td><td>waiting</td></tr>
+        <tr id="message"><td>postMessage to parent</td><td>allowed</td><td>waiting</td></tr>
+      </tbody>
+    </table>
+    <img id="fixture-image" alt="one pixel conformance fixture" src="pixel.png">
+  </main>
+
+  <script>document.documentElement.dataset.inlineRan = 'yes';</script>
+  <script src="app.js" defer></script>
+  <script type="module" src="module.mjs"></script>
+</body>
+</html>

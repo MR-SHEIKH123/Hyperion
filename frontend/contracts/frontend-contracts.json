@@ -266,6 +266,41 @@
       "method": "GET",
       "expectedPath": "/api/attention",
       "status": "implemented"
+    },
+    {
+      "id": "canvas.files",
+      "method": "GET",
+      "expectedPath": "/api/code/tasks/:taskId/files",
+      "status": "missing",
+      "reason": "Backend Canvas 1.40 exists; no frontend client is planned until 2.4."
+    },
+    {
+      "id": "canvas.file",
+      "method": "GET",
+      "expectedPath": "/api/code/tasks/:taskId/file",
+      "status": "missing",
+      "reason": "Backend Canvas 1.40 exists; no frontend client is planned until 2.4."
+    },
+    {
+      "id": "canvas.diff",
+      "method": "GET",
+      "expectedPath": "/api/code/tasks/:taskId/diff",
+      "status": "missing",
+      "reason": "Backend Canvas 1.40 exists; no frontend client is planned until 2.4."
+    },
+    {
+      "id": "canvas.preview.mint",
+      "method": "POST",
+      "expectedPath": "/api/code/tasks/:taskId/preview",
+      "status": "missing",
+      "reason": "Backend Canvas 1.40 exists; no frontend client is planned until 2.4."
+    },
+    {
+      "id": "canvas.preview.revoke",
+      "method": "DELETE",
+      "expectedPath": "/api/code/tasks/:taskId/preview",
+      "status": "missing",
+      "reason": "Backend Canvas 1.40 exists; no frontend client is planned until 2.4."
     }
   ]
 }

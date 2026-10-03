@@ -32,6 +32,7 @@ import {
 } from './services/storage/cleanup.ts';
 import { registerProductionModules } from './services/agent/composition.ts';
 import { createApp } from './http/app.ts';
+import { startPreviewServer } from './http/previewServer.ts';
 import { createLogger } from './util/logger.ts';
 
 import type { Server } from 'node:http';
@@ -160,13 +161,19 @@ function startServer(): Server {
  * Graceful shutdown. PM2 sends SIGINT and waits `kill_timeout` (8s) before
  * SIGKILL, so everything here is bounded well under that budget.
  */
-function installShutdownHandlers(server: Server): void {
+function installShutdownHandlers(server: Server, previewServer: Server | null): void {
   let shuttingDown = false;
 
   const shutdown = (signal: string): void => {
     if (shuttingDown) return;
     shuttingDown = true;
     log.info(`received ${signal}, shutting down`);
+
+    // Close the isolated preview listener first and deliberately do not wait on
+    // it. It owns no database handle or child process, and a browser parked on
+    // a preview must not hold the real application shutdown open.
+    previewServer?.close();
+    previewServer?.closeAllConnections?.();
 
     const forceExit = setTimeout(() => {
       log.warn('shutdown timed out, exiting');
@@ -273,8 +280,9 @@ function main(): void {
   }
 
   registerProductionModules();
+  const previewServer = startPreviewServer();
   const server = startServer();
-  installShutdownHandlers(server);
+  installShutdownHandlers(server, previewServer);
 
   // Background jobs start last, once the process is otherwise up. All three are
   // unref'd interval timers with staggered boot delays, so none of them can

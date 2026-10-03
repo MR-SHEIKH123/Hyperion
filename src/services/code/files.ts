@@ -112,7 +112,7 @@ export async function readCodeFile(
   candidate: string,
   services: CodeFileServices,
 ): Promise<{ path: string; content: string; sha256: string; bytes: number }> {
-  const location = locate(candidate, services);
+  const location = requireFileLocation(locate(candidate, services));
   const state = await readState(location.absolute);
   if (!state.exists || state.sha256 === null) {
     throw new AppError('not_found', `Code file "${location.relative}" was not found.`, {
@@ -126,7 +126,7 @@ export async function writeCodeFile(
   input: { path: string; content: string; expectedSha256: string | null },
   services: CodeFileServices,
 ): Promise<{ path: string; sha256: string; version: number }> {
-  const location = locate(input.path, services);
+  const location = requireFileLocation(locate(input.path, services));
   const before = await readState(location.absolute);
   assertExpected(location.relative, before, input.expectedSha256);
 
@@ -147,7 +147,7 @@ export async function restoreArtifactVersion(
   input: { artifactKey: string; version: number; path: string; expectedSha256: string | null },
   services: CodeFileServices,
 ): Promise<{ path: string; sha256: string | null; version: number }> {
-  const location = locate(input.path, services);
+  const location = requireFileLocation(locate(input.path, services));
   if (input.artifactKey !== location.artifactKey) {
     throw new AppError('bad_request', 'The artifact key does not belong to the requested file.', {
       details: { artifactKey: input.artifactKey, path: location.relative },
@@ -203,8 +203,15 @@ export async function restoreArtifactVersion(
  * `.git ` open `.git` there, and a check that compared the literal string
  * would wave them through on the one platform where it matters.
  */
-function isGitSegment(segment: string): boolean {
+export function isGitPathSegment(segment: string): boolean {
   return segment.toLowerCase().replace(/[. ]+$/, '') === '.git';
+}
+
+/** One refusal for both the lexical and canonical `.git` checks below. */
+function refuseGit(shown: string, segment: string): never {
+  throw new AppError('scope_violation', 'A Code file path may not reach into the .git directory.', {
+    details: { path: shown, segment },
+  });
 }
 
 function locate(candidate: string, services: CodeFileServices): {
@@ -212,7 +219,16 @@ function locate(candidate: string, services: CodeFileServices): {
   relative: string;
   artifactKey: string;
 } {
+  // Check the spelling before *any* filesystem operation. In a linked worktree
+  // `.git` is a file containing a gitdir pointer, so walking
+  // `.git/hooks/post-checkout` first raises ENOTDIR. That raw syscall error used
+  // to become a 500 containing an absolute server path. It is also too late to
+  // inspect the spelling after a resolver has canonicalised it.
+  const spelledGit = candidate.split(/[\\/]/).find((segment) => isGitPathSegment(segment));
+  if (spelledGit !== undefined) refuseGit(candidate, spelledGit);
+
   const root = services.resolvePath('.');
+
   // Point-of-use revalidation (prompt-1 item P1-S4), in the only order that
   // works: the spelling first, because the resolver below canonicalises symlinks
   // away and would leave nothing for a traversal check to see; then the resolved
@@ -221,9 +237,10 @@ function locate(candidate: string, services: CodeFileServices): {
   // each other's workspace.
   assertNoSymlinkedTraversal(root, candidate);
   const absolute = assertStillInside(root, services.resolvePath(candidate));
-  const relative = path.relative(root, absolute).split(path.sep).join('/');
-  if (!relative || relative === '.' || relative.startsWith('../')) {
-    throw new AppError('bad_request', 'A Code file path must name a file inside the task workspace.');
+  const fromRoot = path.relative(root, absolute);
+  const relative = fromRoot === '' ? '.' : fromRoot.split(path.sep).join('/');
+  if (relative.startsWith('../')) {
+    throw new AppError('bad_request', 'A Code file path must name a path inside the task workspace.');
   }
 
   // Containment is not enough for `.git`. In `direct` mode the task root *is*
@@ -235,19 +252,40 @@ function locate(candidate: string, services: CodeFileServices): {
   // `.git` is a *file* holding the gitdir pointer, and rewriting it redirects
   // the repository wholesale.
   //
-  // `gitHardening.ts` neutralizes the execution at each git call site; this
-  // closes the write that arms it. Two layers, because the whole class of bug
-  // is "one path missed the check". `.gitignore`, `.gitattributes` and
-  // `.github/` are ordinary tracked files and stay writable — only the `.git`
-  // directory (or pointer file) itself is refused.
-  const offending = relative.split('/').find((segment) => isGitSegment(segment));
-  if (offending !== undefined) {
-    throw new AppError('scope_violation', 'A Code file path may not reach into the .git directory.', {
-      details: { path: relative, segment: offending },
-    });
-  }
+  // This second check is intentionally on the canonical, workspace-relative
+  // answer. The resolver is injectable and may map an innocuous alias to a git
+  // path; keeping both checks behind `refuseGit` makes their response identical.
+  // `.gitignore`, `.gitattributes` and `.github/` remain ordinary files.
+  const resolvedGit = relative.split('/').find((segment) => isGitPathSegment(segment));
+  if (resolvedGit !== undefined) refuseGit(relative, resolvedGit);
 
   return { absolute, relative, artifactKey: `code:file:${services.taskId}:${relative}` };
+}
+
+/**
+ * Resolve a read-only Code path through the exact seam used by file mutation.
+ *
+ * `locate` remains private because its artifact key belongs to the write path.
+ * A reader gets only the canonical absolute path and the workspace-relative
+ * spelling, which cannot be reused to manufacture artifact versions.
+ */
+export function resolveCodePath(
+  candidate: string,
+  services: CodeFileServices,
+): { absolute: string; relative: string } {
+  const { absolute, relative } = locate(candidate, services);
+  return { absolute, relative };
+}
+
+function requireFileLocation(location: {
+  absolute: string;
+  relative: string;
+  artifactKey: string;
+}): typeof location {
+  if (location.relative === '.') {
+    throw new AppError('bad_request', 'A Code file path must name a file inside the task workspace.');
+  }
+  return location;
 }
 
 async function readState(absolute: string): Promise<FileState> {

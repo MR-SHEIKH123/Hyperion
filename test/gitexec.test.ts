@@ -37,10 +37,12 @@ import { cleanupHome, freshDb, testHome } from './helpers.ts';
 type WorktreeModule = typeof import('../src/services/code/worktree.ts');
 type ExportModule = typeof import('../src/services/export/index.ts');
 type FilesModule = typeof import('../src/services/code/files.ts');
+type CanvasModule = typeof import('../src/services/code/canvas.ts');
 
 let worktrees: WorktreeModule;
 let exports_: ExportModule;
 let files: FilesModule;
+let canvas: CanvasModule;
 
 const projectsRoot = path.join(testHome, 'projects');
 const marker = path.join(testHome, 'PAYLOAD-RAN');
@@ -128,6 +130,7 @@ before(async () => {
   worktrees = await import('../src/services/code/worktree.ts');
   exports_ = await import('../src/services/export/index.ts');
   files = await import('../src/services/code/files.ts');
+  canvas = await import('../src/services/code/canvas.ts');
 });
 
 beforeEach(() => {
@@ -190,6 +193,20 @@ describe('Hyperion\u2019s own git invocations', () => {
     // Still a real diff — hardening must not silently empty it.
     assert.match(exported.content, /a\.txt/);
     assert.ok(!fired(), 'git diff executed a textconv, external diff or clean filter');
+  });
+
+  test('Canvas diff delegates to the same hardened exporter', gitOnly, async () => {
+    const diff = await canvas.canvasDiff('canary-task-1');
+    assert.match(diff.patch, /a\.txt/);
+    assert.ok(!fired(), 'Canvas introduced or bypassed the hardened git diff path');
+  });
+
+  test('Canvas file reads and listings spawn no git command', gitOnly, async () => {
+    const tree = await canvas.listCanvasFiles('canary-task-1');
+    assert.ok(tree.entries.some((entry) => entry.path === 'a.txt'));
+    const file = await canvas.canvasFile('canary-task-1', 'a.txt');
+    assert.match(file.content, /edited by the agent/);
+    assert.ok(!fired(), 'a read-only Canvas filesystem operation spawned git');
   });
 
   test('releasing the worktree runs no configured command', gitOnly, async () => {

@@ -17,6 +17,7 @@ import { continuationRouter } from './continuation.ts';
 import { artifactsRouter } from './artifacts.ts';
 import { backupRouter } from './backup.ts';
 import { chatRouter } from './chat.ts';
+import { canvasRouter } from './canvas.ts';
 import { coworkRouter } from './cowork.ts';
 import { designRouter } from './design.ts';
 import { errorHandler, notFoundHandler } from './errors.ts';
@@ -84,7 +85,7 @@ export function createApp(): Express {
   app.use('/api/resources', resourcesRouter);
   app.use('/api/artifacts', artifactsRouter);
   app.use('/api/export', exportsRouter);
-
+  app.use('/api/code', canvasRouter);
 
   app.use('/api/push', pushRouter);
   app.use('/api/errors', errorLogRouter);

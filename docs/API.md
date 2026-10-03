@@ -1023,7 +1023,7 @@ the cleanup job, or discard one explicitly.
 
 `GET /summary` supplies the id+name+description list for system-prompt injection.
 The library read is **unfiltered**: every enabled skill is listed, including ones
-switched off for a given tool in the Plugins hub (§25), because the Settings panel
+switched off for a given tool in the Plugins hub (§26), because the Settings panel
 that can explain the switch is the same read. The **agent loops** apply that
 filter (`services/plugins/consumers.ts`); the chat orchestrator still does not
 inject skills at all.
@@ -3578,14 +3578,110 @@ be read (no cap configured, no MCP manager in this process) is reported
 indistinguishable from a category that is fine. `sources` also carries the count
 that was found, which is what makes an "empty" trustworthy.
 
-## 25. Plugins — `/api/plugins`  *(new in 1.34)*
+## 25. Canvas — `/api/code/tasks/:taskId`  *(new in 1.40)*
+
+Read-only access to a **currently registered** Code task workspace. Canvas does
+not keep a second path policy: file, tree, and preview candidates all pass
+through the Code file service bound to that task's `containAgentCwd`. The result
+inherits the per-task subtree boundary, symlink refusal, and `.git` refusal used
+by the agent's own file tools. An unknown, parked, or released task therefore
+returns `404 not_found`; Canvas cannot reopen an orphaned or historical checkout.
+
+Repeated `path` query keys are rejected as `400 bad_request` with
+`details.field = "path"`. Express represents a repeated key as an array, and
+silently choosing its first member would leave two wire spellings for one read.
+
+### 25.1 `GET /api/code/tasks/:taskId/files`
+
+Query `path` narrows the view to a subtree and defaults to `.`. The response is:
+
+```ts
+interface CanvasEntry {
+  path: string;
+  name: string;
+  type: 'file' | 'directory';
+  bytes: number | null;       // null for a directory
+  skipped?: boolean;
+}
+interface CanvasTree {
+  taskId: string;
+  mode: 'worktree' | 'direct';
+  root: string;               // task-workspace-relative, never an absolute path
+  entries: CanvasEntry[];
+  truncated: boolean;
+  skipped: string[];          // workspace-relative directory names
+}
+```
+
+Traversal is breadth-first and deterministic. It returns at most 2,000 entries
+and descends at most 12 levels. `node_modules`, `.next`, `dist`, `build`,
+`.venv`, and `__pycache__` are represented as `skipped: true` but not traversed;
+depth-limited directories are treated the same way. Symlinks and `.git` are
+omitted entirely. `truncated` distinguishes a bounded result from a complete
+small tree, while `skipped` tells the client which directory names account for
+the missing descendants.
+
+### 25.2 `GET /api/code/tasks/:taskId/file`
+
+Requires one non-empty `path`. Returns
+`{ path, content, sha256, bytes }` for UTF-8 text. The 2 MiB viewer limit is
+checked with `stat` **before** the file is read. An oversized file is
+`400 bad_request`; the message and `details.bytes` carry its actual size and
+`details.maxBytes` carries the limit, so the UI can say why it did not render.
+Binary/non-UTF-8 content keeps the Code file service's existing reasoned 400.
+
+### 25.3 `GET /api/code/tasks/:taskId/diff`
+
+Returns `{ taskId, baseCommit, patch }`. `patch` comes from `exportCodeTask`, not
+a second git call site, so it has the exporter's non-interactive configuration,
+filter overrides, and `--no-ext-diff --no-textconv` flags. A direct-mode task has
+no base commit and returns the exporter's existing `400 bad_request` with
+`details.mode` and `details.reason`; it never returns an empty patch that could
+be mistaken for “no changes.”
+
+### 25.4 `POST|DELETE /api/code/tasks/:taskId/preview`
+
+`POST` returns `201` with:
+
+```ts
+{ taskId: string; token: string; url: string; expiresAt: number }
+```
+
+The token is 256 random bits and expires after 30 minutes. Minting replaces the
+one prior session for that task. `DELETE` returns `200 { revoked: boolean }`, and
+releasing the task's worktree revokes it as well. `HYPERION_PREVIEW_PORT=0`, or a
+preview bind that degraded because its port was occupied, makes minting return
+the existing `403 capability_disabled` with
+`details.setting = "HYPERION_PREVIEW_PORT"`.
+
+The URL is served by the **separate preview listener**, default port 4320, under
+`/p/<token>/`. This is an origin boundary, not a convenience port:
+task-controlled HTML is never served on the API origin. The listener applies the
+same Host allow-list as the API; a proxied deployment must add its preview
+hostname to `HYPERION_ALLOWED_HOSTS`. The preview port is deliberately not added
+to `HYPERION_APP_ORIGINS`.
+
+Every preview response is `no-store`, `nosniff`, `no-referrer`,
+`Cross-Origin-Resource-Policy: cross-origin`, and (on this listener only)
+`Access-Control-Allow-Origin: *`. Content types are allow-listed. The CSP is a
+response header and includes `sandbox allow-scripts` **without**
+`allow-same-origin`, plus `frame-ancestors` from `HYPERION_APP_ORIGINS`. Script,
+connect, image, style, font and media policies carry both `'self'` and the
+explicit origin built from the validated Host header: sandboxed documents have
+an opaque origin, and the explicit source is the fallback where a browser does
+not interpret `'self'` as the preview listener. Refusals are plain text and do
+not disclose filesystem paths. The API itself still emits no CORS headers.
+
+---
+
+## 26. Plugins — `/api/plugins`  *(new in 1.34)*
 
 A plugin is not a fifth kind of thing: it is an **MCP server**, a **skill**, or a
 **built-in** (Memory) — the things a tool may or may not be allowed to use. The hub
 composes the registries that already own those records and adds the two facts that
 had nowhere to live: who may use a plugin, and what it is.
 
-### 25.1 `GET /api/plugins`
+### 26.1 `GET /api/plugins`
 
 | Field | Meaning |
 | --- | --- |
@@ -3626,7 +3722,7 @@ Four rules, each of which a plausible implementation could get wrong:
   availability switch that appears to gate something that does not exist would be
   worse than no switch.
 
-### 25.2 `PATCH /api/plugins/:id/availability`
+### 26.2 `PATCH /api/plugins/:id/availability`
 
 Body `{ tool, available }` where `available` is `true`, `false`, or **`null`**.
 `null` **deletes** the override — "back to the default" is the absence of a
@@ -3655,7 +3751,7 @@ one-time setup) are ordinary entries: the hub composes them, so a seeded
 browser-use server is read as a browser-driving server with no special case, and
 its availability is decided like anything else's.
 
-### 25.3 What the scan is, and is not
+### 26.3 What the scan is, and is not
 
 The scan is **static, offline, and local**: it reads what the registries already
 stored (a server's transport, command, argument count, whether it holds a
@@ -3685,7 +3781,7 @@ grade means nothing obvious was found, never that the plugin is safe.
 
 ---
 
-## 26. Where this differs from SPEC.md's suggested surface
+## 27. Where this differs from SPEC.md's suggested surface
 
 The spec framed its endpoint list as "Suggested … adjust naming as you see fit,
 but keep the shape" (`docs/SPEC.md` line 110). The shape is intact. Concrete

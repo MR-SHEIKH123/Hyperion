@@ -2419,3 +2419,64 @@ Phase E (🆕 V4, quality):         18             [observability + evals]
 ---
 
 This v4 preserves every original commitment and adds only verifiable, gap-grounded upgrades. The immediate next action is unchanged: the detached full-suite run has never been started. Reconcile-open question for you: do you want V4 proposals ratified into the plan now, or held as provisional until Phase A lands?
+
+---
+
+## 2026-10-03 — Canvas backend 1.40: one file seam, isolated preview origin
+
+**Decision.** Canvas is a read-only adapter over the active Code task registry.
+`canvasServices(taskId)` mirrors the file-services portion of
+`orchestrator/agentContext.ts` (the brief named
+`src/services/code/agentContext.ts`, but that file does not exist in this tree):
+`containAgentCwd` is bound to the task and no artifact emitter is present. The
+only exported resolver returns `{absolute, relative}`; `locate` and its
+`artifactKey` remain private. The `.git` refusal now checks both the lexical
+spelling before syscalls and the canonical task-relative answer through one
+predicate/refusal. This fixes linked-worktree `.git/hooks/...` returning a raw
+`ENOTDIR` 500.
+
+Canvas diff delegates to `exportCodeTask`; it adds no git spawn or direct-mode
+semantic. Listings are breadth-first (2,000 entries / 12 levels), report skipped
+dependency/build directories and truncation, omit links and `.git`, and stat the
+2 MiB viewer limit before reading.
+
+Task HTML is served only from the second listener (`HYPERION_PREVIEW_PORT`, 4320
+by default, 0 disables). Tokens are 256 bits, fixed-length/constant-time compared,
+expire after 30 minutes, and are one per task. Park or release revokes the token.
+The listener uses the API Host policy, content-type allow-list, plain refusals,
+CORS `*` only on that listener, and a CSP header with
+`sandbox allow-scripts` (never `allow-same-origin`), app-origin frame ancestors,
+and both `'self'` and the explicit validated-Host origin for resources. Port
+conflict degrades preview rather than API boot.
+
+**Mutation check (clean sources restored after every run).** Counts are actual
+failing tests, not the lost implementation's reference values:
+
+| mutation | failures |
+|---|---:|
+| add `allow-same-origin` to sandbox | 1 |
+| bypass token comparison | 2 |
+| replace the preview's `files.ts` seam with imported `path.resolve` | 2 |
+| list `.git` | 1 |
+| ignore TTL and replace constant-time compare with `===` | 2 |
+| remove spelling-level `.git` check | 1 |
+
+Every property produced a non-zero failure. The TTL/comparator count is 2 rather
+than the lost implementation's reference 16: this suite has one behavioural TTL
+assertion and one explicit structural assertion for `timingSafeEqual`; duplicating
+that structural assertion across unrelated preview cases would inflate a count
+without adding coverage. A broader mutation of the exported resolver produced 6
+failures, but the table records the scoped preview-seam mutation requested by the
+brief.
+
+**Browser conformance fixture.** `test/fixtures/preview-conformance/` exercises
+external classic and module scripts, JSON fetch, image, blocked inline script,
+blocked `localStorage`, and `postMessage`, with each expected result written in
+the page. `scripts/preview-conformance.mjs` records browser/version and all rows.
+This sandbox has no Chrome/Chromium executable and no Playwright installation, so
+no real-browser outcome was fabricated here; the checked-in runner remains the
+owner-operated measurement. HTTP integration tests do verify the shipped CSP,
+explicit-origin fallback, content types and headers. A plain `../` preview URL is
+normalised out of the token route and returns 404; the demonstrated value of the
+shared filesystem seam is the symlink escape and `.git` refusal, not URL
+traversal.
