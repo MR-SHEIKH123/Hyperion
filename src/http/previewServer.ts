@@ -241,9 +241,8 @@ function originFromHost(host: string | undefined): string | null {
 
 function destinationHost(bind: string): string {
   const value = bind.trim();
-  return value === '0.0.0.0' || value === '::' || value === '*' || value === ''
-    ? '127.0.0.1'
-    : value;
+  if (value === '::') return '::1';
+  return value === '0.0.0.0' || value === '*' || value === '' ? '127.0.0.1' : value;
 }
 
 function urlHost(host: string): string {
