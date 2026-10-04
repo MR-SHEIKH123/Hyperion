@@ -36,6 +36,7 @@ import { loadConversation } from '../../db/taskMessages.ts';
 import { resolveContextWindow } from '../agent/compaction.ts';
 import { contextWindowFallback, contextWindowOverride, findCachedModel } from '../../providers/registry.ts';
 import { toAppError, AppError } from '../../util/errors.ts';
+import { parseToolArguments } from '../agent/toolArguments.ts';
 import { TaskBudget } from '../limits/budget.ts';
 
 import type {
@@ -363,21 +364,6 @@ function toolSchemas(
   ];
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function parseArguments(raw: string): Record<string, unknown> {
-  let value: unknown;
-  try {
-    value = JSON.parse(raw);
-  } catch {
-    throw new AppError('bad_request', 'The model produced invalid JSON tool arguments.');
-  }
-  if (!isRecord(value)) throw new AppError('bad_request', 'Tool arguments must be a JSON object.');
-  return value;
-}
-
 function summaryFor(text: string, fallback: string): string {
   const trimmed = text.trim();
   return trimmed.length > 0 ? trimmed : fallback;
@@ -500,7 +486,7 @@ export async function runCoworkTask(
     const budget = (deps.createBudget ?? (() => new TaskBudget(ctx.taskId)))();
 
     const runTool = async (call: ToolCall): Promise<string> => {
-      const args = parseArguments(call.arguments);
+      const args = parseToolArguments(call.arguments);
       if (call.name === 'cowork.save_artifact') {
         const format = args.format;
         const artifactKey = args.artifactKey;

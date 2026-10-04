@@ -22,6 +22,7 @@
  */
 import { getDb } from '../../db/adapter.ts';
 import { AppError } from '../../util/errors.ts';
+import { parseToolArguments } from '../agent/toolArguments.ts';
 
 import type { ToolCall, ToolSchema } from '../../types/core.ts';
 
@@ -251,19 +252,6 @@ export interface DesignToolServices {
 const MAX_INLINE_BRAND_BYTES = 32 * 1024;
 const UNDO_STACK_LIMIT = 100;
 
-function parseArguments(raw: string): Record<string, unknown> {
-  let value: unknown;
-  try {
-    value = JSON.parse(raw);
-  } catch {
-    throw new AppError('bad_request', 'The model produced invalid JSON tool arguments.');
-  }
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new AppError('bad_request', 'Tool arguments must be a JSON object.');
-  }
-  return value as Record<string, unknown>;
-}
-
 function requiredString(args: Record<string, unknown>, field: string): string {
   const value = args[field];
   if (typeof value !== 'string' || value.trim() === '') {
@@ -334,7 +322,7 @@ export async function dispatchDesignTool(
   ctx: AgentContext,
   services: DesignToolServices,
 ): Promise<string> {
-  const args = parseArguments(call.arguments);
+  const args = parseToolArguments(call.arguments);
   const key = designArtifactKey(state.runKey, targetName(args));
 
   switch (call.name) {

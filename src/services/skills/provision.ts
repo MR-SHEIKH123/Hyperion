@@ -33,6 +33,7 @@ import { env } from '../../config/env.ts';
 import { fromRelative, toRelative } from '../../security/fsScope.ts';
 
 import { createLogger } from '../../util/logger.ts';
+import { isMissingExecutable } from '../../util/exec.ts';
 import type { DeclaredDep, DependencyDetection, RequiredBinary } from './deps.ts';
 import { clearProvisioning, detectDependencies, isProvisioning, markProvisioning } from './deps.ts';
 import type { CheckedBinary, FailedDep, SkillDeps, SkillRecord } from './registry.ts';
@@ -663,13 +664,6 @@ function exec(
       finish({ ok: code === 0, code, output: output.trim(), spawnError: false });
     });
   });
-}
-
-function isMissingExecutable(result: ExecResult): boolean {
-  return (
-    result.spawnError ||
-    /ENOENT|not recognized as an internal or external command|command not found/i.test(result.output)
-  );
 }
 
 /**

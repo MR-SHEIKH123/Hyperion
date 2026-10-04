@@ -2423,7 +2423,10 @@ type-only declarations) and **kept**, per that entry's reasoning — they are te
 seams and affordances a planned item wants, and deleting them would need that
 entry reversed first. And three byte-identical helper bodies were found — one
 module-private each — which is a refactor of unrelated subsystems, not cleanup of
-this PR's subject, so they are recorded here rather than folded into it.
+this PR's subject, so they were recorded here rather than folded into it. **They
+were folded in later the same day, at the owner's request; the entry below is the
+one that amends this one — including its count, because one of the three had a
+third copy this audit did not see.**
 
 ---
 
@@ -2649,6 +2652,55 @@ its versions" in the state where the read is deliberately not made.
 `GET /api/terminal/sessions` moved from `deferred-frontend` to `frontend`); wire 66/66 with
 `terminalSessionSchema` declared nested (the check's fixture opens one session and closes
 another, so both arms of `endedAt` are real). Backend untouched except one stale comment.
+
+---
+
+## The three duplicated helpers, folded in — and a count correction (2026-10-04)
+
+The cleanup entry above recorded three byte-identical module-private helper bodies
+and left them: "a refactor of unrelated subsystems, not cleanup of this PR's
+subject". The owner asked for them folded in, so they are — and the audit
+undercounted one of them.
+
+**`parseArguments` had three copies, not two** — Code, Cowork and Design — and the
+audit compared two because Cowork's delegated the object check to a local `isRecord`
+guard, which hid the match from a body diff that did not normalise it. All three
+carried the same two sentences and the same acceptance rule. They are now
+`parseToolArguments` in `src/services/agent/toolArguments.ts`, and the `isRecord`
+that existed only to serve Cowork's copy went with it.
+
+**`assertNotBusy` was byte-identical in both HTTP routers** and reachable only from
+its own routes. It now lives in `src/orchestrator/lock.ts` — the module that owns
+the lock and the job a refusal names — taking the mode as a **parameter**, the way
+`acquire` does, so the lock module still needs no `db/settings` import and both call
+sites pass `concurrencyMode()`.
+
+**`missingGit` and `isMissingExecutable` were one three-line predicate** written
+twice over two different result types (git's and the installer's). It is now
+`isMissingExecutable` in `src/util/exec.ts`, typed structurally on
+`{ spawnError, output }` so both callers satisfy it without a shared result type
+that neither owns.
+
+**What pins them, and what does not.** `test/busyguard.test.ts` drives both routers
+over a real loopback socket: with the lock held, `reject` answers a JSON 409 —
+asserted on the **content type**, because "the client gets JSON while it still can"
+is the reason the pre-check exists — and `queue` opens the stream and waits, with an
+abandoned request's place in the queue given back before the next job could wait on
+it. Mutation red-checks **3/3 killed**: the mode parameter ignored, a call site
+passing a literal `'reject'` instead of the setting, and the guard dropped from the
+agent route. `test/designagent.test.ts` (+1) pins the parser's two sentences and the
+array case through a real run — both are throws, and a throw from a tool ends the
+run, which is the behaviour the sentences reach a client through — red-checked
+**2/2**. The missing-binary predicate's negative arm is covered by the worktree probe
+in `test/codetasks.test.ts`; its **positive arm needs a genuinely missing binary and
+was unpinned before this change too**, which is recorded rather than papered over.
+
+**Not deduplicated, and named so the omission is a decision:** `isRecord` survives as
+a three-line local guard in `cowork/pulse.ts`, `mcp/configFile.ts` and
+`mcp/processManager.ts`. Each has one file's callers and carries no message and no
+policy; a shared module would cost three imports and a new util file to save four
+lines, and unlike the three above there is nothing in it that can drift
+user-visibly.
 
 ---
 

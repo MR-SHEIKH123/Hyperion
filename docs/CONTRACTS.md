@@ -6462,3 +6462,21 @@ files rather than a subsystem.
 - **A bounded list states its bound.** The step list is a tail: `omitted` is rendered
   ("Showing the last 20 of 123 steps…"), and `summary.complete: false` is carried through
   as "these are floors" rather than smoothed into a total that overstates what was counted.
+
+### Three duplicated helpers, folded into one each (2026-10-04)
+
+- **`parseToolArguments`** — `services/agent/toolArguments.ts`. It had **three**
+  copies (Code, Cowork, Design), all carrying the same two `bad_request` sentences
+  and the same rule: `JSON.parse`, then **an object** — an array parses and is still
+  refused. The sentences are part of an API answer, which is why they are pinned by
+  a test that runs a real agent rather than by a helper-level unit test.
+- **`assertNotBusy`** — `orchestrator/lock.ts`. Byte-identical in the chat and agent
+  routers, and it takes the mode as a parameter the way `acquire` does, so the lock
+  module gains no dependency on the settings store. `test/busyguard.test.ts` asserts
+  through both mounted routes that `reject` answers a JSON 409 *before* a stream
+  opens and that `queue` opens the stream and waits — the response type is the whole
+  reason the pre-check exists, so it is asserted as hard as the status.
+- **`isMissingExecutable`** — `util/exec.ts`. One predicate over two result types,
+  typed structurally so neither service has to own a shared result shape. Its
+  "the binary is missing" arm is not unit-pinned (it needs a genuinely absent
+  binary); its "is a repository" arm is covered through the worktree probe.
