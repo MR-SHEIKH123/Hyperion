@@ -19,105 +19,105 @@
     {
       "method": "POST",
       "path": "/api/code/run-task",
-      "source": "src/http/agents.ts:514",
+      "source": "src/http/agents.ts:504",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "POST",
       "path": "/api/cowork/run-task",
-      "source": "src/http/agents.ts:515",
+      "source": "src/http/agents.ts:505",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "POST",
       "path": "/api/design/run-task",
-      "source": "src/http/agents.ts:516",
+      "source": "src/http/agents.ts:506",
       "exposure": "frontend",
       "capability": "design.core"
     },
     {
       "method": "GET",
       "path": "/api/code/tasks",
-      "source": "src/http/agents.ts:526",
+      "source": "src/http/agents.ts:516",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "GET",
       "path": "/api/code/tasks/:taskId/state",
-      "source": "src/http/agents.ts:616",
+      "source": "src/http/agents.ts:606",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "GET",
       "path": "/api/cowork/tasks/:taskId/state",
-      "source": "src/http/agents.ts:617",
+      "source": "src/http/agents.ts:607",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "GET",
       "path": "/api/cowork/tasks/:taskId/provenance",
-      "source": "src/http/agents.ts:604",
+      "source": "src/http/agents.ts:594",
       "exposure": "frontend",
       "capability": "cowork.read"
     },
     {
       "method": "GET",
       "path": "/api/design/tasks/:taskId/state",
-      "source": "src/http/agents.ts:618",
+      "source": "src/http/agents.ts:608",
       "exposure": "frontend",
       "capability": "design.core"
     },
     {
       "method": "GET",
       "path": "/api/code/tasks/:taskId/recovery",
-      "source": "src/http/agents.ts:636",
+      "source": "src/http/agents.ts:626",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "GET",
       "path": "/api/cowork/tasks/:taskId/recovery",
-      "source": "src/http/agents.ts:637",
+      "source": "src/http/agents.ts:627",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "GET",
       "path": "/api/design/tasks/:taskId/recovery",
-      "source": "src/http/agents.ts:638",
+      "source": "src/http/agents.ts:628",
       "exposure": "frontend",
       "capability": "design.core"
     },
     {
       "method": "POST",
       "path": "/api/code/tasks/:taskId/cancel",
-      "source": "src/http/agents.ts:692",
+      "source": "src/http/agents.ts:682",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "POST",
       "path": "/api/cowork/tasks/:taskId/cancel",
-      "source": "src/http/agents.ts:693",
+      "source": "src/http/agents.ts:683",
       "exposure": "frontend",
       "capability": "cowork.core"
     },
     {
       "method": "POST",
       "path": "/api/design/tasks/:taskId/cancel",
-      "source": "src/http/agents.ts:694",
+      "source": "src/http/agents.ts:684",
       "exposure": "frontend",
       "capability": "design.core"
     },
     {
       "method": "GET",
       "path": "/api/code/tasks/:taskId/export",
-      "source": "src/http/agents.ts:707",
+      "source": "src/http/agents.ts:697",
       "exposure": "frontend",
       "capability": "code.core"
     },
@@ -166,49 +166,49 @@
     {
       "method": "GET",
       "path": "/api/code/rules",
-      "source": "src/http/agents.ts:737",
+      "source": "src/http/agents.ts:727",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "GET",
       "path": "/api/code/agents",
-      "source": "src/http/agents.ts:749",
+      "source": "src/http/agents.ts:739",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "POST",
       "path": "/api/code/agents/import",
-      "source": "src/http/agents.ts:782",
+      "source": "src/http/agents.ts:772",
       "exposure": "deferred-frontend",
       "capability": "code.core"
     },
     {
       "method": "GET",
       "path": "/api/code/commands",
-      "source": "src/http/agents.ts:806",
+      "source": "src/http/agents.ts:796",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "GET",
       "path": "/api/code/permissions",
-      "source": "src/http/agents.ts:825",
+      "source": "src/http/agents.ts:815",
       "exposure": "frontend",
       "capability": "code.core"
     },
     {
       "method": "POST",
       "path": "/api/code/execute-command",
-      "source": "src/http/agents.ts:876",
+      "source": "src/http/agents.ts:866",
       "exposure": "deferred-frontend",
       "capability": "code.execute-command"
     },
     {
       "method": "GET",
       "path": "/api/agents/status",
-      "source": "src/http/agents.ts:936",
+      "source": "src/http/agents.ts:926",
       "exposure": "frontend",
       "capability": "agents.status"
     },
@@ -271,133 +271,133 @@
     {
       "method": "GET",
       "path": "/api/chat",
-      "source": "src/http/chat.ts:139",
+      "source": "src/http/chat.ts:125",
       "exposure": "frontend",
       "capability": "chat.core"
     },
     {
       "method": "POST",
       "path": "/api/chat",
-      "source": "src/http/chat.ts:160",
+      "source": "src/http/chat.ts:146",
       "exposure": "frontend",
       "capability": "chat.core"
     },
     {
       "method": "POST",
       "path": "/api/chat/bulk-delete",
-      "source": "src/http/chat.ts:197",
+      "source": "src/http/chat.ts:183",
       "exposure": "frontend",
       "capability": "chat.core"
     },
     {
       "method": "POST",
       "path": "/api/chat/stream",
-      "source": "src/http/chat.ts:214",
+      "source": "src/http/chat.ts:200",
       "exposure": "frontend",
       "capability": "chat.core"
     },
     {
       "method": "POST",
       "path": "/api/chat/resume",
-      "source": "src/http/chat.ts:244",
+      "source": "src/http/chat.ts:230",
       "exposure": "frontend",
       "capability": "chat.core"
     },
     {
       "method": "GET",
       "path": "/api/chat/runs/paused",
-      "source": "src/http/chat.ts:279",
+      "source": "src/http/chat.ts:265",
       "exposure": "frontend",
       "capability": "chat.core"
     },
     {
       "method": "GET",
       "path": "/api/chat/:id",
-      "source": "src/http/chat.ts:286",
+      "source": "src/http/chat.ts:272",
       "exposure": "frontend",
       "capability": "chat.core"
     },
     {
       "method": "PATCH",
       "path": "/api/chat/:id",
-      "source": "src/http/chat.ts:298",
+      "source": "src/http/chat.ts:284",
       "exposure": "frontend",
       "capability": "chat.core"
     },
     {
       "method": "DELETE",
       "path": "/api/chat/:id",
-      "source": "src/http/chat.ts:322",
+      "source": "src/http/chat.ts:308",
       "exposure": "frontend",
       "capability": "chat.core"
     },
     {
       "method": "GET",
       "path": "/api/chat/:id/messages",
-      "source": "src/http/chat.ts:346",
+      "source": "src/http/chat.ts:332",
       "exposure": "frontend",
       "capability": "chat.core"
     },
     {
       "method": "POST",
       "path": "/api/chat/:id/fork",
-      "source": "src/http/chat.ts:367",
+      "source": "src/http/chat.ts:353",
       "exposure": "frontend",
       "capability": "chat.write"
     },
     {
       "method": "GET",
       "path": "/api/chat/:id/context",
-      "source": "src/http/chat.ts:460",
+      "source": "src/http/chat.ts:446",
       "exposure": "frontend",
       "capability": "chat.core"
     },
     {
       "method": "POST",
       "path": "/api/chat/:id/resume-in-new-session",
-      "source": "src/http/chat.ts:477",
+      "source": "src/http/chat.ts:463",
       "exposure": "frontend",
       "capability": "chat.write"
     },
     {
       "method": "POST",
       "path": "/api/chat/:id/open",
-      "source": "src/http/chat.ts:391",
+      "source": "src/http/chat.ts:377",
       "exposure": "frontend",
       "capability": "chat.core"
     },
     {
       "method": "POST",
       "path": "/api/chat/:id/pin",
-      "source": "src/http/chat.ts:405",
+      "source": "src/http/chat.ts:391",
       "exposure": "frontend",
       "capability": "chat.core"
     },
     {
       "method": "POST",
       "path": "/api/chat/:id/archive",
-      "source": "src/http/chat.ts:422",
+      "source": "src/http/chat.ts:408",
       "exposure": "frontend",
       "capability": "chat.core"
     },
     {
       "method": "POST",
       "path": "/api/chat/:id/unarchive",
-      "source": "src/http/chat.ts:431",
+      "source": "src/http/chat.ts:417",
       "exposure": "frontend",
       "capability": "chat.core"
     },
     {
       "method": "GET",
       "path": "/api/chat/:id/runs",
-      "source": "src/http/chat.ts:440",
+      "source": "src/http/chat.ts:426",
       "exposure": "frontend",
       "capability": "chat.core"
     },
     {
       "method": "GET",
       "path": "/api/chat/:id/export",
-      "source": "src/http/chat.ts:504",
+      "source": "src/http/chat.ts:490",
       "exposure": "frontend",
       "capability": "chat.core"
     },
