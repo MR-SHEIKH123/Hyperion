@@ -37,10 +37,12 @@ import { cleanupHome, freshDb, testHome } from './helpers.ts';
 type WorktreeModule = typeof import('../src/services/code/worktree.ts');
 type ExportModule = typeof import('../src/services/export/index.ts');
 type FilesModule = typeof import('../src/services/code/files.ts');
+type CanvasModule = typeof import('../src/services/code/canvas.ts');
 
 let worktrees: WorktreeModule;
 let exports_: ExportModule;
 let files: FilesModule;
+let canvas: CanvasModule;
 
 const projectsRoot = path.join(testHome, 'projects');
 const marker = path.join(testHome, 'PAYLOAD-RAN');
@@ -128,6 +130,7 @@ before(async () => {
   worktrees = await import('../src/services/code/worktree.ts');
   exports_ = await import('../src/services/export/index.ts');
   files = await import('../src/services/code/files.ts');
+  canvas = await import('../src/services/code/canvas.ts');
 });
 
 beforeEach(() => {
@@ -192,6 +195,32 @@ describe('Hyperion\u2019s own git invocations', () => {
     assert.ok(!fired(), 'git diff executed a textconv, external diff or clean filter');
   });
 
+  test('a Canvas diff runs no configured command, and is still a real diff', gitOnly, async () => {
+    // The Canvas diff route must not be a second `git` call site: it delegates
+    // to `exportCodeTask`, and this is the case that fails if somebody ever
+    // "simplifies" it into its own spawn. The same hostile repository and the
+    // same marker as the export case above.
+    const repo = hostileRepo('canary-canvas');
+    const worktree = await worktrees.provisionWorktree('canary-task-3', repo);
+    assert.equal(worktree.mode, 'worktree');
+    fs.writeFileSync(path.join(worktree.dir, 'a.txt'), 'edited through the canvas\n');
+
+    // Control, in the exact directory the diff runs in.
+    spawnSync('git', ['diff', worktree.baseCommit ?? 'HEAD'], {
+      cwd: worktree.dir,
+      windowsHide: true,
+    });
+    assert.ok(fired(), 'the fixture did not arm the worktree');
+    fs.rmSync(marker, { force: true });
+
+    const diff = await canvas.canvasDiff('canary-task-3');
+    assert.match(diff.patch, /a\.txt/);
+    assert.equal(diff.baseCommit, worktree.baseCommit);
+    assert.ok(!fired(), 'the Canvas diff executed a configured command');
+
+    await worktrees.releaseWorktree('canary-task-3');
+  });
+
   test('releasing the worktree runs no configured command', gitOnly, async () => {
     await worktrees.releaseWorktree('canary-task-1');
     assert.ok(!fired(), 'git status executed core.fsmonitor during release');
@@ -243,6 +272,40 @@ describe('the write path that arms it', () => {
         `expected ${candidate} to be refused`,
       );
     }
+  });
+
+  test('a Canvas read refuses .git by spelling even when .git is a file', async () => {
+    // In worktree mode `.git` is a *file* holding the gitdir pointer, so
+    // `.git/hooks/post-checkout` made the symlink pre-check `lstat` through a
+    // non-directory: raw ENOTDIR, which escaped as a 500 naming an absolute
+    // filesystem path instead of the ordinary 403. Reached here the way the
+    // Canvas reaches it — through the reader seam, not the writer's.
+    const dir = path.join(projectsRoot, 'canvas-read-target');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, '.git'), 'gitdir: /elsewhere/.git/worktrees/x\n');
+    const worktree = await worktrees.provisionWorktree('canary-canvas-read', dir);
+    assert.equal(worktree.mode, 'direct');
+
+    // `.git/hooks/post-checkout` — the spelling that used to raise raw ENOTDIR —
+    // is asserted at the route level in `canvas.test.ts`; this case is here to
+    // show the read seam itself refuses the worktree `.git` pointer file.
+    for (const candidate of ['.git', './.git/config', 'nested/../.git/config']) {
+      await assert.rejects(
+        () => canvas.readCanvasFile('canary-canvas-read', candidate),
+        (error: unknown) => {
+          assert.equal((error as { code?: string }).code, 'scope_violation');
+          assert.equal(
+            String((error as Error).message).includes(projectsRoot),
+            false,
+            'the refusal must not name a filesystem path',
+          );
+          return true;
+        },
+        `expected ${candidate} to be refused`,
+      );
+    }
+
+    await worktrees.releaseWorktree('canary-canvas-read');
   });
 
   test('reading through the same seam is refused too', async () => {

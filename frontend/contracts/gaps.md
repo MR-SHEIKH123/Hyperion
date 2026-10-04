@@ -152,15 +152,95 @@ behavior in the browser.
   server mints (`POST /api/terminal/sessions`), validated in constant time and expired on
   close or timeout — and everything without one is now evaluated by the permission engine
   as the `bash` tool over the project's own rules. The three `/api/terminal/sessions`
-  routes are therefore `deferred-frontend` in the route snapshot: no screen opens or
-  closes a session yet, and no screen sends the two headers. They exist because a token
-  no server mints is not a mechanism, and the minting half is what makes the exemption
-  structural rather than a flag a client could set.
-- No Code file-tree, file-read, task-diff, or walkthrough retrieval contracts. (`GET /api/code/tasks`
-  reports the live lane — running slots and held worktrees — which is what a task rail needs for
-  *active* work; a per-project *history* of code tasks is still absent, and `GET /api/code/tasks/:id/export`
-  covers one task's diff. The Code surface (`src/tools/code/`) therefore shows the lane and says
-  that a finished task leaves no row here, rather than caching rows the server never sent.)
+  routes that open and close a session are therefore `deferred-frontend` in the route
+  snapshot: no screen opens or closes one yet, and no screen sends the two headers. They
+  exist because a token no server mints is not a mechanism, and the minting half is what
+  makes the exemption structural rather than a flag a client could set.
+  **`GET /api/terminal/sessions` has a client and a screen since the session panel's
+  Processes row (2026-10-04)**: `api/terminal.ts` reads the list and
+  `tools/code/Processes.tsx` renders it. It closes nothing, and that is the shape of the
+  route rather than an unfinished part of the screen — the list never carries a token,
+  and `POST /sessions/:sessionId/close` authenticates with the opener's, so a panel that
+  offered a close control would be offering something the server refuses. Two more things
+  the row has to get right, both pinned by its test: the list also returns the last 50
+  *ended* sessions for the audit trail, so `count` is not the number of live processes
+  (`endedAt === null` is), and a run that has ended is history rather than a process.
+- **The Canvas has a client, and two of its rows are on screen (1.40 backend, client built
+  2026-10-04).** The file tree, the file read, the task diff and the sandboxed preview are real
+  routes (`GET /api/code/tasks/:taskId/files|file|diff`,
+  `POST|GET|DELETE /api/code/tasks/:taskId/preview`, `docs/API.md` §27),
+  `frontend/src/api/canvas.ts` calls all six and `wire/canvas.ts` pins their shapes — all six
+  are checked against the real backend by `check-wire.mjs`, and the ledger rows are
+  `implemented` on the same standard as `providers.registry` (a client calls the route; a
+  screen is not required). **Two screens exist, both in the Code surface's `inspector` region
+  — the changed-file list and the live preview row.** The list splits per-file additions and
+  deletions out of the patch (`tools/code/patch.ts`), names the base commit and renders a
+  direct-mode refusal as a refusal. The preview row (`tools/code/PreviewRow.tsx`) shows the
+  live origin as a URL a user can open, starts one, stops one, and names
+  `HYPERION_PREVIEW_PORT` when the listener is off instead of rendering "nothing is running"
+  for a feature that is switched off. It reads rather than mints, and that is the reason the
+  route exists at all: **minting replaces the session, so a row that minted to display would
+  revoke the URL the user already has open** — the read is what lets the row be polled. Not
+  yet surfaced: the **file tree** and the **file read** (`getTaskFiles`/`getTaskFile` are
+  called by nothing) and the **patch text itself** — the list is derived from it, no view
+  renders it. What the Canvas still does not
+  offer, and what a UI must not pretend it does:
+  - **Read-only.** No write, rename, delete or create route; the preview serves files, it
+    does not accept them.
+  - **Not a dev server.** The preview is a static read: no build step, no bundler, no hot
+    reload, no websocket, no directory listing — a page whose `fetch` or module graph needs
+    a toolchain will not run. Files are served as they are on disk at request time.
+  - **A preview only exists for a task that still holds a worktree.** Parking, releasing or
+    forgetting a task takes its token with it (released tasks answer as unknown), and there is
+    exactly **one** session per task: minting again revokes the previous URL. A screen cannot
+    show two previews of one task side by side.
+  - **The diff is text, not a hunk model.** `patch` is the unified diff the exporter already
+    produced; there are no per-hunk objects, no line ranges, no "apply this hunk" affordance,
+    and a direct-mode task gets the exporter's 400 rather than an empty patch. A rendering
+    surface parses the text itself. **In `direct` mode the Diff tab must show that honest
+    empty state** — "no base to compare against", from the refusal's `details.mode`/`reason`,
+    never a blank panel and never a rendered empty diff — while **the file tree, the file read
+    and the preview keep working**, because a task that shares the project directory still has
+    a workspace. Only the diff needs a base commit.
+  - **A per-project history of code tasks is still absent**, and so is walkthrough
+    retrieval. (`GET /api/code/tasks` reports the live lane — running slots and held
+    worktrees — which is what a task rail needs for *active* work, and the Code surface
+    (`src/tools/code/`) still says that a finished task leaves no row here rather than
+    caching rows the server never sent.)
+- **The version stack and the step list cannot be joined, and a UI must not imply it
+  (1.40, 2026-10-03).** `artifact_versions` rows are **pre-images** — version 1 is the state
+  *before* the first edit, which is what makes the first change undoable — and they carry
+  `artifact_key`, `tool`, `version`, `content`/`rel_path` and a label, **not** a run id, a
+  step id or a timestamped position in a transcript. There is no step↔version link anywhere
+  in the schema, so "content as of step k" is a claim the backend cannot support and a UI
+  must not make: show the version stack and the step list **side by side**, as two timelines
+  of the same task. And a version backed by `rel_path` — the large-artifact half, resolved
+  through `services/code/files.ts` — **vanishes when the worktree is released**, because the
+  path it names is inside the task's worktree; only the inline `content` rows outlive the
+  task. A version timeline that outlives a task therefore has to say which rows are still
+  resolvable, rather than rendering a stack of links that 404. That means **labelling the
+  versions that are unavailable after release**, not quietly omitting them: a row that
+  vanishes teaches the user the edit never happened.
+- **`errorCodeSchema` lags the backend by three codes, and nothing checks it (found 2026-10-03,
+  pre-existing).** The frontend's closed enum in `src/contracts/wire/common.ts` lists 25 codes;
+  `src/util/errors.ts` has 28. Missing: `approval_required`, `permission_denied`,
+  `zdr_requirement_unmet` — and no extras, so the enum is a subset, not a divergent set.
+  Measured by diffing the two declarations, not by reading them. Today the gap is **latent**,
+  and it is worth saying exactly why so nobody "fixes" the wrong thing:
+  - the chat stream's refusal reaches the client as an **SSE error frame**, whose
+    `chatSseErrorSchema` types `code` as `z.string()` — so a ZDR refusal still displays its
+    real message rather than failing to parse;
+  - the other two codes are thrown only by `POST /api/code/execute-command`, which has no
+    frontend client at all (the terminal routes are `deferred-frontend`).
+
+  It stops being latent the first time a surface parses a *JSON* error envelope carrying one
+  of those codes: `responseError` in `src/api/errors.ts` runs `errorEnvelopeSchema.safeParse`
+  and falls back to `invalid_response` — "Hyperion returned an unreadable error response" —
+  which is exactly the failure a closed enum that lags produces. The Canvas routes do not
+  widen the gap (they reuse `capability_disabled`, `scope_violation`, `bad_request`,
+  `not_found`), which is the point of not minting a new code for a disabled preview.
+  **2.4's first commit should sync the enum to the backend union and add the drift test**, as
+  its own revertable commit.
 - No Design file tree, version timeline, rendered diff, or design-system context contract. (1.31's "Design environment" clause lives here now: reclassified out of Prompt 1 to Design's Prompt 2 build, 2026-09-24.)
 - ~~No general artifact lineage/list endpoint.~~ **Partly closed 2026-09-21**: `GET /api/artifacts/versions?key=…`
   lists one artifact's version chain with its derived parent (Prompt 1.39 A6). There is still no

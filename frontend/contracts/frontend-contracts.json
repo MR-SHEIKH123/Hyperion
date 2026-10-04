@@ -266,6 +266,54 @@
       "method": "GET",
       "expectedPath": "/api/attention",
       "status": "implemented"
+    },
+    {
+      "id": "terminal.sessions",
+      "method": "GET",
+      "expectedPath": "/api/terminal/sessions",
+      "status": "implemented",
+      "reason": "Called by `api/terminal.ts` (`getTerminalSessions`) and rendered by `tools/code/Processes.tsx`. No close function: `POST /sessions/:sessionId/close` authenticates with the opener's token, which this list never carries, so the panel shows state and says why it offers no control."
+    },
+    {
+      "id": "canvas.files",
+      "method": "GET",
+      "expectedPath": "/api/code/tasks/:taskId/files",
+      "status": "implemented",
+      "reason": "Called by `api/canvas.ts` (`getTaskFiles`). No screen renders a tree yet \u2014 the Code surface's inspector shows the changed-file list, and the tree and file reads are the 2.4 frontend pass."
+    },
+    {
+      "id": "canvas.file",
+      "method": "GET",
+      "expectedPath": "/api/code/tasks/:taskId/file",
+      "status": "implemented",
+      "reason": "Called by `api/canvas.ts` (`getTaskFile`). No screen shows file contents yet: the inspector lists changed paths rather than rendering them, which is the 2.4 frontend pass."
+    },
+    {
+      "id": "canvas.diff",
+      "method": "GET",
+      "expectedPath": "/api/code/tasks/:taskId/diff",
+      "status": "implemented"
+    },
+    {
+      "id": "canvas.preview-status",
+      "method": "GET",
+      "expectedPath": "/api/code/tasks/:taskId/preview",
+      "status": "implemented",
+      "reason": "Called by `api/canvas.ts` (`getPreviewStatus`). The read that makes the row a status rather than a rotation: `PreviewRow` renders from this and only mints on request."
+    },
+    {
+      "id": "canvas.preview",
+      "method": "POST",
+      "expectedPath": "/api/code/tasks/:taskId/preview",
+      "status": "implemented",
+      "reason": "Called by `api/canvas.ts` (`mintPreview`), and by `getPreviewStatus` for the read. Rendered by `tools/code/PreviewRow.tsx`: the row shows the live origin, opens it, and offers start and stop. `capability_disabled` answers while the listener is off, and the row says so rather than showing an idle task."
+    },
+    {
+      "id": "canvas.preview-revoke",
+      "method": "DELETE",
+      "expectedPath": "/api/code/tasks/:taskId/preview",
+      "status": "implemented",
+      "reason": "Called by `api/canvas.ts` (`revokePreview`). The Stop control is on `tools/code/PreviewRow.tsx`; the `{revoked:false}` answer for a session that was already gone stays meaningful because polling does not mint."
     }
   ]
 }

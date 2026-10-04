@@ -320,7 +320,22 @@ export const env = {
    */
   codeKeepWorktrees: bool('HYPERION_CODE_KEEP_WORKTREES', false),
 
-
+  /**
+   * Port for the sandboxed preview listener — a **second** HTTP server, not a
+   * route on the API.
+   *
+   * The separate port *is* the isolation. Content served from the API's own
+   * origin is same-origin with the API, so a page an agent wrote could read
+   * `/api/settings` and every stored provider key with a plain `fetch`; no CSP
+   * recovers that, because CSP constrains what a document may do, not what its
+   * origin may read. See `src/http/previewServer.ts`.
+   *
+   * `0` disables the feature entirely — the listener is not started and
+   * `POST /api/code/tasks/:taskId/preview` answers `capability_disabled`. A
+   * port that is already in use at boot degrades the same way rather than
+   * failing the boot: previews are a convenience, the API is not.
+   */
+  previewPort: int('HYPERION_PREVIEW_PORT', 4320),
 
   /**
    * mem0 runs fully self-hosted, which means it needs its own small LLM and an

@@ -6282,3 +6282,201 @@ scopes, which Hyperion already pins in tests but does not pin at runtime).
 `test/gitexec.test.ts` is the canary: it arms a repository with all five levers,
 proves a plain git command fires them, and then asserts that Hyperion's own
 provisioning, export, release and orphan scan do not.
+
+---
+
+## One path seam, and a second origin for previews (1.40, 2026-10-03)
+
+The Canvas reads a Code task's workspace, and the preview listener lets a browser
+look at it. Two decisions carry the whole feature, and both are about not having
+two answers to one question.
+
+### One path seam
+
+`services/code/canvas.ts` implements **no path validation of its own**. It builds
+the same services object `orchestrator/agentContext.ts` builds for the agent —
+`resolvePath` bound to `containAgentCwd(taskId)`, no `emit` because nothing
+writes — and every path goes through `services/code/files.ts`. The per-task
+subtree boundary, the symlink refusal and the `.git` refusal are therefore one
+implementation used by the writer, the agent's reader, the Canvas reader and the
+preview listener.
+
+`locate` stays private. The one exported reader seam is `resolveCodePath`, which
+returns `{ absolute, relative }` and **not** `artifactKey`: the artifact key
+belongs to the writing path, and handing it to a reader invites a second writer
+that bypasses `writeCodeFile`, its expected-hash check and its pre-image row.
+Canvas add no second seam; that is how two checks drift until one of them is the
+way in.
+
+### The `.git` refusal runs twice
+
+The refusal added with the git-hardening work ran on the *resolved* path, after
+the symlink pre-check — and in worktree mode `.git` is a **file** holding the
+gitdir pointer. `assertNoSymlinkedTraversal` therefore `lstat`ed `<root>/.git`
+(a file, not a symlink, so it passed) and then `<root>/.git/hooks`, which raised
+raw `ENOTDIR` and escaped as a **500 naming an absolute filesystem path** for a
+request that should have been the ordinary 403. Nothing was readable either way;
+the defect was in what the caller was told.
+
+So `locate` refuses a `.git` segment twice through one shared `refuseGit(shown,
+segment)`: first on the **spelling**, before any syscall (which is also before
+the resolver canonicalises symlinks away), then on the **resolved** path. The
+predicate is exported as `isGitPathSegment`, and the Canvas listing uses that
+same export to omit `.git` — a tree that lists an entry the viewer refuses is a
+tree offering a refusal. `.gitignore`, `.gitattributes` and `.github/` stay
+ordinary files, including after trailing-dot and case normalisation.
+
+### The preview listener is a second origin, on purpose
+
+A preview served from an API route would be **same-origin with the API**: a page
+an agent wrote could `fetch('/api/settings')`, read every stored provider key and
+post anything it liked, and no CSP recovers that — CSP constrains what a document
+may *do*, not what its origin may *read*. So the preview is a second HTTP server
+on `HYPERION_PREVIEW_PORT` (default 4320, `0` disables, a busy port degrades the
+feature rather than failing boot), and the separate port **is** the isolation.
+
+- 256-bit token, constant-time comparison, one session per task, 30-minute TTL.
+  Re-minting replaces and therefore revokes; `DELETE .../preview` revokes; and a
+  token whose task no longer holds a worktree stops resolving. That last check is
+  load-bearing rather than tidy: `containAgentCwd` falls back to the *projects
+  scope* for a task the registry does not know, so a token outliving its worktree
+  would be served from a wider boundary than the task ever had.
+- The **same Host guard** as the API, against the same `HYPERION_ALLOWED_HOSTS`.
+  A proxied deployment (Tailscale included) must list the preview hostname there
+  as well; the preview port must **not** be added to `HYPERION_APP_ORIGINS`.
+- The CSP's explicit origin comes from the **validated `Host`**, with
+  `x-forwarded-proto`/`x-forwarded-host` honoured so a TLS-terminating proxy names
+  the origin the browser actually has. The forwarded name is only used after the
+  same allow-list check the `Host` header passed, so a forwarded header can name a
+  host this listener already answers to and never one it would have refused.
+- CSP as a **header**, so it binds in a tab as well as inside an iframe, with
+  `sandbox allow-scripts …` and **no `allow-same-origin`**. `sandbox` gives the
+  document an opaque origin, where `'self'` is not guaranteed to match the
+  document's own URL, so the header names both `'self'` and the explicit origin
+  built from the validated `Host`. `test/fixtures/preview-conformance/` is the
+  browser-verified fixture that measures which one did the work.
+- `access-control-allow-origin: *` is correct **on this listener only**. The API
+  still emits no CORS header, and no rule here widens `HYPERION_APP_ORIGINS` to
+  "any loopback port".
+- Refusals are plain text and name no filesystem path. The seam's own messages do
+  name absolute paths (deliberately, for the API's JSON errors); the listener maps
+  them to a sentence about the request and keeps the detail in the log.
+- `installShutdownHandlers` takes the preview server, closes it **first** and does
+  not wait on it: it holds no database handle and no child process, so nothing is
+  lost, and a browser parked on a preview must not hold shutdown open.
+
+### The Canvas diff is the exporter
+
+`canvasDiff` delegates to `exportCodeTask` — no new git call site, no re-derived
+flags, and the `direct`-mode task keeps the exporter's reasoned 400 rather than an
+empty patch that reads as "this task changed nothing". `test/gitexec.test.ts`
+gains two cases: a Canvas diff of the hostile repository runs no configured
+command, and a Canvas read refuses `.git` by spelling when `.git` is a file.
+
+## The session panel's first slice, and why the patch is split in the browser (2026-10-04)
+
+Arena's right-hand session panel — totals, a changed-file list with per-file counts,
+a live preview row, a process count — was worth taking, and the frame makes it cheap:
+`AgentWorkspace` already owns an `inspector` region and a `versionTimeline` region,
+per-tool widths and folded state are persisted, and `CodeTool` was filling `inspector`
+with a placeholder. So the first slice fills it, and the pieces it needed were two
+files rather than a subsystem.
+
+- **The patch is split client-side, deliberately.** `GET /api/code/tasks/:taskId/diff`
+  answers `{taskId, baseCommit, patch}` and that shape is ratified in `docs/API.md`
+  §27.3: the backend runs `git diff` once and hands over the text. Adding a per-file
+  array to the wire would put a parser in the backend and widen a frozen contract for
+  one screen's benefit, so `frontend/src/tools/code/patch.ts` parses the text and
+  `splitPatch` stays a pure function over a string — which is what lets it be tested
+  against fixed patches instead of against a repository that must be set up first.
+- **It is a patch parser, not a hunk model.** Files, per-file counts, and the five
+  things that would otherwise read as `0 +0 −0`: new, deleted, renamed, binary, and a
+  mode-only change. No hunks, no line ranges, no word-level diff. A half-built hunk
+  model in the browser would disagree with `git` in ways nobody could check.
+- **Hunk state is tracked, and that is not incidental.** Inside a `@@` hunk the
+  `--- `/`+++ ` prefixes are *content*: a deleted line whose text begins with two dashes
+  and a space would otherwise be read as a file header and the path would change under
+  the reader.
+- **Every empty and missing case is named, because they are different facts.** A
+  direct-mode task has no base commit and gets the exporter's reasoned 400 — rendered as
+  a refusal, never as "no changes". A task that really has no changes says so. A failed
+  read renders as a failure. The list is scoped to the **base commit**, never to a step:
+  the backend cannot answer "what changed in step k", so the header names the commit.
+- **The wire schemas are checked against the real backend, not trusted.**
+  `scripts/check-wire.mjs` gained a fixture that builds a real git repository inside the
+  projects scope, provisions a worktree, changes a file after the base commit and starts
+  the preview listener — so the tree, the file read, the diff and the preview's mint and
+  revoke are all parsed by the frontend's own schemas from real responses (64/64). A
+  400 would have proved nothing: the failure this check exists to catch is a schema
+  rejecting a real body.
+- **The ledger follows one standard: `implemented` means a client calls the route.**
+  All five Canvas rows moved from `missing` to `implemented` on the same rule that made
+  `providers.registry` implemented while no screen used it, and the five routes moved
+  from `deferred-frontend` to `frontend` in the route snapshot. What no screen does yet
+  is stated in each row's reason and in `frontend/contracts/gaps.md`, not hidden by the
+  status.
+
+### The preview row, and why it reads (2026-10-04)
+
+- **A status row cannot mint.** `POST /api/code/tasks/:taskId/preview` replaces the session
+  — minting is how a re-mint revokes the old URL — so a row that minted in order to display
+  would revoke the link the user already has open, every time it rendered. The panel needed
+  a read, and `GET /api/code/tasks/:taskId/preview` is it: it never mints, never extends a
+  TTL, and returns the live session or `null`.
+- **The read carries the same two refusals as the mint.** An expired session, or a task whose
+  worktree is gone, is **deleted** when the read notices it, and the answer is `null` — a
+  released worktree takes its preview with it rather than leaving a stale row behind. An
+  unknown task is the route's `not_found`, unchanged from the mint.
+- **A disabled listener is not "nothing is running".** With `HYPERION_PREVIEW_PORT` unset the
+  read answers `403 capability_disabled` and `details.setting` names the setting, which the
+  row prints. Rendering an off feature as an idle one is the same mistake as rendering a
+  failed read as an empty list — and the row offers no Start button it knows the server will
+  refuse.
+- **The URL is the answer, not a decoration.** A live row shows the origin as text and as an
+  `Open` link, because "where is it being served" is the question the row exists to answer.
+  Expiry within five minutes is stated in words; a link that silently stopped working would
+  be a worse lie than one that says when.
+- **The preview port still never joins `HYPERION_APP_ORIGINS`.** The row links to the preview
+  listener from the API's origin; nothing here widens the API's own allow-list.
+
+### Processes, and the run's steps beside its versions (2026-10-04)
+
+- **`Processes` reads `GET /api/terminal/sessions` and closes nothing, because the list
+  cannot close anything.** `POST /sessions/:sessionId/close` authenticates with the
+  session's token, which is minted with the session and returned *exactly once* — to the
+  client that opened it. A list is readable by any client in the app; a close control over
+  one would end another client's session. So the panel shows state and says why it has no
+  button, rather than rendering a disabled one that implies a permission.
+- **`count` is not the number of processes.** The store keeps the last 50 ended sessions
+  for the audit trail and the list returns them, so the row counts `endedAt === null` and
+  renders nothing for history. A panel headed "Processes 1" over a finished session would
+  be wrong in exactly the way this panel exists to avoid.
+- **The rail's two lists are side by side, not joined.** `VersionTimeline` (the version
+  stack for the selected file) and the run's step list sit in the same region with a
+  sentence between them and the reader: an `artifact_versions` row records the file it
+  replaced, not the step that wrote it, so no view here may read as "content as of step k".
+  The steps come from `GET /api/{tool}/tasks/:taskId/recovery` — the only read that carries
+  them — and that read is gated on a file being selected, because the recovery route runs a
+  worktree check for every caller. It shares its query key with the recovery panel, so a
+  task that is both interrupted and selected costs one check, not two.
+- **A bounded list states its bound.** The step list is a tail: `omitted` is rendered
+  ("Showing the last 20 of 123 steps…"), and `summary.complete: false` is carried through
+  as "these are floors" rather than smoothed into a total that overstates what was counted.
+
+### Three duplicated helpers, folded into one each (2026-10-04)
+
+- **`parseToolArguments`** — `services/agent/toolArguments.ts`. It had **three**
+  copies (Code, Cowork, Design), all carrying the same two `bad_request` sentences
+  and the same rule: `JSON.parse`, then **an object** — an array parses and is still
+  refused. The sentences are part of an API answer, which is why they are pinned by
+  a test that runs a real agent rather than by a helper-level unit test.
+- **`assertNotBusy`** — `orchestrator/lock.ts`. Byte-identical in the chat and agent
+  routers, and it takes the mode as a parameter the way `acquire` does, so the lock
+  module gains no dependency on the settings store. `test/busyguard.test.ts` asserts
+  through both mounted routes that `reject` answers a JSON 409 *before* a stream
+  opens and that `queue` opens the stream and waits — the response type is the whole
+  reason the pre-check exists, so it is asserted as hard as the status.
+- **`isMissingExecutable`** — `util/exec.ts`. One predicate over two result types,
+  typed structurally so neither service has to own a shared result shape. Its
+  "the binary is missing" arm is not unit-pinned (it needs a genuinely absent
+  binary); its "is a repository" arm is covered through the worktree probe.

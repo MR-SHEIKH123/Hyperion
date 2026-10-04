@@ -3,7 +3,8 @@
 Generated from the implementation, not from the spec. Every endpoint, field name
 and status code below was read off the routers in `src/http/` and the service
 types they serialize. Where the implementation diverges from the "Suggested
-endpoint surface" in `docs/SPEC.md`, that is called out in the last section.
+endpoint surface" in `docs/SPEC.md`, that is called out in §26; §27 is the most
+recent addition and sits after it.
 
 - Base URL: `http://127.0.0.1:4317` by default (`HYPERION_BIND`, `HYPERION_PORT`).
 - **There is no authentication, no CORS, no rate limiting and no request logging.**
@@ -1540,6 +1541,10 @@ modules registered at boot — `cowork`, `code`, `design` and the terminal, via
 | POST | `/api/code/agents/import` | multipart `files`, per-file results *(new in 1.28)* |
 | GET | `/api/agents/status` | `{ agents, terminal, registered: { code, cowork, design } }` |
 
+Five more routes share the `/api/code` mount but not this router: the Code Canvas
+— a task's file tree, one file, its diff, and the preview mint/revoke pair — is
+mounted ahead of these by `src/http/canvas.ts` and documented in **§27**.
+
 `run-task` body (`TaskInput`): `tool`, `chatId`, `modelId`, `prompt`, `mode?`,
 `cwd?`, `attachments?`, `options?`. Input parsing, agent lookup and the busy check
 all happen **before** the SSE headers, so a 501 or 400 is a normal JSON error.
@@ -2266,9 +2271,12 @@ now" half of the claim — and absolutely after **8 hours**; `endedReason` says 
 the containment boundary (tightened to the session's task when it names one), the
 256 KiB per-stream output bound, and the audit line all apply to an exempted command
 exactly as to any other. There is **no rate limiter in this build**, so the exemption
-neither adds nor removes one. The browser terminal these routes exist for is not built
-yet — no frontend module calls them — which is why they are `deferred-frontend` in the
-route snapshot and recorded in `frontend/contracts/gaps.md`.
+neither adds nor removes one. The browser terminal these routes exist for is still not
+built: no client opens or closes a session, and the two routes that do so are
+`deferred-frontend` in the route snapshot. `GET /api/terminal/sessions` does have a
+client since the session panel's Processes row — it reads the list (never a token) and
+closes nothing, because closing authenticates with the token the opener holds. The
+distinction is recorded in `frontend/contracts/gaps.md`.
 
 ### 12.7 The Design agent  *(new — the Design slice)*
 
@@ -2305,6 +2313,14 @@ rather than killing the run — iteration is the core loop here.
 | Method | Path | Response |
 | --- | --- | --- |
 | GET | `/api/design/preview/:versionId` | the draft bytes — `text/html`, or `image/svg+xml` for `.svg` keys |
+
+This is Design's preview and it is **not** the Code Canvas preview (§27.6): this
+one is a route on the API serving one artifact's bytes, with scripts off by
+policy (`default-src 'none'`). The Canvas preview serves a whole task workspace
+from a second HTTP server on its own port, with scripts on and the origin as the
+isolation, because a workspace is a page that has to run. Different threat, so
+different mechanism — do not carry a header or an assumption from one to the
+other.
 
 Drafts are model output and therefore untrusted markup. The response carries
 `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; img-src
@@ -2951,6 +2967,12 @@ ones by file reference. A file-backed version is read from disk through the
 Unknown id → `404` `not_found`.
 
 ### GET /api/code/tasks/:taskId/export
+
+The same patch is available as JSON at `GET /api/code/tasks/:taskId/diff`
+(§27), which delegates to this exporter rather than running git itself.
+
+The same patch is available as JSON at `GET /api/code/tasks/:taskId/diff`
+(§27), which delegates to this exporter rather than running git itself.
 
 The task's changes as a unified patch: `text/x-patch; charset=utf-8`,
 `<taskId>.patch`. The diff is taken against the commit the worktree started
@@ -3729,3 +3751,241 @@ deltas:
 12. **No `/api/plugins` router.** Plugins are settings keys
     (`plugins.<name>.enabled`); Memory is the only one with a backend today.
 13. **No authentication endpoint of any kind**, deliberately.
+
+---
+
+## 27. The Code Canvas — `/api/code/tasks/:taskId/{files,file,diff,preview}`  *(new in 1.40)*
+
+A read-only view of a Code task's workspace, plus a sandboxed browser preview of
+it. A Code task works in a directory nobody can see: the lane listing says a task
+is *running* and the export route hands back a patch, but neither answers "what
+files are there" or "what does this one say".
+
+Mounted at `/api/code` by its own router (`src/http/canvas.ts`), ahead of the
+agent routes.
+
+| Method | Path | Response |
+| --- | --- | --- |
+| GET | `/api/code/tasks/:taskId/files` | `CanvasTree` |
+| GET | `/api/code/tasks/:taskId/file` | `CanvasFile` |
+| GET | `/api/code/tasks/:taskId/diff` | `CanvasDiff` |
+| POST | `/api/code/tasks/:taskId/preview` | `201` `MintedPreview` |
+| DELETE | `/api/code/tasks/:taskId/preview` | `{ revoked: boolean }` |
+
+```ts
+interface CanvasEntry { path: string; name: string; type: 'file'|'directory'; bytes: number|null; skipped?: boolean }
+interface CanvasTree  { taskId: string; mode: 'worktree'|'direct'; root: string;
+                        entries: CanvasEntry[]; truncated: boolean; skipped: string[] }
+interface CanvasFile  { path: string; content: string; sha256: string; bytes: number }
+interface CanvasDiff  { taskId: string; baseCommit: string; patch: string }
+interface MintedPreview { taskId: string; token: string; url: string; expiresAt: number }
+```
+
+An unknown task id is **404 `not_found`** on every one of the five, with the same
+wording `GET .../export` uses (a task with no registered workspace is not one
+this process can show anything for).
+
+### 27.1 `GET /api/code/tasks/:taskId/files`
+
+`?path=` narrows the listing to a subtree and defaults to `.` — the workspace
+itself. Every `path` in the response is **workspace-relative** and POSIX, so an
+entry can be handed straight back to the file route. `root` is the same spelling
+for the listing root (`.` for the workspace). `mode` is the task's worktree mode.
+
+The walk is breadth-first and bounded, because a workspace is not a curated set:
+
+| bound | value | what happens at it |
+| --- | --- | --- |
+| `MAX_ENTRIES` | 2000 | the listing stops; `truncated` is `true` |
+| `MAX_DEPTH` | 12 | directories at that depth are listed and not descended; `truncated` is `true` |
+| `SKIPPED_DIRS` | `node_modules`, `.next`, `dist`, `build`, `.venv`, `__pycache__` | not listed and not descended; the name is in `skipped` |
+
+`truncated: true` means the tree is incomplete, and `skipped` lists the directory
+names left out — a partial tree never reads as the whole truth. Symlinks are
+neither followed nor listed. `.git` is omitted entirely (see 27.5).
+
+`?path=` naming a file is **400 `bad_request`** (`details.path`); naming
+something that does not exist is **404 `not_found`**.
+
+### 27.2 `GET /api/code/tasks/:taskId/file`
+
+`?path=` is **required** and must name a file; a missing one is a 400 naming the
+field. `content` is the file decoded as UTF-8, `sha256` is the hash of the raw
+bytes and `bytes` is the byte length.
+
+Refusals, all with the path in `details.path`:
+
+- **403 `scope_violation`** — the path leaves the task's own subtree, crosses a
+  symlink, or reaches `.git` (27.5).
+- **400 `bad_request`** — `bytes > 2 MiB` (`MAX_VIEW_BYTES`), with `details.bytes`
+  and `details.limitBytes` so the UI can say "4.1 MB, too large to show"; the size
+  is checked with a `stat` *before* the read. Also: the path names a directory,
+  or the bytes are not valid UTF-8 text.
+- **404 `not_found`** — no such file.
+
+### 27.3 `GET /api/code/tasks/:taskId/diff`
+
+`{ taskId, baseCommit, patch }`, where `patch` is the same unified diff
+`GET /api/code/tasks/:taskId/export` (§19) returns as a download. It is produced
+by that exporter — one git call site, with the hardening in
+`services/code/gitHardening.ts`, and one place that decides what "no git
+isolation" means.
+
+That last part is why a `direct`-mode task is the exporter's own **400
+`bad_request`** with `details.mode` and `details.reason`, and not an empty patch:
+an empty patch reads as "this task changed nothing", which is a different claim
+from "this task had no base commit to diff against". A caller renders that as an
+honest empty state — "no base to compare against" — not as a blank panel.
+
+Only the diff needs a base commit. **`/files`, `/file` and the preview all work
+in `direct` mode**, because a task that shares the project directory still has a
+workspace; `mode` in the listing says which of the two it is.
+
+### 27.4 `POST`, `GET` and `DELETE /api/code/tasks/:taskId/preview`
+
+`POST` mints a preview session and returns `201`:
+
+```json
+{ "taskId": "my-task",
+  "token": "8f0c…64 hex characters…",
+  "url": "http://127.0.0.1:4320/p/8f0c…/",
+  "expiresAt": 1764571200000 }
+```
+
+- **One session per task.** Minting again replaces the previous token, and the old
+  URL stops working immediately — `GET` below reports the *current* session only,
+  so a replaced token is not recoverable.
+- **TTL 30 minutes** (`DEFAULT_TTL_MS`). Expired and revoked tokens answer exactly
+  like unknown ones.
+- **Revoked when the worktree is released.** Releasing a task's worktree makes its
+  token stop resolving, and so does a task the registry no longer knows. This is
+  not tidiness: `containAgentCwd` falls back to the *projects scope* for a task it
+  does not know, so a token outliving its worktree would be served from a wider
+  boundary than the task ever had.
+- `DELETE` returns `{ "revoked": true }` when there was a session and
+  `{ "revoked": false }` when there was not; an unknown *task* is still a 404.
+- While nothing is listening — `HYPERION_PREVIEW_PORT=0`, or the port already in
+  use at boot — `POST` is **403 `capability_disabled`** with
+  `details.setting = "HYPERION_PREVIEW_PORT"`. No new error code was added for
+  this: `capability_disabled` is already "the request is well-formed and only a
+  setting changes the answer".
+
+**`GET .../preview` reads what is live, without minting one:**
+
+```json
+{ "taskId": "my-task", "preview": null }
+```
+
+`preview` is either `null` or the same `{taskId, token, url, expiresAt}` a mint
+returned.
+
+- **Why the read exists.** `POST` *replaces* the session — that is how revocation
+  works — so a status row that minted in order to display would revoke the URL a
+  user already has open, on every render and every poll. A read changes nothing
+  and can be asked repeatedly.
+- **Why it carries the URL.** The row's job is "it is running here", and the origin
+  is what the reader wants. A caller who can read this route can already call
+  `POST` and be handed the same URL, so withholding it here would buy nothing and
+  would push clients into exactly the rotation this route exists to avoid.
+- **Gated like mint.** With the listener off it answers `403 capability_disabled`
+  with `details.setting = 'HYPERION_PREVIEW_PORT'`, not `{ "preview": null }`:
+  "previews are disabled here" and "nothing is running right now" are different
+  facts, and a panel has to say which one it is showing.
+- **The same two refusals as a token.** An expired session is not a live one — a
+  row must not offer a link the listener will refuse — and a session whose task no
+  longer holds a worktree stops resolving. Either way the stale entry is dropped
+  rather than left to be found again.
+- **An unknown or released task is still `404 not_found`**, like every other route
+  on this router; only the *session* has a `null`, because "no preview is running"
+  is a fact about the task rather than a missing resource.
+
+### 27.5 The one path seam
+
+Canvas implements no path validation of its own. `services/code/canvas.ts`
+builds the same services object `orchestrator/agentContext.ts` builds for the
+agent — `resolvePath` bound to `containAgentCwd(taskId)` — and every path goes
+through `services/code/files.ts`, which is where the per-task subtree boundary,
+the symlink refusal and the `.git` refusal live.
+
+The `.git` refusal runs **twice**: once on the spelling, before any syscall, and
+once on the resolved path. The spelling check exists because in worktree mode
+`.git` is a *file* holding the gitdir pointer: `.git/hooks/post-checkout` made
+the symlink pre-check `lstat` through a non-directory, and the raw `ENOTDIR`
+escaped as a **500 naming an absolute filesystem path** instead of the ordinary
+403. Nothing was readable either way; the defect was in what the caller was told.
+`.gitignore`, `.gitattributes` and `.github/` remain ordinary files.
+
+### 27.6 The preview listener — a second HTTP server
+
+This is the Code Canvas preview. **Design's sandboxed preview (§23) is a
+different mechanism**: a route on the API that serves one artifact's bytes with
+scripts off, meant to be framed with a `sandbox` attribute. The two are separate
+on purpose — a workspace preview is a page that has to *run*, so scripts are on
+and the isolation is the origin rather than the header.
+
+The preview URL is served by a **second HTTP server** on its own port
+(`HYPERION_PREVIEW_PORT`, default 4320, `0` disables), never by a route on this
+API. Content served from the API's origin is same-origin with the API, so a page
+an agent wrote could read `/api/settings`, `/api/backup` and every stored provider
+key with a plain `fetch` — and no CSP recovers that, because CSP constrains what a
+document may do, not what its origin may read. The separate port *is* the
+isolation.
+
+What it is not: **not a dev server.** It serves the files on disk when the browser
+asks for them — no build, no hot reload, no websocket, no directory listing.
+
+Request handling, in order:
+
+1. **The same `Host` guard as the API** (`networkGuard.ts`), against the same
+   `HYPERION_ALLOWED_HOSTS` — a proxied deployment must list the *preview*
+   hostname there too. A refusal is plain text and names no filesystem path.
+2. `GET` and `HEAD` only; anything else is `405` with `Allow: GET, HEAD`.
+3. `/p/<token>/<path>`; the token is 256 random bits (32 bytes, hex) minted and
+   compared by `security/tokens.ts` — the same module the terminal sessions use,
+   so the app has one constant-time comparison rather than two. Missing, unknown,
+   expired, revoked and released-task tokens all answer the same `404`, which
+   says nothing about which it was.
+4. The path is resolved through the same seam (27.5). `mimetype` comes from an
+   allow-list of web types; anything else is `415`. A directory, or the token
+   root, serves `index.html`. Above 2 MiB is `413`.
+5. Every response — refusals included — carries
+   `x-content-type-options: nosniff`, `referrer-policy: no-referrer`,
+   `cache-control: no-store`, `cross-origin-resource-policy: cross-origin` and
+   `access-control-allow-origin: *`. That last one is **correct on this listener
+   only**; the API emits no CORS header and must not start.
+
+The CSP is a **header**, so it binds in a tab as well as inside an iframe:
+
+```
+default-src 'none'; script-src 'self' http://<host>:<port> 'unsafe-inline'; … ;
+frame-ancestors http://127.0.0.1:4318 http://localhost:4318;
+sandbox allow-scripts allow-forms allow-modals allow-popups allow-downloads
+```
+
+- `frame-ancestors` comes from `HYPERION_APP_ORIGINS`. **The preview port must
+  not be added to that allow-list** — an origin allowed to make state-changing
+  requests to the API is exactly what a preview origin must never be.
+- `sandbox …` without `allow-same-origin` gives the document an **opaque origin**,
+  where `'self'` is not guaranteed to match the document's own URL. The header
+  therefore names both `'self'` and the explicit origin built from the validated
+  `Host`, so a failure of either is not a failure of the page.
+  `test/fixtures/preview-conformance/` (run with
+  `node scripts/preview-conformance.mjs`) is the browser-verified fixture that
+  measures which one did the work; the outcome is recorded in
+  `.hyperion/coordination/decisions.md`.
+- **Behind a TLS-terminating proxy, the explicit origin follows the proxy
+  headers.** This listener speaks plain HTTP, so the scheme cannot be read off
+  the connection: a hardcoded `http://` would name an origin the browser never
+  used the moment Tailscale Serve, nginx or another gateway terminates TLS in
+  front of it — and since the explicit origin exists to be the source that
+  matches when `'self'` does not, a wrong scheme would leave the page with
+  neither. `x-forwarded-proto` supplies the scheme and `x-forwarded-host` the
+  public name when the proxy rewrites `Host`; the forwarded name is only used
+  when it passes the same allow-list check the `Host` header did, and a scheme
+  that is not `http`/`https` is ignored rather than echoed.
+- `script-src` keeps `'unsafe-inline'` deliberately: the single-file page an agent
+  produces has its script inline, and a preview that silently does not run is not
+  a preview. The isolation is the opaque origin, not the script-src.
+- The listener is closed first, and not awaited, during shutdown: it holds no
+  database handle and no child process, and a browser parked on a preview must not
+  hold shutdown open.

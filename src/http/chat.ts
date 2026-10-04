@@ -19,7 +19,7 @@ import { concurrencyMode } from '../db/settings.ts';
 import { createTemporaryChat, isTemporaryChat } from '../db/temporaryChats.ts';
 
 import { sendMessage, switchAndResume } from '../orchestrator/chat.ts';
-import { currentJob, isBusy, withLock } from '../orchestrator/lock.ts';
+import { assertNotBusy, withLock } from '../orchestrator/lock.ts';
 import { latestRunForChat, listPausedRuns } from '../orchestrator/runState.ts';
 import { openStream } from '../orchestrator/sse.ts';
 import { exportChat } from '../services/export/index.ts';
@@ -122,20 +122,6 @@ function parseStreamInput(payload: Record<string, unknown>): StreamInput {
   };
 }
 
-/**
- * `reject` mode should fail fast with a JSON 409 before the stream opens, so
- * the client gets a plain HTTP error instead of an SSE error frame. In
- * `queue` mode the request waits its turn inside the lock instead.
- */
-function assertNotBusy(): void {
-  if (concurrencyMode() !== 'reject' || !isBusy()) return;
-  const job = currentJob();
-  throw new AppError('busy', 'Another job is already running', {
-    details: job ? { jobId: job.id } : undefined,
-    retryable: true,
-  });
-}
-
 chatRouter.get(
   '/',
   wrap(async (req, res) => {
@@ -215,7 +201,7 @@ chatRouter.post('/stream', (req, res, next) => {
   let input: StreamInput;
   try {
     input = parseStreamInput(body(req));
-    assertNotBusy();
+    assertNotBusy(concurrencyMode());
   } catch (error) {
     next(error);
     return;
@@ -252,7 +238,7 @@ chatRouter.post('/resume', (req, res, next) => {
     modelId = asOptionalString(payload.modelId, 'modelId');
     providerId = asOptionalString(payload.providerId, 'providerId');
     tool = asTool(payload.tool);
-    assertNotBusy();
+    assertNotBusy(concurrencyMode());
   } catch (error) {
     next(error);
     return;

@@ -42,11 +42,10 @@ import {
   registerCancellable,
 } from '../orchestrator/cancel.ts';
 import {
+  assertNotBusy,
   codeLaneBusyError,
   codeLaneHasCapacity,
   codeLaneStatus,
-  currentJob,
-  isBusy,
   withCodeLane,
   withLock,
 } from '../orchestrator/lock.ts';
@@ -123,15 +122,6 @@ function clip(text: string, maximum: number): string {
   return text.length <= maximum ? text : `${text.slice(0, maximum)}…`;
 }
 const AGENT_MODES: readonly AgentMode[] = ['ask', 'plan', 'act'];
-
-function assertNotBusy(): void {
-  if (concurrencyMode() !== 'reject' || !isBusy()) return;
-  const job = currentJob();
-  throw new AppError('busy', 'Another job is already running', {
-    details: job ? { jobId: job.id } : undefined,
-    retryable: true,
-  });
-}
 
 /**
  * The Code equivalent of `assertNotBusy`, checking the lane rather than the
@@ -297,7 +287,7 @@ function runTaskRoute(tool: AgentTool) {
       input = parseTaskInput(tool, body(req));
       agent = requireAgent(tool);
       taskId = asOptionalString(body(req).taskId, 'taskId') ?? input.chatId;
-      assertNotBusy();
+      assertNotBusy(concurrencyMode());
     } catch (error) {
       next(error);
       return;

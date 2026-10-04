@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Preview conformance</title>
+    <style>
+      body { font: 14px/1.5 system-ui, sans-serif; margin: 2rem; max-width: 70rem; color: #111; }
+      h1 { font-size: 1.25rem; }
+      table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
+      th, td { border: 1px solid #ccc; padding: 0.4rem 0.6rem; text-align: left; vertical-align: top; }
+      th { background: #f4f4f4; }
+      .ok { color: #0a0; font-weight: 600; }
+      .bad { color: #c00; font-weight: 600; }
+      code { background: #f4f4f4; padding: 0 0.2rem; }
+      #frame-note { color: #555; }
+    </style>
+  </head>
+  <body>
+    <h1>Hyperion preview conformance</h1>
+    <p>
+      Served by the sandboxed preview listener
+      (<code>src/http/previewServer.ts</code>). Each row states what the header
+      set is designed to do and reports what this browser actually did. Open the
+      devtools console for any probe that reports an error.
+    </p>
+    <p id="frame-note">Framed: <span id="framed">no</span> — the app frames this page; a tab is the fallback.</p>
+
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Probe</th>
+          <th>Expected</th>
+          <th>Observed</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>1</td>
+          <td>External classic script <code>external.js</code> sets <code>window.__conformance.external</code></td>
+          <td>runs</td>
+          <td class="observed" id="observed-external">pending…</td>
+        </tr>
+        <tr>
+          <td>2</td>
+          <td>Module script <code>module.mjs</code> sets <code>window.__conformance.module</code></td>
+          <td>runs</td>
+          <td class="observed" id="observed-module">pending…</td>
+        </tr>
+        <tr>
+          <td>3</td>
+          <td><code>fetch('./data.json')</code></td>
+          <td>200, JSON parsed</td>
+          <td class="observed" id="observed-fetch">pending…</td>
+        </tr>
+        <tr>
+          <td>4</td>
+          <td><code>&lt;img src="./pixel.png"&gt;</code></td>
+          <td>loads (1×1)</td>
+          <td class="observed" id="observed-image">pending…</td>
+        </tr>
+        <tr>
+          <td>5</td>
+          <td>Inline script (this one)</td>
+          <td>runs</td>
+          <td class="observed" id="observed-inline">running</td>
+        </tr>
+        <tr>
+          <td>6</td>
+          <td><code>localStorage.getItem('probe')</code></td>
+          <td>blocked — <code>sandbox</code> without <code>allow-same-origin</code> is an opaque origin</td>
+          <td class="observed" id="observed-storage">pending…</td>
+        </tr>
+        <tr>
+          <td>7</td>
+          <td><code>window.parent.postMessage(payload, '*')</code></td>
+          <td>posted (the parent receives it when framed; posting to itself in a tab)</td>
+          <td class="observed" id="observed-postmessage">pending…</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <img src="./pixel.png" alt="" width="1" height="1" id="probe-image" />
+
+    <!-- 1. An external classic script. -->
+    <script src="./external.js"></script>
+    <!-- 2. A module script: fetched, parsed and evaluated as a module. -->
+    <script type="module" src="./module.mjs"></script>
+
+    <!-- 5. An inline script, plus the harness that reports what the others did. -->
+    <script>
+      window.__conformance = window.__conformance || { inline: 'ran' };
+      if (window.parent !== window) document.getElementById('framed').textContent = 'yes';
+
+      const report = (id, text, ok) => {
+        const cell = document.getElementById('observed-' + id);
+        cell.textContent = text;
+        cell.className = 'observed ' + (ok ? 'ok' : 'bad');
+      };
+
+      // 1. The classic script ran before this one.
+      const external = window.__conformance.external === 'ran';
+      report('external', external ? 'ran' : 'did not run', external);
+
+      // 3. A fetch of a same-directory JSON file.
+      fetch('./data.json')
+        .then((response) => {
+          if (!response.ok) throw new Error('HTTP ' + response.status);
+          return response.json();
+        })
+        .then((data) => report('fetch', '200, parsed ' + JSON.stringify(data), true))
+        .catch((error) => report('fetch', 'failed: ' + error.message, false));
+
+      // 4. An image.
+      const image = document.getElementById('probe-image');
+      const imageDone = () =>
+        report(
+          'image',
+          image.naturalWidth === 1 && image.naturalHeight === 1
+            ? 'loaded 1×1'
+            : 'loaded ' + image.naturalWidth + '×' + image.naturalHeight,
+          image.naturalWidth > 0
+        );
+      if (image.complete) imageDone();
+      else image.addEventListener('load', imageDone);
+      image.addEventListener('error', () => report('image', 'failed to load', false));
+
+      // 5. This script is running; the row was filled in statically at the top.
+      report('inline', 'ran', true);
+
+      // 6. Storage under an opaque origin.
+      try {
+        window.localStorage.getItem('probe');
+        report('storage', 'allowed (unexpected: the origin is not opaque)', false);
+      } catch (error) {
+        report('storage', 'blocked: ' + error.name, true);
+      }
+
+      // 7. postMessage to the parent. Framed, the app's panel receives it; in a
+      //    tab the parent is this window, so the message comes straight back and
+      //    the row reports that it was received rather than only sent.
+      const payload = () => ({
+        probe: 'preview-conformance',
+        external: window.__conformance.external === 'ran',
+        module: window.__conformance.module === 'ran',
+        inline: window.__conformance.inline === 'ran',
+      });
+      window.addEventListener('message', (event) => {
+        if (!event.data || event.data.probe !== 'preview-conformance') return;
+        report(
+          'postmessage',
+          window.parent === window ? 'posted to itself and received' : 'posted to the parent',
+          true
+        );
+      });
+
+      // 2. The module is deferred: when it loads it sets the flag and fires this
+      //    event, which is the only way a classic script can observe it.
+      window.addEventListener('conformance-module', () => {
+        report('module', 'ran', true);
+        post();
+      });
+
+      function post() {
+        // The parent's answer arrives asynchronously; posting twice would report
+        // the row twice, so the timer below only fires if the module never did.
+        if (window.__conformance.posted) return;
+        window.__conformance.posted = true;
+        window.parent.postMessage(payload(), '*');
+        // Framed, the row settles when the parent's app receives it — this page
+        // cannot see that, and guessing would be the one dishonest cell on the
+        // table. A tab is observable: the message echoes straight back and the
+        // listener above reports it.
+        if (window.parent === window) return;
+        report('postmessage', 'posted to the parent', true);
+      }
+
+      // The module may have loaded before this script if the browser reordered
+      // anything; post anyway once the table has had a chance to settle.
+      setTimeout(post, 1500);
+    </script>
+  </body>
+</html>

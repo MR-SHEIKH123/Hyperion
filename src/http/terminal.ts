@@ -11,10 +11,13 @@
  * "heartbeat" and no "renew" because an authenticated command *is* the heartbeat —
  * a session that is doing something is alive, and one that is not expires.
  *
- * No client calls these yet: the browser terminal surface this is for does not
- * exist (recorded as a gap). They are here because the token has to be minted by
- * the server for the exemption to be structural at all, and a minting operation
- * with no way to reach it would be a claim rather than a mechanism.
+ * No client opens or closes these yet: the browser terminal surface they are for
+ * does not exist (recorded as a gap). `GET /sessions` is read by the Code surface's
+ * Processes row, which lists what is running and closes nothing — the list carries
+ * no token, and closing needs the one its opener holds. The open and close routes
+ * are here because the token has to be minted by the server for the exemption to be
+ * structural at all, and a minting operation with no way to reach it would be a
+ * claim rather than a mechanism.
  */
 import { Router } from 'express';
 

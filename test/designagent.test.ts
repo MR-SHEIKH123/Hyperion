@@ -162,6 +162,31 @@ describe('the design agent', () => {
     assert.equal(latestDesignVersion(designArtifactKey(run.runId, 'draft.html'))?.content, '<html>recovered</html>');
   });
 
+  it('a tool call whose arguments are not a JSON object is refused, in one sentence', async () => {
+    // The parser is shared with the Code and Cowork agents
+    // (`services/agent/toolArguments.ts`), so these two sentences are the contract
+    // for all three. Two runs, because the first refusal is fatal: a tool that
+    // throws ends the run — `runTool` records the step and rethrows — which is what
+    // these are, as distinct from a tool that returns guidance as its output.
+    const badJson = harness([
+      { chunks: [{ type: 'tool_call', call: { id: 'bad-json', name: 'design.generate_html', arguments: '{"content": ' } }] },
+    ]);
+    const unparseable = await runDesignTask(badJson.input, badJson.ctx, { dependencies: badJson.deps });
+    assert.equal(unparseable.ok, false);
+    assert.equal(unparseable.error?.code, 'bad_request');
+    assert.equal(unparseable.error?.message, 'The model produced invalid JSON tool arguments.');
+
+    // An array parses as JSON and is still not a set of tool arguments: the case a
+    // bare `JSON.parse` would let through to `args.content` as undefined.
+    const array = harness([
+      { chunks: [{ type: 'tool_call', call: { id: 'bad-shape', name: 'design.generate_html', arguments: '["not", "an", "object"]' } }] },
+    ]);
+    const wrongShape = await runDesignTask(array.input, array.ctx, { dependencies: array.deps });
+    assert.equal(wrongShape.ok, false);
+    assert.equal(wrongShape.error?.code, 'bad_request');
+    assert.equal(wrongShape.error?.message, 'Tool arguments must be a JSON object.');
+  });
+
   it('a model that tries bash is refused and the run continues', async () => {
     const run = harness([
       { chunks: [call('b1', 'bash', { command: 'rm -rf ~' })] },

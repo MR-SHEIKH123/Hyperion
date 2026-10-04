@@ -2,17 +2,19 @@ import { useMemo, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 
-import { getCodeLane, getTaskState } from '../../api/tasks';
+import { getCodeLane, getTaskRecovery, getTaskState } from '../../api/tasks';
 import { RecoveryPanel } from '../../components/RecoveryPanel/RecoveryPanel';
 import { ParkedTask } from './ParkedTask';
+import { ChangedFiles } from './ChangedFiles';
+import { PreviewRow } from './PreviewRow';
+import { Processes } from './Processes';
 import { StartTask } from './StartTask';
 import { RunProgress } from './RunProgress';
 import { useTaskStart } from './useTaskStart';
 import { CodeLaneRail, TaskSpend } from './CodeSurface';
 import { getArtifactVersions } from '../../api/provenance';
+import { SelectionTimeline } from './SelectionTimeline';
 import { TaskStateBanner } from '../../components/TaskStateBanner/TaskStateBanner';
-import { ErrorNotice } from '../../components/ErrorNotice/ErrorNotice';
-import { VersionTimeline } from '../../components/Provenance/ProvenancePanel';
 import { fromBackendRun } from '../../state/task-machine/task-state';
 import { AgentWorkspace } from '../../workspaces/AgentWorkspace';
 import { useWorkspaceLayout } from '../../state/persistence/useWorkspaceLayout';
@@ -82,6 +84,22 @@ export default function CodeTool() {
     enabled: file !== null,
     retry: false,
   });
+  // The steps column of the same rail. The same query key `RecoveryPanel` uses, so
+  // a task that is both interrupted and selected is read once, and the two views
+  // cannot disagree about what the run did.
+  //
+  // Gated on a selected file, and that is a cost decision rather than a
+  // presentational one: the recovery route is the only read that carries steps,
+  // and answering it runs a worktree check (`findOrphanForTask`) for every caller
+  // whether or not there is a recovery case. The rail only exists once a file is
+  // named, so the read is made then — one read per selection, shared with the
+  // recovery panel, never on a poll.
+  const steps = useQuery({
+    queryKey: ['recovery', 'code', taskId],
+    queryFn: ({ signal }) => getTaskRecovery('code', taskId ?? '', signal),
+    enabled: taskId !== null && file !== null,
+    retry: false,
+  });
 
   const state = useMemo(() => {
     const run: TaskRun | undefined = task.data?.run;
@@ -143,21 +161,16 @@ export default function CodeTool() {
         onDismiss={start.state.phase === 'ended' ? start.dismiss : undefined}
       />
     ),
-    versionTimeline:
-      file === null ? (
-        <p className={styles.idle}>
-          Name a file with <code>?file=</code> to see its version history. Versions are written per
-          file, before each edit, so they belong to a file rather than to the task.
-        </p>
-      ) : versions.isPending ? (
-        <p className={styles.idle} role="status">
-          Reading versions…
-        </p>
-      ) : versions.isError ? (
-        <ErrorNotice onRetry={() => void versions.refetch()} />
-      ) : (
-        <VersionTimeline versions={versions.data.versions} />
-      ),
+    versionTimeline: (
+      <SelectionTimeline
+        taskId={taskId}
+        file={file}
+        versions={{ isPending: versions.isPending, isError: versions.isError, data: versions.data?.versions }}
+        onRetryVersions={() => void versions.refetch()}
+        steps={{ isPending: steps.isPending, isError: steps.isError, data: steps.data }}
+        onRetrySteps={() => void steps.refetch()}
+      />
+    ),
     // Starting a task is the composer's job, and `onStarted` is what makes the surface
     // follow the run it just began: the id goes into `?task=`, so the main region and
     // the banner show the task whose frames are arriving.
@@ -191,6 +204,33 @@ export default function CodeTool() {
         >
           Clear selection
         </button>
+        {/* The task's changes, which is what a reader asks about a task that has
+            been running. Selecting a file writes `?file=`, the same parameter the
+            version timeline already reads, so the two regions stay in step
+            without either one knowing about the other. */}
+        {taskId !== null && (
+          <ChangedFiles
+            taskId={taskId}
+            selectedPath={file}
+            onSelect={(path) => {
+              const next = new URLSearchParams(params);
+              // Clicking the selected file clears it, so the list can be read
+              // without leaving a selection behind on every visit.
+              if (path === file) next.delete('file');
+              else next.set('file', path);
+              setParams(next, { replace: true });
+            }}
+          />
+        )}
+        {/* The live preview, under the changes because that is the order a
+            reader asks: what changed, then where it is running. Like the file
+            list, it needs a task — there is nothing to serve without one. */}
+        {taskId !== null && <PreviewRow taskId={taskId} />}
+        {/* Processes is not scoped to a task the way the two rows above are: the
+            route lists sessions for the whole process, and hiding the ones bound
+            elsewhere would make this host look idle when it is not. The selected
+            task is a label here, not a filter. */}
+        <Processes taskId={taskId} />
       </div>
     ),
   };

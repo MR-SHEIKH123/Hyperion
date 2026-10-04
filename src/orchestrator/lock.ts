@@ -95,6 +95,28 @@ function busyError(): AppError {
   );
 }
 
+/**
+ * Refuses now, while the answer can still be JSON.
+ *
+ * The routers that open an SSE stream call this before `openStream`, and the
+ * reason is the response type rather than the check: `acquire` raises the same
+ * refusal a moment later, but by then the response is `text/event-stream` and a
+ * client that asked for JSON has to dig the failure out of the body. In `queue`
+ * mode there is nothing to refuse — the request waits its turn inside the lock —
+ * so the mode is a parameter here for the same reason it is one for `acquire`.
+ *
+ * Identical copies of this lived in both routers until it moved here; the two
+ * that remained would have been the place a third mode was implemented once.
+ */
+export function assertNotBusy(mode: ConcurrencyMode): void {
+  if (mode !== 'reject' || !isBusy()) return;
+  const job = currentJob();
+  throw new AppError('busy', 'Another job is already running', {
+    details: job ? { jobId: job.id } : undefined,
+    retryable: true,
+  });
+}
+
 function take(options: AcquireOptions): JobHandle {
   const id = randomUUID();
   current = {

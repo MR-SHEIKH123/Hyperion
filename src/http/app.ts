@@ -16,6 +16,7 @@ import { agentsRouter } from './agents.ts';
 import { continuationRouter } from './continuation.ts';
 import { artifactsRouter } from './artifacts.ts';
 import { backupRouter } from './backup.ts';
+import { canvasRouter } from './canvas.ts';
 import { chatRouter } from './chat.ts';
 import { coworkRouter } from './cowork.ts';
 import { designRouter } from './design.ts';
@@ -100,6 +101,13 @@ export function createApp(): Express {
   // not collide with either, letting the specific mount decide keeps a future
   // /design/:something in agents.ts from swallowing these.
   app.use('/api/design', designRouter);
+
+  // The Canvas reads — a task's file tree, one file, its diff — and the preview
+  // mint/revoke pair. Mounted at `/api/code` rather than in `agents.ts` because
+  // it is a read-only view of a task's workspace and not part of running one;
+  // mounted before the continuation and agent routers so the specific mount
+  // decides if a path here ever collides with theirs.
+  app.use('/api/code', canvasRouter);
 
   // Continuation and approvals, mounted before `agentsRouter` because they share
   // its `/{tool}/tasks/:taskId/...` shape and the specific mount should win. They

@@ -43,6 +43,7 @@ import { env } from '../../config/env.ts';
 import { getRoot, resolveInScope, resolveInSubtree } from '../../security/fsScope.ts';
 import { assertNoSymlinkedTraversal, assertStillInside } from '../../security/toctou.ts';
 import { AppError } from '../../util/errors.ts';
+import { isMissingExecutable } from '../../util/exec.ts';
 import { createLogger } from '../../util/logger.ts';
 import { GIT_FILTER_QUERY, GIT_SAFE_CONFIG, filterOverrides } from './gitHardening.ts';
 
@@ -265,7 +266,7 @@ async function create(taskId: string, project: string): Promise<Worktree> {
   const top = await git(['rev-parse', '--show-toplevel'], { cwd: project });
   if (!top.ok) {
     return direct(
-      missingGit(top)
+      isMissingExecutable(top)
         ? 'git was not found on PATH, so this task shares the project directory'
         : 'this project is not a git repository, so this task shares the project directory',
     );
@@ -1008,13 +1009,6 @@ function git(
       finish({ ok: code === 0, code, stdout, output: output.trim(), spawnError: false });
     });
   });
-}
-
-function missingGit(result: GitResult): boolean {
-  return (
-    result.spawnError ||
-    /ENOENT|not recognized as an internal or external command|command not found/i.test(result.output)
-  );
 }
 
 function firstLine(output: string): string {

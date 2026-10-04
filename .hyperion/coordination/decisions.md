@@ -2193,6 +2193,515 @@ git ignore a repository's own config wholesale — `GIT_CONFIG_GLOBAL` /
 no-approval path: arming it through the file tools, and executing it through
 the commands Hyperion issues on its own initiative.
 
+## A Canvas over a task's workspace, a second origin for previews, and the 500 that named a filesystem path (2026-10-03)
+
+**1.40 backend, one PR, no frontend.** Five routes on a new `src/http/canvas.ts`
+mounted at `/api/code`, ahead of the agents router:
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| GET | `/api/code/tasks/:taskId/files` | BFS listing, bounded, `?path=` subtree (default `.`) |
+| GET | `/api/code/tasks/:taskId/file` | `?path=` required; sha256 + bytes |
+| GET | `/api/code/tasks/:taskId/diff` | delegates to `exportCodeTask` |
+| POST | `/api/code/tasks/:taskId/preview` | `201` `MintedPreview` |
+| DELETE | `/api/code/tasks/:taskId/preview` | `{ revoked: boolean }` |
+
+Caps are named constants and reported, never silent: `MAX_ENTRIES 2000`,
+`MAX_DEPTH 12`, `MAX_VIEW_BYTES 2 MiB`, `SKIPPED_DIRS` = `node_modules`, `.next`,
+`dist`, `build`, `.venv`, `__pycache__`. A tree that is short says so
+(`truncated`, `skipped`); the viewer stats a file before reading it and puts the
+size in the 400. Repeated `?path=` keys are refused rather than read as
+first-element (`querySingleString`), because a caller who asked two questions
+must not be answered with the one they did not name.
+
+**The defect this PR exists to fix, reproduced rather than reasoned about.**
+`files.ts::locate` refused a `.git` segment only on the *resolved* path, after
+`assertNoSymlinkedTraversal` had already walked the spelling. In worktree mode
+`.git` is a **file** holding the gitdir pointer, so `.git/hooks/post-checkout`
+made the walk `lstat` through a non-directory. Previously that was read off the
+code ("`isMissing` is ENOENT-only, so ENOTDIR propagates"); this round it was
+observed. With the spelling check temporarily removed — the mutation, not a
+contrived call — a direct-mode task whose `.git` is a file answered:
+
+```
+code:     ENOTDIR
+message:  ENOTDIR: not a directory, lstat '/tmp/hyperion-enotdir-.../projects/enotdir-task/.git/hooks'
+```
+
+`/tmp` is gone by morning and the path in the message is the user's. Through the
+HTTP layer that is a 500 whose body names an absolute filesystem path, for a
+request whose answer is a 403. Nothing was readable either way; the defect was
+what the caller was told, which is what a client branches on.
+
+The fix is that the refusal runs **twice** through one shared
+`refuseGit(shown, segment)`: on the **spelling**, before any syscall (and before
+the resolver canonicalises symlinks away), and again on the resolved path. The
+predicate is exported as `isGitPathSegment` and the listing uses that same export
+to omit `.git` — one comparison, not two that can drift. `.gitignore`,
+`.gitattributes` and `.github/` stay accessible, including after Windows'
+trailing-dot/space normalisation. With the check in place the same call answers
+`scope_violation`, `details {path: ".git/hooks/post-checkout", segment: ".git"}`,
+and the message names no filesystem path.
+
+`locate` stays private; the one new export is
+`resolveCodePath(candidate, services) → { absolute, relative }` — no
+`artifactKey`, because that names a *write* target and handing it to a reader
+invites a second writer that skips the expected-hash check and the pre-image row.
+
+**The preview is a second HTTP server, and the second port is the isolation.**
+A preview served from the API's origin is same-origin with the API: a page an
+agent wrote could `fetch('/api/settings')` and read every stored provider key,
+and no CSP recovers that. `HYPERION_PREVIEW_PORT` (default 4320, `0` disables,
+busy port degrades the feature rather than boot), 256-bit token minted *and
+compared* by `security/tokens.ts` — the same module the terminal sessions use, so
+there is one constant-time comparison in the app rather than two — one session
+per task, 30-minute TTL, revoked when the
+worktree is released, `capability_disabled` + `details.setting` while nothing is
+listening. Same Host guard as the API; CSP as a **header** with
+`sandbox allow-scripts …` and no `allow-same-origin`, naming both `'self'` and
+the explicit origin from the validated `Host`; `frame-ancestors` from
+`HYPERION_APP_ORIGINS`; the preview port is deliberately **not** in that list;
+`access-control-allow-origin: *` on this listener only. `installShutdownHandlers`
+closes it first and does not wait on it.
+
+One bug in this PR's own first draft was found by the tests: `refusalFor` used
+`instanceof AppError`, while `fsScope.ts` throws its own `ScopeViolationError`
+(deliberately free of HTTP-layer imports), so a traversal answered 500. It now
+normalizes with `toAppError` and answers 403.
+
+**Running it behind a TLS proxy found one more defect, fixed.** The listener speaks
+plain HTTP, so `requestOrigin` hardcoded `http://` — and the origin it names is the
+one whose *whole purpose* is to be the source that matches when `'self'` does not
+under the sandbox's opaque origin. Behind anything that terminates TLS (Tailscale
+Serve, nginx, a hosted preview gateway) the browser's document is `https://`, so the
+hardcoded scheme named an origin the page never had, leaving neither mechanism
+available. It now reads `x-forwarded-proto` for the scheme and `x-forwarded-host`
+for the public name when a proxy rewrites `Host` — **only** after the forwarded name
+passes the same `isAllowedHost` check the `Host` header passed, so a forwarded
+header can name a host this listener already answers to and never one it would have
+refused. Asserted both ways in `test/canvaspreview.test.ts`: the proxied request
+carries `https://<host>`, a forged `x-forwarded-host: evil.test` is ignored and the
+CSP still names loopback, and a nonsense scheme (`ftp`) is dropped rather than
+echoed. The conformance script also gained `--port` and `--bind`, because a caller
+behind a proxy already knows which port it will be mapped to.
+
+**The browser-measured half is the owner's to run.** `test/fixtures/preview-conformance/`
+plus `scripts/preview-conformance.mjs` serve a page whose seven rows state their
+expected result — external `.js`, module script, `fetch` of JSON, image, inline
+script, `localStorage`, `postMessage` — and the one thing Node cannot answer:
+under `sandbox`, does `'self'` match the document's own URL, or is the explicit
+origin doing the work? **Not yet run in a real browser; the outcome belongs in
+this file when it is.** The script was smoke-tested against the real listener:
+`index.html` 200 with the full CSP, `data.json` 200 `application/json`,
+`pixel.png` 200 `image/png`, `module.mjs` 200 `text/javascript`.
+
+**Mutation-checked: ten mutations, each run against the full suite** (`# fail`
+after each; `list-dotgit` was run twice, before and after the test change the
+first run prompted):
+
+| Mutation | Failing |
+| --- | --- |
+| add `allow-same-origin` to the CSP sandbox | 1 |
+| bypass the token comparison | 5 |
+| ignore the TTL / fail every token compare | 13 |
+| remove the `.git` spelling check | 1 |
+| remove the resolved-path `.git` check | 0 |
+| the listing stops omitting `.git` | 0 → **1** after the test below |
+| a Canvas reader that resolves and reads for itself, bypassing the seam | 5 |
+| remove `assertNoSymlinkedTraversal` from `locate` | 1 (the write path in `gitexec.test.ts`) |
+| remove `assertStillInside` from `locate` | 0 |
+| replace the Canvas's `resolveCodePath` call with a naive `path.resolve` | 0 (not a real bypass) |
+
+Four of those zeros are worth stating plainly rather than burying:
+
+- **The shallow Canvas mutation was not a bypass.** `readCanvasFile` hands the
+  caller's *relative* path to `readCodeFile`, which resolves it through the seam
+  again, so replacing the earlier call changed nothing. Redone as a reader that
+  does its own resolution and its own `readFile`, it fails 5 tests — the seam is
+  pinned by that shape, not the first.
+- **The listing's `.git` omission was not independently pinned.** Without the
+  predicate the directory still never appears in `entries`, because descending
+  into it is refused by the seam and the catch reports it in `skipped`. It was
+  therefore *effectively* omitted but *reported*, and the test only asserted the
+  former. The test now also asserts `.git` is absent from `skipped`, and the
+  mutation fails 1 test. `.git` is omitted, not listed as skipped: `skipped` is
+  for content the caller might want.
+- **`assertStillInside` in `locate` is not distinguishable by any test**, and the
+  reason is structural: for a registered task, `containAgentCwd` itself calls
+  `resolveInSubtree` and `assertStillInside` (worktree.ts:887-888), so removing the
+  second check changes no observable behavior. It stays as defence in depth; the
+  honest statement is that the per-task boundary is enforced in `containAgentCwd`,
+  and no test can prove the duplicate is load-bearing.
+- **So is the resolved-path `.git` check**, on the same evidence: the spelling
+  check refuses every `.git` case the suite constructs, so removing the second
+  check fails nothing. Its remaining value is a resolver that maps an innocent
+  spelling *into* `.git` — which today needs a symlinked directory, refused
+  earlier by the traversal walk — so it is the belt for a route nothing currently
+  takes, kept because the two checks are one `refuseGit` and the cost of the
+  second is a `find` over a short array.
+
+**Boot-level smoke, because `test/*.test.ts` never runs `src/index.ts`.** The real
+entry point (`node src/index.ts`) was started twice in a throwaway `HYPERION_HOME`,
+with the background jobs disabled:
+
+- **Both ports free.** API up, `[preview] preview listener on
+  http://127.0.0.1:<port>/p/<token>/` at boot, `/api/health` 200, an unknown task's
+  mint 404 `not_found` (so the route is mounted and the gate runs in the right
+  order), and a bad token 404 on the preview port. With a **parked** preview
+  socket open — a partial request line, no terminator — `SIGINT` exited in **0.11 s**
+  (the force-exit ceiling is 6 s), which is the "closed first, not awaited" claim
+  measured rather than asserted.
+- **Preview port already held** by another listener: the API booted anyway,
+  `/api/health` 200, the log read `port <n> is already in use, so previews are
+  disabled`, and minting answered 403 `capability_disabled` with
+  `details.setting = "HYPERION_PREVIEW_PORT"`. Degrade the feature, not the boot.
+
+One trap worth recording for whoever repeats this: a shell helper that sets the
+environment but does not `echo` it gives `env $(helper) node …` an empty word list,
+and the app silently boots on the defaults — 4317/4320, and the **repo root** as
+`HYPERION_HOME`. That is the documented default and all of it is gitignored, but it
+writes runtime directories into the checkout; the first run of this smoke did
+exactly that and was cleaned up.
+
+**Gates.** `npm test` **1432 tests / 259 suites / 0 fail** (115.5 s).
+Frontend, unchanged by this PR and run to prove it: `npm run typecheck` exit 0,
+`npm run lint` exit 0, `npm test` **42 files / 264 tests**, and both contract
+gates exit 0 — `check-contracts.mjs` reports **196 backend routes / 44 frontend
+contracts** (5 new `missing` rows for the Canvas: the backend exists, no client
+until 2.4), `check-wire.mjs` 59/59 matched. `npx tsc --noEmit` clean.
+
+What the Canvas is **not** is recorded in `frontend/contracts/gaps.md`: read-only,
+not a dev server, one preview per task, no preview for a released task, diff is
+text rather than a hunk model — and the version stack cannot be joined to a step
+list (`artifact_versions` rows are pre-images with no run or step id, and
+`rel_path`-backed rows die with the worktree), so a UI must show the two side by
+side and never claim "content as of step k".
+
+---
+
+## The AI-tooling leftovers, audited rather than assumed (2026-10-04)
+
+A cleanup pass asked what in this tree is the residue of AI-built sessions. The
+answer is mostly *nothing*, and that is a measured claim rather than a reassuring
+one: `TODO`/`FIXME`/`XXX`/`HACK` in `src/` + `frontend/src/` — **0**;
+`console.log`/`debugger` in `src/` — **0**; stray `.bak`/`.orig`/`~`/`.tmp`/
+`.DS_Store`/`*.log` files — **0**; empty or stub source files — **0**; unused
+dependencies in either `package.json` — **0** (the five or six that a name scan
+flags are `@types/*` and the `tsc`/`eslint` binaries, which are never imported by
+name); `src/` modules nothing imports — **0**.
+
+**`.clinerules/` and `.kilo/` are not in the repository and never were.** Both are
+local-only agent-tooling directories, `git log --all -- .clinerules .kilo` is
+empty and `git ls-files` has no entry for either — so there is nothing here to
+delete. Their ignore status differs, and this entry overstated it: `.clinerules/`
+is ignored (`/.clinerules/`, with the reason written next to it), while `.kilo/`
+is **not** in `.gitignore` at all. It is absent rather than hidden, and it stays
+that way deliberately — a directory that reappears should show up as untracked
+rather than vanish into an ignore rule, which is the same reason the rules above
+are anchored. What the tree *did* carry was three
+pointers into them, and those were junk: `§1`'s ground-truth line, `§3.8`'s "per
+`.clinerules/05`", and the v4 deliverables checklist's own row 7, "Fix stale
+`.clinerules/04`" — a found-but-never-fixed item naming item numbers in a
+directory no reader of this repository can open. All three are now
+self-contained (the rule and the fact are stated outright; the reference that
+remains is labelled gitignored-and-not-in-this-repository), and row 7 is closed.
+The mentions that stay are provenance, and are load-bearing: the header's sentence
+explaining that `decisions.md` exists *because* decisions used to die in those
+gitignored directories and in chat is the reason this file has a reason.
+
+**The `1.x` numbers are an index, not decoration.** `(1.40)` is not a version tag:
+it is this milestone's id in the owner's prompt series, defined in this file and
+joined to `docs/CONTRACTS.md`, `frontend/contracts/gaps.md` and `README.md` — the
+same convention as the ~40 other `(1.x)` citations and the register's own rows.
+`1.40` appears **five** times in real use (the sixth grep hit is
+`192.168.1.40`, an address in an egress test), which is what an index entry
+should look like, not saturation.
+
+**Two things were left alone deliberately.** The 2026-09-21 entry's 22
+never-referenced value exports were re-derived by this pass (24 counting two
+type-only declarations) and **kept**, per that entry's reasoning — they are test
+seams and affordances a planned item wants, and deleting them would need that
+entry reversed first. And three byte-identical helper bodies were found — one
+module-private each — which is a refactor of unrelated subsystems, not cleanup of
+this PR's subject, so they were recorded here rather than folded into it. **They
+were folded in later the same day, at the owner's request; the entry below is the
+one that amends this one — including its count, because one of the three had a
+third copy this audit did not see.**
+
+---
+
+## The session panel — Arena's right-hand rail, planned against what already exists (2026-10-04)
+
+**What the owner pointed at.** One thing, and it is the whole right-hand panel of an
+Arena session: the `Diff +3686 −19` header with its `Checks` tab beside it, the live
+preview row (`Canvas preview (con… · :4320`) with its refresh control, `Processes 1`,
+the changed-file list with per-file `+n −n`, and `View all changes` at the bottom.
+**`Merge PR` sat in that panel and the owner has dropped it** — so it is recorded below
+as a non-goal rather than left to be inferred from silence, and nothing in this plan
+depends on it.
+
+**None of this needs a new panel. The frame already has the region.** `AgentWorkspace`
+owns eight regions — `taskRail`, `contextExplorer`, `mainSurface`, `progressStream`,
+`inspector`, `versionTimeline`, `composer`, `statusBanner` — with the folded state and
+the per-tool widths persisted through `useWorkspaceLayout`, and `CodeTool` already fills
+`inspector` with a placeholder ("Selection" plus a clear button). So the work below is
+**content for a region that exists**, which is why it is client work over routes that
+mostly already exist — not a new subsystem.
+
+| Element in the panel | Arena's job for it | Hyperion's source today | The gap |
+| --- | --- | --- | --- |
+| Changed-file list + per-file `+n −n`, plus the header totals | "what did this change, and how much" | `GET /api/code/tasks/:taskId/diff` → `CanvasDiff {taskId, baseCommit, patch}` (1.40). One unified patch string; per-file counts are *derivable from it* | No split, no client |
+| `View all changes` | read the actual patch | the same route's `patch` | Rendering only |
+| Preview row: origin, port, refresh, open | "it is running here, right now" | `POST\|DELETE /api/code/tasks/:taskId/preview` → `MintedPreview {taskId, token, url, expiresAt}`; `previewListener()`/`previewReady()` exist as in-process status (1.40) | **No read route** — a client that did not mint cannot ask what is live |
+| `Processes 1` | what is running, and stop it | `GET /api/terminal/sessions` (live sessions, newest first, never a token), `POST /sessions`, `POST /sessions/:sessionId/close` | No client |
+| `Checks` | CI status for the change | **Nothing.** No `.github`, no runner, no status model anywhere in the tree | Not planned — see non-goals |
+| `Merge PR` | land the change | — | **Dropped by the owner.** Non-goal, permanently unless reversed |
+
+**S1 — the changed-file list, and the totals.** Add a pure split of the exporter's patch
+into `{path, additions, deletions, isNew, isDeleted, isBinary}` entries plus the totals,
+unit-tested against fixed patches. It must **not** add a git call site: `exportCodeTask`
+already owns the one call, and the mutation canary in `test/gitexec.test.ts` counts them.
+Render the list in `inspector`; a selected file shows its hunks **as text**, because the
+patch is what the route returns and a hunk model is a thing this repo does not have.
+*Acceptance:* the list for a known commit matches `git diff --stat` on the same commit;
+the per-file counts sum to the header totals; a direct-mode task shows the exporter's
+existing reasoned 400, never an empty list dressed as "no changes".
+
+**S2 — the preview row.** Add the one backend piece this panel wants: a read-only
+`GET /api/code/tasks/:taskId/preview` answering the live session or `null` (`404` is
+wrong here — "no preview is running" is a fact, not a missing resource). The row shows
+the origin, can open it, re-mint, and revoke; with the listener off it renders disabled
+and reuses `capability_disabled` with `details.setting = 'HYPERION_PREVIEW_PORT'`.
+*Acceptance:* the row's origin is the same string a user can open in a tab; a released
+worktree takes its preview row with it; the preview port is never added to
+`HYPERION_APP_ORIGINS`.
+
+**S3 — Processes.** Client only, over the terminal session routes that exist. *Acceptance:*
+live sessions listed with their state, a close action per row, and an empty list that
+says nothing is running rather than rendering blank.
+
+**S4 — the version timeline, folded into the same rail.** `VersionTimeline` already exists
+and is already mounted in this surface; wiring it to the current selection turns the
+`inspector` placeholder into a real read. *Acceptance:* the stack renders for a versioned
+artifact and the empty case states the fact ("a file never changed through the tools has
+no versions"), which the component already does. It must show the version stack and the
+step list **side by side** and never claim "content as of step k".
+
+**Non-goals, recorded so they are not re-litigated.**
+
+- **`Merge PR` — dropped by the owner, 2026-10-04.** It needs remote credentials, a push,
+  branch policy and conflict handling; this application's git surface is read-only by
+  design, and it has already had to treat `git config` as a code-execution primitive
+  (see the 2026-09-30 entry). The panel shows the change and names the branch.
+- **`Checks`.** There is no CI in this repository and none is planned; a checks row is a
+  runner plus a status model, i.e. a new subsystem. The honest substitute, if one is ever
+  wanted, is the task's own run state plus the last suite run inside a terminal session.
+- **A per-turn diff scope.** Arena scopes its diff to *the last turn*; Hyperion cannot.
+  `artifact_versions` rows carry no step or run id, and `rel_path`-backed rows die with the
+  worktree, so "what changed in step k" has no answer. The list is scoped to the task's
+  base commit, and nothing in the UI may imply otherwise.
+- **Writing from the panel.** Read-only, exactly as the Canvas itself is: no write, rename,
+  delete or create route, and the preview serves files rather than accepting them.
+
+**Sequencing.** S1 is the first slice worth building and belongs to the Canvas client that
+`frontend/contracts/gaps.md` already schedules ("no client until 2.4"); S2 is the only
+backend addition the panel needs; S3 and S4 are client work over routes already shipped.
+Nothing in this plan starts before the owner says so, and the open 1.40 PR is unaffected
+by it.
+
+---
+
+## The session panel's first slice: the Canvas gets a client, and the inspector gets the file list (2026-10-04)
+
+**What landed.** S1 of the plan above, end to end. `frontend/src/contracts/wire/canvas.ts`
+pins the four Canvas shapes and the revoke answer; `frontend/src/api/canvas.ts` calls all
+five routes; `frontend/src/tools/code/patch.ts` splits the exporter's patch into files with
+counts; and the Code surface's `inspector` region renders the result — replacing the
+selection placeholder with the changed-file list, where clicking a path writes the `?file=`
+the version timeline already reads.
+
+**Four decisions the slice rested on.**
+
+1. **The patch is split in the browser, because the wire shape is ratified.** `CanvasDiff`
+   is `{taskId, baseCommit, patch}` in docs/API.md §27.3 — the backend runs `git diff` once
+   and hands over the text. Adding a per-file array would put a parser in the backend and
+   widen a frozen contract for one screen's benefit. `splitPatch` is a pure function over a
+   string, which is also what makes it testable against fixed patches rather than against a
+   repository that has to be built first.
+2. **It is a patch parser, not a hunk model.** New, deleted, renamed, binary and mode-only
+   changes are recognised so none of them reads as `0 +0 −0`, and hunk state is tracked so a
+   deleted line whose text begins `--- ` is content rather than a file header. Nothing
+   attempts hunks, line ranges or a word-level diff.
+3. **The ledger's standard is "a client calls the route", so the five rows are
+   `implemented`.** That is the rule that let `providers.registry` be implemented while no
+   screen used it; what no screen does yet is written into each row's reason and into
+   `frontend/contracts/gaps.md` rather than hidden behind a status. The five routes moved
+   from `deferred-frontend` to `frontend` in the route snapshot for the same reason.
+4. **The wire schemas were proved against the real backend rather than trusted.**
+   `check-wire.mjs`'s fixture grew a real git repository inside the projects scope, a
+   provisioned worktree, a file changed after the base commit and the preview listener, so
+   the tree, file, diff, mint and revoke schemas all parse real responses — `64/64 matched`,
+   up from 59, with `canvasEntrySchema` classified as nested inside the tree it validates.
+   Without the fixture these six schemas would have been the exact defect that script exists
+   to catch: a schema that rejects a real body, discovered by whichever surface is built on
+   it first.
+
+**One thing was verified and then not kept, and the reason is the same boundary.**
+`splitPatch` was checked against real `git diff` output over a scratch repository carrying
+every change kind at once, and that check found a genuine difference — `--numstat` writes a
+rename as `old => new`, its own display notation rather than a path. The check itself was
+not committed: the frontend's test project is browser-typed (`types` excludes `node`) and
+spawning git there needs `@types/node` added program-wide, which would let any surface use
+Node APIs and still typecheck. The fixed patches in `patch.test.ts` are the standing
+guarantee, and the parser's doc comment records what the scratch check covered.
+
+**What is not built, so the next slice is not mistaken for the whole.** The file tree and
+the file read are called by no screen (`getTaskFiles`/`getTaskFile` exist in the client and
+nothing invokes them); the **preview row** is still S2 and still needs the one backend read
+the plan names — a `GET .../preview` answering the live session or `null`, since a client
+that did not mint cannot ask what is live; the processes panel is untouched; and the patch
+text itself is not rendered anywhere — the list is derived from it, so "View all changes"
+is still an open slice.
+
+**Correction to this register.** The 2026-10-04 audit entry above says the frontend has no
+unimported modules; that was a backend-only scan and the claim was wider than the evidence.
+`frontend/src/api/downloads.ts` and `uploads.ts` were imported by nothing at the time. The
+download helper is the one a "Download all" gesture wants, which is why it is named in the
+plan above rather than deleted.
+
+---
+
+## The session panel's second slice: a preview row that reads instead of minting (2026-10-04)
+
+**What landed.** S2 of the plan above. The one backend addition the panel needed:
+`GET /api/code/tasks/:taskId/preview` → `{taskId, preview}`, where `preview` is the live
+session or `null` (`src/http/canvas.ts`, `livePreview` in `src/services/code/preview.ts`).
+`docs/API.md` §27.4 is retitled `POST, GET and DELETE` and the read is documented there.
+On the client: `previewStatusSchema`, `getPreviewStatus`, and `tools/code/PreviewRow.tsx`,
+mounted in the Code surface's `inspector` under the changed-file list.
+
+**Why a read route had to exist at all.** `POST …/preview` mints *and replaces* — that is
+how revocation works — so a status row that minted in order to display would revoke the URL
+the user already had open, on every render. The read changes nothing and is therefore
+pollable, which is the whole reason the row can be a status rather than an action.
+
+**The two refusals are applied on the read too, not just at mint.** `livePreview` runs
+`resolvePreview`'s checks and, when it finds an expired session or a task whose worktree is
+gone, **deletes the row and answers `null`** rather than returning a URL that no longer
+serves. A released worktree takes its preview with it — acceptance for this slice — and the
+read is where a stale row would otherwise survive as a lie.
+
+**Three states, kept apart on screen.** Off-host (`capability_disabled`, with
+`details.setting = 'HYPERION_PREVIEW_PORT'` named so the reader can act), idle (offer to
+start), live (show the origin as the URL, offer to open and to stop). A disabled feature
+rendered as "nothing is running" would be the same class of error as a failed read rendered
+as an empty list, which S1 already refused to do.
+
+**What the read does not do.** It does not mint, refresh, or extend the TTL, and it does not
+touch `HYPERION_APP_ORIGINS` — the preview port stays out of the API's Origin allow-list.
+
+**Evidence.** `test/canvaspreview.test.ts` 26/26 (three new cases: a read with nothing live,
+a read that agrees with a mint and leaves the token resolving, an expired session that is
+dropped and stays dropped); `frontend/src/tools/code/PreviewRow.test.tsx` 3/3; wire
+`check-wire.mjs` 65/65 with a `requirePresent` option added for the non-null arm — the
+nullable arm is what a fixture falls into by accident; ledger 45 contracts /
+24 implemented, route snapshot 197 routes.
+
+**Deliberately not done:** the row does not poll on an interval. Expiry is stated as text
+when it is close; the surface remounts on task selection and a manual re-read is one
+navigation away. A timer here would be a decision about refresh cost that this slice has no
+evidence for.
+
+---
+
+## The session panel's third and fourth slices: Processes, and the rail's two lists (2026-10-04)
+
+**What landed.** `wire/terminal.ts` + `api/terminal.ts` (a read, nothing else),
+`tools/code/Processes.tsx` in the inspector, and `tools/code/SelectionTimeline.tsx`, which
+replaces the single version list in the `versionTimeline` region with **two columns: the
+selected file's version stack and the run's step list**, under one sentence saying they are
+not joined. Slice S4 of the plan is done as "side by side, never 'content as of step k'".
+
+**The one requirement the repo refuses, and it is not the UI's fault.** S3's acceptance
+asked for "a close action per row". `POST /sessions/:sessionId/close` authenticates with the
+session's token, which is minted with the session, returned exactly once to the client that
+opened it, and **never carried in the list** — that is the property the whole module exists
+to provide ("this command came from a person, right now" is evidence, not a flag). A panel
+that lists sessions holds no tokens and can end nothing; the browser terminal that will hold
+one does not exist. So the row ships with no close control and a sentence saying why. This is
+the repo beating the plan, recorded rather than bent: the alternative was a route that lets
+one client end another's session.
+
+**A second thing the route's own comment gets wrong.** `GET /api/terminal/sessions` says
+"live sessions"; `terminalSessions.list()` returns every retained record, including the last
+50 ended ones, with `endedAt`/`endedReason` set. The row therefore counts and lists
+`endedAt === null` only, and `wire/terminal.ts` documents the field a caller must test. The
+backend comment in `src/http/terminal.ts` was corrected to say which routes have a client.
+
+**Why the steps read is gated on a selected file.** `recoveryReport()` calls
+`findOrphanForTask` — a worktree check — for every caller whether or not there is a recovery
+case, and the existing surface test pins that a non-interrupted task costs no such read. The
+rail only exists once a file is named, so the read happens then: one per selection, sharing
+`['recovery', tool, taskId]` with the recovery panel so an interrupted task with a file open
+is checked once. The steps column says "Select a changed file to read the run's steps beside
+its versions" in the state where the read is deliberately not made.
+
+**Evidence.** frontend: 4 new/updated test files (`Processes` 3, `SelectionTimeline` 6,
+`CodeTool` +1 end-to-end wiring case, +1 no-file state), full suite 47 files / 292 tests,
+`tsc -b --force` 0, lint 0; contracts 46 / 25 implemented (new `terminal.sessions` row, and
+`GET /api/terminal/sessions` moved from `deferred-frontend` to `frontend`); wire 66/66 with
+`terminalSessionSchema` declared nested (the check's fixture opens one session and closes
+another, so both arms of `endedAt` are real). Backend untouched except one stale comment.
+
+---
+
+## The three duplicated helpers, folded in — and a count correction (2026-10-04)
+
+The cleanup entry above recorded three byte-identical module-private helper bodies
+and left them: "a refactor of unrelated subsystems, not cleanup of this PR's
+subject". The owner asked for them folded in, so they are — and the audit
+undercounted one of them.
+
+**`parseArguments` had three copies, not two** — Code, Cowork and Design — and the
+audit compared two because Cowork's delegated the object check to a local `isRecord`
+guard, which hid the match from a body diff that did not normalise it. All three
+carried the same two sentences and the same acceptance rule. They are now
+`parseToolArguments` in `src/services/agent/toolArguments.ts`, and the `isRecord`
+that existed only to serve Cowork's copy went with it.
+
+**`assertNotBusy` was byte-identical in both HTTP routers** and reachable only from
+its own routes. It now lives in `src/orchestrator/lock.ts` — the module that owns
+the lock and the job a refusal names — taking the mode as a **parameter**, the way
+`acquire` does, so the lock module still needs no `db/settings` import and both call
+sites pass `concurrencyMode()`.
+
+**`missingGit` and `isMissingExecutable` were one three-line predicate** written
+twice over two different result types (git's and the installer's). It is now
+`isMissingExecutable` in `src/util/exec.ts`, typed structurally on
+`{ spawnError, output }` so both callers satisfy it without a shared result type
+that neither owns.
+
+**What pins them, and what does not.** `test/busyguard.test.ts` drives both routers
+over a real loopback socket: with the lock held, `reject` answers a JSON 409 —
+asserted on the **content type**, because "the client gets JSON while it still can"
+is the reason the pre-check exists — and `queue` opens the stream and waits, with an
+abandoned request's place in the queue given back before the next job could wait on
+it. Mutation red-checks **3/3 killed**: the mode parameter ignored, a call site
+passing a literal `'reject'` instead of the setting, and the guard dropped from the
+agent route. `test/designagent.test.ts` (+1) pins the parser's two sentences and the
+array case through a real run — both are throws, and a throw from a tool ends the
+run, which is the behaviour the sentences reach a client through — red-checked
+**2/2**. The missing-binary predicate's negative arm is covered by the worktree probe
+in `test/codetasks.test.ts`; its **positive arm needs a genuinely missing binary and
+was unpinned before this change too**, which is recorded rather than papered over.
+
+**Not deduplicated, and named so the omission is a decision:** `isRecord` survives as
+a three-line local guard in `cowork/pulse.ts`, `mcp/configFile.ts` and
+`mcp/processManager.ts`. Each has one file's callers and carries no message and no
+policy; a shared module would cost three imports and a new util file to save four
+lines, and unlike the three above there is nothing in it that can drift
+user-visibly.
+
 ---
 
 # Master Plan v4 — verbatim record
@@ -2216,7 +2725,7 @@ the commands Hyperion issues on its own initiative.
 ## 1. Verified Ground Truth *(OG — all verified this session)*
 
 - HEAD `cf3a94e`; **44 modified + 27 untracked = 71 files** uncommitted; none of it `.kilo` state
-- Migrations on disk go **001 → 017** (`017_permissions_profiles_continuation.sql`) — `.clinerules/04`'s "next is 006" claim is **stale debt**
+- Migrations on disk go **001 → 017** (`017_permissions_profiles_continuation.sql`) — the local Cline rules file this was checked against (`.clinerules/`, gitignored and not in this repository) claimed "next is 006", and was **stale debt**
 - MCP process manager **intact**: `src/services/mcp/processManager.ts`, `registry.ts`, `supervisor.ts`, wired via `registerMcpProcessManager` in the orchestrator
 - Design absent — `http/agents.ts` returns coded 501
 - Cowork registered but depth unverified
@@ -2310,7 +2819,7 @@ This requirement exists for a reason and needs engineering, not just an attribut
 
 ### 3.8 Design Tests 🆕 V4
 
-Real-server tests per `.clinerules/05`: boot `createApp()` on port 0, drive the design routes with `fetch`, assert sandbox/CSP headers, brand round-trip, undo restore, and that the design agent **cannot** reach `bash`/`write` even if the model requests it.
+Real-server tests, the standing rule for this repo: boot `createApp()` on port 0, drive the design routes with `fetch`, assert sandbox/CSP headers, brand round-trip, undo restore, and that the design agent **cannot** reach `bash`/`write` even if the model requests it.
 
 ---
 
@@ -2387,7 +2896,7 @@ All items below are **new proposals**, sourced from real verified gaps (the 1.27
 | 4 | Full suite run | OG | ⬜ Never started |
 | 5 | Commit in logical groups | OG | ⬜ Blocked by 4 |
 | 6 | Docs in-commit (API/CONTRACTS/SPEC) | OG | ⬜ With commits |
-| 7 | Fix stale `.clinerules/04` | OG | ⬜ Found |
+| 7 | Stale `.clinerules/04` pointer made self-contained | OG | ✅ 2026-10-04 |
 | 8 | Cowork question resolved | OG | ⬜ Decision |
 | 9 | **Design agent per §3 full spec** | OG | ⬜ Kimi, after 4–8 |
 | 10 | Subagents where needed | OG | ⬜ |

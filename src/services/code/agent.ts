@@ -28,6 +28,7 @@ import {
   resolveDeclaredCommand,
 } from './projectContext.ts';
 import { AppError, toAppError } from '../../util/errors.ts';
+import { parseToolArguments } from '../agent/toolArguments.ts';
 
 import type {
   AgentContext,
@@ -254,7 +255,7 @@ async function runCodeInternal(
           details: { tool: call.name },
         });
       }
-      const args = parseArguments(call.arguments);
+      const args = parseToolArguments(call.arguments);
       switch (call.name) {
         case 'read': {
           const file = await ctx.readFile(requiredString(args, 'path'));
@@ -668,18 +669,6 @@ function toolSchemas(allowed: ReadonlySet<CodeToolName>): ToolSchema[] {
   return ALL_TOOLS.filter((tool) => allowed.has(tool)).map((tool) => schemas[tool]);
 }
 
-function parseArguments(raw: string): Record<string, unknown> {
-  let value: unknown;
-  try {
-    value = JSON.parse(raw);
-  } catch {
-    throw new AppError('bad_request', 'The model produced invalid JSON tool arguments.');
-  }
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new AppError('bad_request', 'Tool arguments must be a JSON object.');
-  }
-  return value as Record<string, unknown>;
-}
 
 function requiredString(args: Record<string, unknown>, field: string, allowEmpty = false): string {
   const value = args[field];
