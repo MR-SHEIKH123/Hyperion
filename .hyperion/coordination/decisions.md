@@ -2422,6 +2422,87 @@ this PR's subject, so they are recorded here rather than folded into it.
 
 ---
 
+## The session panel — Arena's right-hand rail, planned against what already exists (2026-10-04)
+
+**What the owner pointed at.** One thing, and it is the whole right-hand panel of an
+Arena session: the `Diff +3686 −19` header with its `Checks` tab beside it, the live
+preview row (`Canvas preview (con… · :4320`) with its refresh control, `Processes 1`,
+the changed-file list with per-file `+n −n`, and `View all changes` at the bottom.
+**`Merge PR` sat in that panel and the owner has dropped it** — so it is recorded below
+as a non-goal rather than left to be inferred from silence, and nothing in this plan
+depends on it.
+
+**None of this needs a new panel. The frame already has the region.** `AgentWorkspace`
+owns eight regions — `taskRail`, `contextExplorer`, `mainSurface`, `progressStream`,
+`inspector`, `versionTimeline`, `composer`, `statusBanner` — with the folded state and
+the per-tool widths persisted through `useWorkspaceLayout`, and `CodeTool` already fills
+`inspector` with a placeholder ("Selection" plus a clear button). So the work below is
+**content for a region that exists**, which is why it is client work over routes that
+mostly already exist — not a new subsystem.
+
+| Element in the panel | Arena's job for it | Hyperion's source today | The gap |
+| --- | --- | --- | --- |
+| Changed-file list + per-file `+n −n`, plus the header totals | "what did this change, and how much" | `GET /api/code/tasks/:taskId/diff` → `CanvasDiff {taskId, baseCommit, patch}` (1.40). One unified patch string; per-file counts are *derivable from it* | No split, no client |
+| `View all changes` | read the actual patch | the same route's `patch` | Rendering only |
+| Preview row: origin, port, refresh, open | "it is running here, right now" | `POST\|DELETE /api/code/tasks/:taskId/preview` → `MintedPreview {taskId, token, url, expiresAt}`; `previewListener()`/`previewReady()` exist as in-process status (1.40) | **No read route** — a client that did not mint cannot ask what is live |
+| `Processes 1` | what is running, and stop it | `GET /api/terminal/sessions` (live sessions, newest first, never a token), `POST /sessions`, `POST /sessions/:sessionId/close` | No client |
+| `Checks` | CI status for the change | **Nothing.** No `.github`, no runner, no status model anywhere in the tree | Not planned — see non-goals |
+| `Merge PR` | land the change | — | **Dropped by the owner.** Non-goal, permanently unless reversed |
+
+**S1 — the changed-file list, and the totals.** Add a pure split of the exporter's patch
+into `{path, additions, deletions, isNew, isDeleted, isBinary}` entries plus the totals,
+unit-tested against fixed patches. It must **not** add a git call site: `exportCodeTask`
+already owns the one call, and the mutation canary in `test/gitexec.test.ts` counts them.
+Render the list in `inspector`; a selected file shows its hunks **as text**, because the
+patch is what the route returns and a hunk model is a thing this repo does not have.
+*Acceptance:* the list for a known commit matches `git diff --stat` on the same commit;
+the per-file counts sum to the header totals; a direct-mode task shows the exporter's
+existing reasoned 400, never an empty list dressed as "no changes".
+
+**S2 — the preview row.** Add the one backend piece this panel wants: a read-only
+`GET /api/code/tasks/:taskId/preview` answering the live session or `null` (`404` is
+wrong here — "no preview is running" is a fact, not a missing resource). The row shows
+the origin, can open it, re-mint, and revoke; with the listener off it renders disabled
+and reuses `capability_disabled` with `details.setting = 'HYPERION_PREVIEW_PORT'`.
+*Acceptance:* the row's origin is the same string a user can open in a tab; a released
+worktree takes its preview row with it; the preview port is never added to
+`HYPERION_APP_ORIGINS`.
+
+**S3 — Processes.** Client only, over the terminal session routes that exist. *Acceptance:*
+live sessions listed with their state, a close action per row, and an empty list that
+says nothing is running rather than rendering blank.
+
+**S4 — the version timeline, folded into the same rail.** `VersionTimeline` already exists
+and is already mounted in this surface; wiring it to the current selection turns the
+`inspector` placeholder into a real read. *Acceptance:* the stack renders for a versioned
+artifact and the empty case states the fact ("a file never changed through the tools has
+no versions"), which the component already does. It must show the version stack and the
+step list **side by side** and never claim "content as of step k".
+
+**Non-goals, recorded so they are not re-litigated.**
+
+- **`Merge PR` — dropped by the owner, 2026-10-04.** It needs remote credentials, a push,
+  branch policy and conflict handling; this application's git surface is read-only by
+  design, and it has already had to treat `git config` as a code-execution primitive
+  (see the 2026-09-30 entry). The panel shows the change and names the branch.
+- **`Checks`.** There is no CI in this repository and none is planned; a checks row is a
+  runner plus a status model, i.e. a new subsystem. The honest substitute, if one is ever
+  wanted, is the task's own run state plus the last suite run inside a terminal session.
+- **A per-turn diff scope.** Arena scopes its diff to *the last turn*; Hyperion cannot.
+  `artifact_versions` rows carry no step or run id, and `rel_path`-backed rows die with the
+  worktree, so "what changed in step k" has no answer. The list is scoped to the task's
+  base commit, and nothing in the UI may imply otherwise.
+- **Writing from the panel.** Read-only, exactly as the Canvas itself is: no write, rename,
+  delete or create route, and the preview serves files rather than accepting them.
+
+**Sequencing.** S1 is the first slice worth building and belongs to the Canvas client that
+`frontend/contracts/gaps.md` already schedules ("no client until 2.4"); S2 is the only
+backend addition the panel needs; S3 and S4 are client work over routes already shipped.
+Nothing in this plan starts before the owner says so, and the open 1.40 PR is unaffected
+by it.
+
+---
+
 # Master Plan v4 — verbatim record
 
 > Appended 2026-09-11. This is the plan text as recorded in session; the
