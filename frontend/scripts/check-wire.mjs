@@ -75,7 +75,7 @@ let base = '';
 const used = new Set();
 
 /** Fail loudly rather than reporting a pass for a request that never ran. */
-async function check(name, method, route, schemaName, { payload, expectStatus, requireNonEmpty, schemas } = {}) {
+async function check(name, method, route, schemaName, { payload, expectStatus, requireNonEmpty, requirePresent, schemas } = {}) {
   const schema = schemas[schemaName];
   if (schema === undefined) {
     results.push({ name, ok: false, detail: `the frontend exports no schema named ${schemaName}` });
@@ -118,6 +118,22 @@ async function check(name, method, route, schemaName, { payload, expectStatus, r
   // A schema is only really exercised when the collection it validates has a row
   // in it. Checked against the body the schema was just given, not against a
   // later read — state moves, and a second request would measure something else.
+  if (requirePresent !== undefined) {
+    // The nullable arm of a schema is the one a fixture falls into by accident: a
+    // `preview: null` would parse and prove nothing about the object inside.
+    const value = requirePresent
+      .split('.')
+      .reduce((acc, key) => (acc === null || acc === undefined ? acc : acc[key]), body);
+    if (value === null || value === undefined) {
+      results.push({
+        name,
+        ok: false,
+        detail: `\`${requirePresent}\` came back null, so the non-null arm of the schema was never exercised — the fixture is wrong, not the schema`,
+      });
+      return;
+    }
+  }
+
   if (requireNonEmpty !== undefined) {
     const count = Array.isArray(body?.[requireNonEmpty]) ? body[requireNonEmpty].length : 0;
     if (count === 0) {
@@ -642,6 +658,13 @@ async function main() {
   await r('canvas.diff', 'GET', '/api/code/tasks/wire-canvas/diff', 'canvasDiffSchema');
   await r('canvas.preview', 'POST', '/api/code/tasks/wire-canvas/preview', 'mintedPreviewSchema', {
     expectStatus: 201,
+  });
+  // The read, taken while a session is live, so it exercises the non-null arm of
+  // `previewStatusSchema.preview` rather than the nullable one the panel's idle
+  // state already covers. The panel is built on this route precisely because it
+  // is a read; if it minted here the token minted on the line above would be gone.
+  await r('canvas.preview.status', 'GET', '/api/code/tasks/wire-canvas/preview', 'previewStatusSchema', {
+    requirePresent: 'preview.url',
   });
   await r('canvas.preview.revoke', 'DELETE', '/api/code/tasks/wire-canvas/preview', 'previewRevokedSchema');
   stopPreviewServer();

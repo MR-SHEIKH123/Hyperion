@@ -156,19 +156,25 @@ behavior in the browser.
   closes a session yet, and no screen sends the two headers. They exist because a token
   no server mints is not a mechanism, and the minting half is what makes the exemption
   structural rather than a flag a client could set.
-- **The Canvas has a client, and one screen (1.40 backend, client started 2026-10-04).** The
-  file tree, the file read, the task diff and the sandboxed preview are real routes
-  (`GET /api/code/tasks/:taskId/files|file|diff`, `POST|DELETE /api/code/tasks/:taskId/preview`,
-  `docs/API.md` §27), `frontend/src/api/canvas.ts` calls all five and `wire/canvas.ts` pins
-  their shapes — all five are checked against the real backend by `check-wire.mjs`, and the
-  ledger rows are `implemented` on the same standard as `providers.registry` (a client calls
-  the route; a screen is not required). **One screen exists: the Code surface's `inspector`
-  region renders the changed-file list** — per-file additions and deletions split from the
-  patch by `tools/code/patch.ts`, with the base commit named and a direct-mode refusal shown
-  as a refusal. Not yet surfaced, and the next slices: the **file tree** and the **file
-  read** (`getTaskFiles`/`getTaskFile` are called by nothing), the **preview row** (nothing
-  mints; `capability_disabled` still answers while the listener is off), and the **patch text
-  itself** — the list is derived from it, no view renders it. What the Canvas still does not
+- **The Canvas has a client, and two of its rows are on screen (1.40 backend, client built
+  2026-10-04).** The file tree, the file read, the task diff and the sandboxed preview are real
+  routes (`GET /api/code/tasks/:taskId/files|file|diff`,
+  `POST|GET|DELETE /api/code/tasks/:taskId/preview`, `docs/API.md` §27),
+  `frontend/src/api/canvas.ts` calls all six and `wire/canvas.ts` pins their shapes — all six
+  are checked against the real backend by `check-wire.mjs`, and the ledger rows are
+  `implemented` on the same standard as `providers.registry` (a client calls the route; a
+  screen is not required). **Two screens exist, both in the Code surface's `inspector` region
+  — the changed-file list and the live preview row.** The list splits per-file additions and
+  deletions out of the patch (`tools/code/patch.ts`), names the base commit and renders a
+  direct-mode refusal as a refusal. The preview row (`tools/code/PreviewRow.tsx`) shows the
+  live origin as a URL a user can open, starts one, stops one, and names
+  `HYPERION_PREVIEW_PORT` when the listener is off instead of rendering "nothing is running"
+  for a feature that is switched off. It reads rather than mints, and that is the reason the
+  route exists at all: **minting replaces the session, so a row that minted to display would
+  revoke the URL the user already has open** — the read is what lets the row be polled. Not
+  yet surfaced: the **file tree** and the **file read** (`getTaskFiles`/`getTaskFile` are
+  called by nothing) and the **patch text itself** — the list is derived from it, no view
+  renders it. What the Canvas still does not
   offer, and what a UI must not pretend it does:
   - **Read-only.** No write, rename, delete or create route; the preview serves files, it
     does not accept them.

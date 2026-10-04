@@ -4,6 +4,7 @@ import {
   canvasTreeSchema,
   mintedPreviewSchema,
   previewRevokedSchema,
+  previewStatusSchema,
 } from '../contracts/wire/canvas';
 import { request } from './client';
 
@@ -60,6 +61,19 @@ export const getTaskDiff = (taskId: string, signal?: AbortSignal) =>
 export const mintPreview = (taskId: string, signal?: AbortSignal) =>
   request(`/api/code/tasks/${encodeURIComponent(taskId)}/preview`, mintedPreviewSchema, {
     method: 'POST',
+    ...(signal === undefined ? {} : { signal }),
+  });
+
+/**
+ * What is live for this task right now, without minting one.
+ *
+ * The read that makes a status row possible: minting replaces the session, so a
+ * row that minted in order to display would revoke the URL the user already has
+ * open. This can be polled. It answers `capability_disabled` when the listener
+ * is off — a different fact from `preview: null`, and a row has to say which.
+ */
+export const getPreviewStatus = (taskId: string, signal?: AbortSignal) =>
+  request(`/api/code/tasks/${encodeURIComponent(taskId)}/preview`, previewStatusSchema, {
     ...(signal === undefined ? {} : { signal }),
   });
 

@@ -149,6 +149,11 @@ function rawBytes(route: string): Promise<{ status: number; bytes: Buffer; type:
   });
 }
 
+/** The read: what is live for this task, without minting one. */
+async function status(taskId: string): Promise<Response> {
+  return fetch(`${apiBase}/api/code/tasks/${taskId}/preview`);
+}
+
 async function mint(taskId: string): Promise<Minted> {
   const response = await fetch(`${apiBase}/api/code/tasks/${taskId}/preview`, { method: 'POST' });
   const body = await response.text();
@@ -592,6 +597,60 @@ describe('when nothing is listening', () => {
 // ---------------------------------------------------------------------------
 
 describe('revocation', () => {
+  it('reads whether a preview is live, and mints nothing to say so', async () => {
+    // No session yet: a fact about the task, not a missing resource.
+    const none = await status('preview-alpha');
+    assert.equal(none.status, 200);
+    assert.deepEqual(await none.json(), { taskId: 'preview-alpha', preview: null });
+
+    const minted = await mint('preview-alpha');
+
+    // The read must agree with the mint, to the token — a row that showed a
+    // different URL from the one a mint handed out would be showing a link that
+    // does not resolve.
+    const first = await status('preview-alpha');
+    const firstBody = (await first.json()) as { taskId: string; preview: Minted };
+    assert.equal(firstBody.preview.token, minted.token);
+    assert.equal(firstBody.preview.url, minted.url);
+    assert.equal(firstBody.preview.expiresAt, minted.expiresAt);
+
+    // **The reason the read exists.** Minting replaces the session, so a status
+    // row that minted in order to display would revoke the URL the user already
+    // has open. Polling the read must leave the session exactly as it was.
+    const second = await status('preview-alpha');
+    const secondBody = (await second.json()) as { preview: Minted };
+    assert.equal(secondBody.preview.token, minted.token);
+    assert.equal((await raw(`/p/${minted.token}/hello.txt`)).status, 200);
+
+    // And a revoked task reports nothing rather than a dead URL.
+    await fetch(`${apiBase}/api/code/tasks/preview-alpha/preview`, { method: 'DELETE' });
+    const revoked = await status('preview-alpha');
+    assert.deepEqual(await revoked.json(), { taskId: 'preview-alpha', preview: null });
+  });
+
+  it('an expired session is not a live one, and is dropped rather than remembered', async () => {
+    // Straight at the service, because the route mints with the real 30-minute
+    // TTL and a test that waited for it would not be a test.
+    await workspace('preview-alpha');
+    const minted = previews.mintPreview('preview-alpha', { ttlMs: 1_000, now: 5_000 });
+
+    assert.notEqual(previews.livePreview('preview-alpha', { now: 5_500 }), null);
+    // Expiry is a deadline, not a hint: the row must not offer a link the
+    // listener will refuse.
+    assert.equal(previews.livePreview('preview-alpha', { now: 6_000 }), null);
+    // Dropped, not merely reported absent — and the token stops resolving with
+    // it, which is the same answer the listener gives.
+    assert.equal(previews.livePreview('preview-alpha', { now: 6_001 }), null);
+    assert.equal(previews.resolvePreview(minted.token), null);
+  });
+
+  it('an unknown task has no preview state either', async () => {
+    const response = await status('no-such-task');
+    assert.equal(response.status, 404);
+    const body = (await response.json()) as { error: { code: string } };
+    assert.equal(body.error.code, 'not_found');
+  });
+
   it('DELETE revokes the token, and does nothing twice', async () => {
     const { token } = await mint('preview-alpha');
 

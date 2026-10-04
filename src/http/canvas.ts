@@ -17,7 +17,7 @@ import { Router } from 'express';
 import { wrap } from './errors.ts';
 import { pathParam, querySingleString } from './params.ts';
 import { canvasDiff, listCanvasTree, readCanvasFile, requireWorktree } from '../services/code/canvas.ts';
-import { mintPreview, revokePreview } from '../services/code/preview.ts';
+import { livePreview, mintPreview, revokePreview } from '../services/code/preview.ts';
 import { requirePreviewEnabled } from './previewServer.ts';
 import { AppError } from '../util/errors.ts';
 
@@ -77,6 +77,26 @@ canvasRouter.post(
     requireWorktree(taskId);
     const minted = mintPreview(taskId, { host: listener.host, port: listener.port });
     res.status(201).json(minted);
+  }),
+);
+
+/**
+ * Whether a preview is live for this task, and where. A read, because minting
+ * rotates the token — see `livePreview`.
+ *
+ * Gated like mint, so a host with the feature off answers `capability_disabled`
+ * rather than `{ preview: null }`: "previews are disabled here" and "nothing is
+ * running right now" are different facts, and a panel has to say which one it
+ * is looking at. An unknown or released task is still a 404, like every other
+ * route on this router.
+ */
+canvasRouter.get(
+  '/tasks/:taskId/preview',
+  wrap(async (req, res) => {
+    const taskId = pathParam(req, 'taskId');
+    const listener = requirePreviewEnabled();
+    requireWorktree(taskId);
+    res.json({ taskId, preview: livePreview(taskId, { host: listener.host, port: listener.port }) });
   }),
 );
 

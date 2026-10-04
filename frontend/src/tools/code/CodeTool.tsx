@@ -6,6 +6,7 @@ import { getCodeLane, getTaskState } from '../../api/tasks';
 import { RecoveryPanel } from '../../components/RecoveryPanel/RecoveryPanel';
 import { ParkedTask } from './ParkedTask';
 import { ChangedFiles } from './ChangedFiles';
+import { PreviewRow } from './PreviewRow';
 import { StartTask } from './StartTask';
 import { RunProgress } from './RunProgress';
 import { useTaskStart } from './useTaskStart';
@@ -210,6 +211,10 @@ export default function CodeTool() {
             }}
           />
         )}
+        {/* The live preview, under the changes because that is the order a
+            reader asks: what changed, then where it is running. Like the file
+            list, it needs a task — there is nothing to serve without one. */}
+        {taskId !== null && <PreviewRow taskId={taskId} />}
       </div>
     ),
   };

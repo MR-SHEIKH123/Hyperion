@@ -130,6 +130,53 @@ export function mintPreview(
   };
 }
 
+/**
+ * The live preview for a task, or `null`.
+ *
+ * **Why a read exists at all.** Minting is a POST and *replaces* the session,
+ * which is how revocation works. A status row that minted in order to display
+ * would therefore revoke the URL a user already has open — on every render, or
+ * on every poll. A read can be asked repeatedly and changes nothing.
+ *
+ * **Why it carries the URL.** The row's job is "it is running here", and the
+ * origin is the thing the reader wants. A caller who can read this route can
+ * already call mint and be handed the same URL, so withholding it here would
+ * buy nothing and push the client into exactly the rotation this exists to
+ * avoid.
+ *
+ * The two refusals `resolvePreview` applies to a token are applied here too,
+ * and for the same reasons: an expired session is not a live one (a row must
+ * not offer a link the listener will refuse), and a session whose task no
+ * longer holds a worktree stops resolving (serving it would widen the boundary
+ * the task had, because `containAgentCwd` falls back to the projects scope for
+ * a task the registry does not know). Either way the stale entry is dropped
+ * rather than left to be found again.
+ */
+export function livePreview(
+  taskId: string,
+  options: { host?: string; port?: number; now?: number } = {},
+): MintedPreview | null {
+  const session = sessions.get(taskId);
+  if (session === undefined) return null;
+
+  const now = options.now ?? Date.now();
+  if (now >= session.expiresAt) {
+    sessions.delete(taskId);
+    return null;
+  }
+  if (getWorktree(session.taskId) === undefined) {
+    sessions.delete(taskId);
+    return null;
+  }
+
+  return {
+    taskId: session.taskId,
+    token: session.token,
+    url: previewUrl(session.token, options),
+    expiresAt: session.expiresAt,
+  };
+}
+
 /** Drop a task's session. Returns whether there was one to drop. */
 export function revokePreview(taskId: string): { revoked: boolean } {
   const worktree = getWorktree(taskId);

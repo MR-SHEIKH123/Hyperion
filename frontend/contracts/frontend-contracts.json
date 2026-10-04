@@ -288,18 +288,25 @@
       "status": "implemented"
     },
     {
+      "id": "canvas.preview-status",
+      "method": "GET",
+      "expectedPath": "/api/code/tasks/:taskId/preview",
+      "status": "implemented",
+      "reason": "Called by `api/canvas.ts` (`getPreviewStatus`). The read that makes the row a status rather than a rotation: `PreviewRow` renders from this and only mints on request."
+    },
+    {
       "id": "canvas.preview",
       "method": "POST",
       "expectedPath": "/api/code/tasks/:taskId/preview",
       "status": "implemented",
-      "reason": "Called by `api/canvas.ts` (`mintPreview`). Nothing mints yet \u2014 the preview row that would open, refresh and revoke is the next slice of the session panel \u2014 and `capability_disabled` still answers while the listener is off."
+      "reason": "Called by `api/canvas.ts` (`mintPreview`), and by `getPreviewStatus` for the read. Rendered by `tools/code/PreviewRow.tsx`: the row shows the live origin, opens it, and offers start and stop. `capability_disabled` answers while the listener is off, and the row says so rather than showing an idle task."
     },
     {
       "id": "canvas.preview-revoke",
       "method": "DELETE",
       "expectedPath": "/api/code/tasks/:taskId/preview",
       "status": "implemented",
-      "reason": "Called by `api/canvas.ts` (`revokePreview`). The revoke control lands with the preview row above; the route and the `{revoked:false}` answer for a session that was already gone were already real."
+      "reason": "Called by `api/canvas.ts` (`revokePreview`). The Stop control is on `tools/code/PreviewRow.tsx`; the `{revoked:false}` answer for a session that was already gone stays meaningful because polling does not mint."
     }
   ]
 }

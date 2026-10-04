@@ -3838,7 +3838,7 @@ Only the diff needs a base commit. **`/files`, `/file` and the preview all work
 in `direct` mode**, because a task that shares the project directory still has a
 workspace; `mode` in the listing says which of the two it is.
 
-### 27.4 `POST /api/code/tasks/:taskId/preview` and `DELETE .../preview`
+### 27.4 `POST`, `GET` and `DELETE /api/code/tasks/:taskId/preview`
 
 `POST` mints a preview session and returns `201`:
 
@@ -3850,8 +3850,8 @@ workspace; `mode` in the listing says which of the two it is.
 ```
 
 - **One session per task.** Minting again replaces the previous token, and the old
-  URL stops working immediately — there is no route that lists sessions, so a
-  replaced token is not recoverable.
+  URL stops working immediately — `GET` below reports the *current* session only,
+  so a replaced token is not recoverable.
 - **TTL 30 minutes** (`DEFAULT_TTL_MS`). Expired and revoked tokens answer exactly
   like unknown ones.
 - **Revoked when the worktree is released.** Releasing a task's worktree makes its
@@ -3866,6 +3866,35 @@ workspace; `mode` in the listing says which of the two it is.
   `details.setting = "HYPERION_PREVIEW_PORT"`. No new error code was added for
   this: `capability_disabled` is already "the request is well-formed and only a
   setting changes the answer".
+
+**`GET .../preview` reads what is live, without minting one:**
+
+```json
+{ "taskId": "my-task", "preview": null }
+```
+
+`preview` is either `null` or the same `{taskId, token, url, expiresAt}` a mint
+returned.
+
+- **Why the read exists.** `POST` *replaces* the session — that is how revocation
+  works — so a status row that minted in order to display would revoke the URL a
+  user already has open, on every render and every poll. A read changes nothing
+  and can be asked repeatedly.
+- **Why it carries the URL.** The row's job is "it is running here", and the origin
+  is what the reader wants. A caller who can read this route can already call
+  `POST` and be handed the same URL, so withholding it here would buy nothing and
+  would push clients into exactly the rotation this route exists to avoid.
+- **Gated like mint.** With the listener off it answers `403 capability_disabled`
+  with `details.setting = 'HYPERION_PREVIEW_PORT'`, not `{ "preview": null }`:
+  "previews are disabled here" and "nothing is running right now" are different
+  facts, and a panel has to say which one it is showing.
+- **The same two refusals as a token.** An expired session is not a live one — a
+  row must not offer a link the listener will refuse — and a session whose task no
+  longer holds a worktree stops resolving. Either way the stale entry is dropped
+  rather than left to be found again.
+- **An unknown or released task is still `404 not_found`**, like every other route
+  on this router; only the *session* has a `null`, because "no preview is running"
+  is a fact about the task rather than a missing resource.
 
 ### 27.5 The one path seam
 

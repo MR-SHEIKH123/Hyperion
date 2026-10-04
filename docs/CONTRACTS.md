@@ -6415,3 +6415,26 @@ files rather than a subsystem.
   from `deferred-frontend` to `frontend` in the route snapshot. What no screen does yet
   is stated in each row's reason and in `frontend/contracts/gaps.md`, not hidden by the
   status.
+
+### The preview row, and why it reads (2026-10-04)
+
+- **A status row cannot mint.** `POST /api/code/tasks/:taskId/preview` replaces the session
+  — minting is how a re-mint revokes the old URL — so a row that minted in order to display
+  would revoke the link the user already has open, every time it rendered. The panel needed
+  a read, and `GET /api/code/tasks/:taskId/preview` is it: it never mints, never extends a
+  TTL, and returns the live session or `null`.
+- **The read carries the same two refusals as the mint.** An expired session, or a task whose
+  worktree is gone, is **deleted** when the read notices it, and the answer is `null` — a
+  released worktree takes its preview with it rather than leaving a stale row behind. An
+  unknown task is the route's `not_found`, unchanged from the mint.
+- **A disabled listener is not "nothing is running".** With `HYPERION_PREVIEW_PORT` unset the
+  read answers `403 capability_disabled` and `details.setting` names the setting, which the
+  row prints. Rendering an off feature as an idle one is the same mistake as rendering a
+  failed read as an empty list — and the row offers no Start button it knows the server will
+  refuse.
+- **The URL is the answer, not a decoration.** A live row shows the origin as text and as an
+  `Open` link, because "where is it being served" is the question the row exists to answer.
+  Expiry within five minutes is stated in words; a link that silently stopped working would
+  be a worse lie than one that says when.
+- **The preview port still never joins `HYPERION_APP_ORIGINS`.** The row links to the preview
+  listener from the API's origin; nothing here widens the API's own allow-list.

@@ -2563,6 +2563,49 @@ plan above rather than deleted.
 
 ---
 
+## The session panel's second slice: a preview row that reads instead of minting (2026-10-04)
+
+**What landed.** S2 of the plan above. The one backend addition the panel needed:
+`GET /api/code/tasks/:taskId/preview` → `{taskId, preview}`, where `preview` is the live
+session or `null` (`src/http/canvas.ts`, `livePreview` in `src/services/code/preview.ts`).
+`docs/API.md` §27.4 is retitled `POST, GET and DELETE` and the read is documented there.
+On the client: `previewStatusSchema`, `getPreviewStatus`, and `tools/code/PreviewRow.tsx`,
+mounted in the Code surface's `inspector` under the changed-file list.
+
+**Why a read route had to exist at all.** `POST …/preview` mints *and replaces* — that is
+how revocation works — so a status row that minted in order to display would revoke the URL
+the user already had open, on every render. The read changes nothing and is therefore
+pollable, which is the whole reason the row can be a status rather than an action.
+
+**The two refusals are applied on the read too, not just at mint.** `livePreview` runs
+`resolvePreview`'s checks and, when it finds an expired session or a task whose worktree is
+gone, **deletes the row and answers `null`** rather than returning a URL that no longer
+serves. A released worktree takes its preview with it — acceptance for this slice — and the
+read is where a stale row would otherwise survive as a lie.
+
+**Three states, kept apart on screen.** Off-host (`capability_disabled`, with
+`details.setting = 'HYPERION_PREVIEW_PORT'` named so the reader can act), idle (offer to
+start), live (show the origin as the URL, offer to open and to stop). A disabled feature
+rendered as "nothing is running" would be the same class of error as a failed read rendered
+as an empty list, which S1 already refused to do.
+
+**What the read does not do.** It does not mint, refresh, or extend the TTL, and it does not
+touch `HYPERION_APP_ORIGINS` — the preview port stays out of the API's Origin allow-list.
+
+**Evidence.** `test/canvaspreview.test.ts` 26/26 (three new cases: a read with nothing live,
+a read that agrees with a mint and leaves the token resolving, an expired session that is
+dropped and stays dropped); `frontend/src/tools/code/PreviewRow.test.tsx` 3/3; wire
+`check-wire.mjs` 65/65 with a `requirePresent` option added for the non-null arm — the
+nullable arm is what a fixture falls into by accident; ledger 45 contracts /
+24 implemented, route snapshot 197 routes.
+
+**Deliberately not done:** the row does not poll on an interval. Expiry is stated as text
+when it is close; the surface remounts on task selection and a manual re-read is one
+navigation away. A timer here would be a decision about refresh cost that this slice has no
+evidence for.
+
+---
+
 # Master Plan v4 — verbatim record
 
 > Appended 2026-09-11. This is the plan text as recorded in session; the

@@ -87,6 +87,21 @@ export const mintedPreviewSchema = z
   })
   .passthrough();
 
+/**
+ * What is live for a task, without minting one.
+ *
+ * `preview` is the current session or `null`, and the difference matters: this
+ * route is gated like mint, so a host with previews switched off answers
+ * `capability_disabled` rather than a null. A client must not render "nothing is
+ * running" for a feature that is turned off.
+ */
+export const previewStatusSchema = z
+  .object({
+    taskId: z.string(),
+    preview: mintedPreviewSchema.nullable(),
+  })
+  .passthrough();
+
 export const previewRevokedSchema = z
   .object({
     revoked: z.boolean(),
@@ -98,3 +113,4 @@ export type CanvasTree = z.infer<typeof canvasTreeSchema>;
 export type CanvasFile = z.infer<typeof canvasFileSchema>;
 export type CanvasDiff = z.infer<typeof canvasDiffSchema>;
 export type MintedPreview = z.infer<typeof mintedPreviewSchema>;
+export type PreviewStatus = z.infer<typeof previewStatusSchema>;
