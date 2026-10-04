@@ -352,6 +352,10 @@ const NESTED = new Set([
   // inside the Canvas tree — `canvasTreeSchema` is checked against a real
   // listing, and its `entries` are what exercise the entry schema
   'canvasEntrySchema',
+  // inside the terminal session list — the list is checked against a real store
+  // that holds one live and one ended session, which is what exercises both arms
+  // of `endedAt`/`endedReason`
+  'terminalSessionSchema',
   // inside the task responses
   'orphanedWorktreeSchema', 'taskApprovalSchema', 'taskRunStateSchema', 'taskStateResponseSchema',
   'taskStepSchema', 'taskStepSummarySchema', 'taskToolSchema', 'taskUsageSchema',
@@ -668,6 +672,18 @@ async function main() {
   });
   await r('canvas.preview.revoke', 'DELETE', '/api/code/tasks/wire-canvas/preview', 'previewRevokedSchema');
   stopPreviewServer();
+  // The session panel's Processes row. A session is opened in-process before the
+  // read, because an empty list would parse against the schema while exercising
+  // `terminalSessionSchema` zero times — and the ended-session arm matters too:
+  // the store retains ended sessions, so the fixture opens one and closes it,
+  // which is what makes `endedAt`/`endedReason` real values rather than nulls.
+  const { terminalSessions } = await import('../../src/services/terminal/sessions.ts');
+  const opened = terminalSessions.open({ taskId: 'wire-task', client: 'wire-check' });
+  terminalSessions.open({ taskId: null, client: 'wire-check-second' });
+  terminalSessions.close({ sessionId: opened.session.id, token: opened.token });
+  await r('terminal.sessions', 'GET', '/api/terminal/sessions', 'terminalSessionsSchema', {
+    requireNonEmpty: 'sessions',
+  });
   await r('tasks.state', 'GET', '/api/cowork/tasks/wire-task/state', 'taskStateWithUsageResponseSchema');
   // One run per state: `running`, `paused`, `blocked`, `ready_for_review` are active
   // and the other four are terminal, and the frontend has to accept all eight —

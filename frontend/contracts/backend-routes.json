@@ -1279,22 +1279,22 @@
     {
       "method": "POST",
       "path": "/api/terminal/sessions",
-      "source": "src/http/terminal.ts:41",
+      "source": "src/http/terminal.ts:44",
       "exposure": "deferred-frontend",
       "capability": "terminal.sessions"
     },
     {
       "method": "POST",
       "path": "/api/terminal/sessions/:sessionId/close",
-      "source": "src/http/terminal.ts:69",
+      "source": "src/http/terminal.ts:72",
       "exposure": "deferred-frontend",
       "capability": "terminal.sessions"
     },
     {
       "method": "GET",
       "path": "/api/terminal/sessions",
-      "source": "src/http/terminal.ts:86",
-      "exposure": "deferred-frontend",
+      "source": "src/http/terminal.ts:89",
+      "exposure": "frontend",
       "capability": "terminal.sessions"
     },
     {

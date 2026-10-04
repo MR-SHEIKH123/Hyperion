@@ -2606,6 +2606,47 @@ evidence for.
 
 ---
 
+## The session panel's third and fourth slices: Processes, and the rail's two lists (2026-10-04)
+
+**What landed.** `wire/terminal.ts` + `api/terminal.ts` (a read, nothing else),
+`tools/code/Processes.tsx` in the inspector, and `tools/code/SelectionTimeline.tsx`, which
+replaces the single version list in the `versionTimeline` region with **two columns: the
+selected file's version stack and the run's step list**, under one sentence saying they are
+not joined. Slice S4 of the plan is done as "side by side, never 'content as of step k'".
+
+**The one requirement the repo refuses, and it is not the UI's fault.** S3's acceptance
+asked for "a close action per row". `POST /sessions/:sessionId/close` authenticates with the
+session's token, which is minted with the session, returned exactly once to the client that
+opened it, and **never carried in the list** — that is the property the whole module exists
+to provide ("this command came from a person, right now" is evidence, not a flag). A panel
+that lists sessions holds no tokens and can end nothing; the browser terminal that will hold
+one does not exist. So the row ships with no close control and a sentence saying why. This is
+the repo beating the plan, recorded rather than bent: the alternative was a route that lets
+one client end another's session.
+
+**A second thing the route's own comment gets wrong.** `GET /api/terminal/sessions` says
+"live sessions"; `terminalSessions.list()` returns every retained record, including the last
+50 ended ones, with `endedAt`/`endedReason` set. The row therefore counts and lists
+`endedAt === null` only, and `wire/terminal.ts` documents the field a caller must test. The
+backend comment in `src/http/terminal.ts` was corrected to say which routes have a client.
+
+**Why the steps read is gated on a selected file.** `recoveryReport()` calls
+`findOrphanForTask` — a worktree check — for every caller whether or not there is a recovery
+case, and the existing surface test pins that a non-interrupted task costs no such read. The
+rail only exists once a file is named, so the read happens then: one per selection, sharing
+`['recovery', tool, taskId]` with the recovery panel so an interrupted task with a file open
+is checked once. The steps column says "Select a changed file to read the run's steps beside
+its versions" in the state where the read is deliberately not made.
+
+**Evidence.** frontend: 4 new/updated test files (`Processes` 3, `SelectionTimeline` 6,
+`CodeTool` +1 end-to-end wiring case, +1 no-file state), full suite 47 files / 292 tests,
+`tsc -b --force` 0, lint 0; contracts 46 / 25 implemented (new `terminal.sessions` row, and
+`GET /api/terminal/sessions` moved from `deferred-frontend` to `frontend`); wire 66/66 with
+`terminalSessionSchema` declared nested (the check's fixture opens one session and closes
+another, so both arms of `endedAt` are real). Backend untouched except one stale comment.
+
+---
+
 # Master Plan v4 — verbatim record
 
 > Appended 2026-09-11. This is the plan text as recorded in session; the

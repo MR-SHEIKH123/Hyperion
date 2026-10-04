@@ -268,6 +268,13 @@
       "status": "implemented"
     },
     {
+      "id": "terminal.sessions",
+      "method": "GET",
+      "expectedPath": "/api/terminal/sessions",
+      "status": "implemented",
+      "reason": "Called by `api/terminal.ts` (`getTerminalSessions`) and rendered by `tools/code/Processes.tsx`. No close function: `POST /sessions/:sessionId/close` authenticates with the opener's token, which this list never carries, so the panel shows state and says why it offers no control."
+    },
+    {
       "id": "canvas.files",
       "method": "GET",
       "expectedPath": "/api/code/tasks/:taskId/files",

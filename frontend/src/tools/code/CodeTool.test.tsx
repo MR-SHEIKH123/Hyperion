@@ -215,6 +215,22 @@ describe('the Code surface', () => {
     expect(screen.getByText('No task is selected. Pick one from the lane, or open a link from the Attention Center.')).toBeInTheDocument();
   });
 
+  it('shows the file’s versions beside the run’s steps, and reads the run once', async () => {
+    const mock = stubFetch();
+    renderTool(['/code?task=task-1&file=src/parser.ts']);
+
+    // Both columns of the rail, from two different routes.
+    expect(await screen.findByRole('list', { name: 'Version timeline' })).toBeInTheDocument();
+    expect(await screen.findByRole('list', { name: 'Run steps' })).toBeInTheDocument();
+    // And the sentence that keeps them from being read as one list.
+    expect(screen.getByText(/not joined/)).toBeInTheDocument();
+
+    // The steps column and the recovery panel are the same read (one query key), so
+    // an interrupted task with a file selected costs one worktree check, not two.
+    const recoveryCalls = mock.mock.calls.filter((call) => describeRequest(call[0]).endsWith('/recovery'));
+    expect(recoveryCalls.length).toBe(1);
+  });
+
   it('clears a selection without leaving the surface', async () => {
     stubFetch();
     renderTool(['/code?task=task-1&file=src/parser.ts']);

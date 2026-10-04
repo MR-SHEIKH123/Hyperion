@@ -152,10 +152,19 @@ behavior in the browser.
   server mints (`POST /api/terminal/sessions`), validated in constant time and expired on
   close or timeout — and everything without one is now evaluated by the permission engine
   as the `bash` tool over the project's own rules. The three `/api/terminal/sessions`
-  routes are therefore `deferred-frontend` in the route snapshot: no screen opens or
-  closes a session yet, and no screen sends the two headers. They exist because a token
-  no server mints is not a mechanism, and the minting half is what makes the exemption
-  structural rather than a flag a client could set.
+  routes that open and close a session are therefore `deferred-frontend` in the route
+  snapshot: no screen opens or closes one yet, and no screen sends the two headers. They
+  exist because a token no server mints is not a mechanism, and the minting half is what
+  makes the exemption structural rather than a flag a client could set.
+  **`GET /api/terminal/sessions` has a client and a screen since the session panel's
+  Processes row (2026-10-04)**: `api/terminal.ts` reads the list and
+  `tools/code/Processes.tsx` renders it. It closes nothing, and that is the shape of the
+  route rather than an unfinished part of the screen — the list never carries a token,
+  and `POST /sessions/:sessionId/close` authenticates with the opener's, so a panel that
+  offered a close control would be offering something the server refuses. Two more things
+  the row has to get right, both pinned by its test: the list also returns the last 50
+  *ended* sessions for the audit trail, so `count` is not the number of live processes
+  (`endedAt === null` is), and a run that has ended is history rather than a process.
 - **The Canvas has a client, and two of its rows are on screen (1.40 backend, client built
   2026-10-04).** The file tree, the file read, the task diff and the sandboxed preview are real
   routes (`GET /api/code/tasks/:taskId/files|file|diff`,

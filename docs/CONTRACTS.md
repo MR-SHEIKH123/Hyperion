@@ -6438,3 +6438,27 @@ files rather than a subsystem.
   be a worse lie than one that says when.
 - **The preview port still never joins `HYPERION_APP_ORIGINS`.** The row links to the preview
   listener from the API's origin; nothing here widens the API's own allow-list.
+
+### Processes, and the run's steps beside its versions (2026-10-04)
+
+- **`Processes` reads `GET /api/terminal/sessions` and closes nothing, because the list
+  cannot close anything.** `POST /sessions/:sessionId/close` authenticates with the
+  session's token, which is minted with the session and returned *exactly once* — to the
+  client that opened it. A list is readable by any client in the app; a close control over
+  one would end another client's session. So the panel shows state and says why it has no
+  button, rather than rendering a disabled one that implies a permission.
+- **`count` is not the number of processes.** The store keeps the last 50 ended sessions
+  for the audit trail and the list returns them, so the row counts `endedAt === null` and
+  renders nothing for history. A panel headed "Processes 1" over a finished session would
+  be wrong in exactly the way this panel exists to avoid.
+- **The rail's two lists are side by side, not joined.** `VersionTimeline` (the version
+  stack for the selected file) and the run's step list sit in the same region with a
+  sentence between them and the reader: an `artifact_versions` row records the file it
+  replaced, not the step that wrote it, so no view here may read as "content as of step k".
+  The steps come from `GET /api/{tool}/tasks/:taskId/recovery` — the only read that carries
+  them — and that read is gated on a file being selected, because the recovery route runs a
+  worktree check for every caller. It shares its query key with the recovery panel, so a
+  task that is both interrupted and selected costs one check, not two.
+- **A bounded list states its bound.** The step list is a tail: `omitted` is rendered
+  ("Showing the last 20 of 123 steps…"), and `summary.complete: false` is carried through
+  as "these are floors" rather than smoothed into a total that overstates what was counted.

@@ -2271,9 +2271,12 @@ now" half of the claim — and absolutely after **8 hours**; `endedReason` says 
 the containment boundary (tightened to the session's task when it names one), the
 256 KiB per-stream output bound, and the audit line all apply to an exempted command
 exactly as to any other. There is **no rate limiter in this build**, so the exemption
-neither adds nor removes one. The browser terminal these routes exist for is not built
-yet — no frontend module calls them — which is why they are `deferred-frontend` in the
-route snapshot and recorded in `frontend/contracts/gaps.md`.
+neither adds nor removes one. The browser terminal these routes exist for is still not
+built: no client opens or closes a session, and the two routes that do so are
+`deferred-frontend` in the route snapshot. `GET /api/terminal/sessions` does have a
+client since the session panel's Processes row — it reads the list (never a token) and
+closes nothing, because closing authenticates with the token the opener holds. The
+distinction is recorded in `frontend/contracts/gaps.md`.
 
 ### 12.7 The Design agent  *(new — the Design slice)*
 
