@@ -2379,6 +2379,49 @@ side and never claim "content as of step k".
 
 ---
 
+## The AI-tooling leftovers, audited rather than assumed (2026-10-04)
+
+A cleanup pass asked what in this tree is the residue of AI-built sessions. The
+answer is mostly *nothing*, and that is a measured claim rather than a reassuring
+one: `TODO`/`FIXME`/`XXX`/`HACK` in `src/` + `frontend/src/` — **0**;
+`console.log`/`debugger` in `src/` — **0**; stray `.bak`/`.orig`/`~`/`.tmp`/
+`.DS_Store`/`*.log` files — **0**; empty or stub source files — **0**; unused
+dependencies in either `package.json` — **0** (the five or six that a name scan
+flags are `@types/*` and the `tsc`/`eslint` binaries, which are never imported by
+name); `src/` modules nothing imports — **0**.
+
+**`.clinerules/` and `.kilo/` are not in the repository and never were.** Both are
+local-only agent-tooling directories, gitignored (`.gitignore`, `/.clinerules/`,
+with the reason written next to it), and `git log --all -- .clinerules .kilo` is
+empty — so there is nothing here to delete. What the tree *did* carry was three
+pointers into them, and those were junk: `§1`'s ground-truth line, `§3.8`'s "per
+`.clinerules/05`", and the v4 deliverables checklist's own row 7, "Fix stale
+`.clinerules/04`" — a found-but-never-fixed item naming item numbers in a
+directory no reader of this repository can open. All three are now
+self-contained (the rule and the fact are stated outright; the reference that
+remains is labelled gitignored-and-not-in-this-repository), and row 7 is closed.
+The mentions that stay are provenance, and are load-bearing: the header's sentence
+explaining that `decisions.md` exists *because* decisions used to die in those
+gitignored directories and in chat is the reason this file has a reason.
+
+**The `1.x` numbers are an index, not decoration.** `(1.40)` is not a version tag:
+it is this milestone's id in the owner's prompt series, defined in this file and
+joined to `docs/CONTRACTS.md`, `frontend/contracts/gaps.md` and `README.md` — the
+same convention as the ~40 other `(1.x)` citations and the register's own rows.
+`1.40` appears **five** times in real use (the sixth grep hit is
+`192.168.1.40`, an address in an egress test), which is what an index entry
+should look like, not saturation.
+
+**Two things were left alone deliberately.** The 2026-09-21 entry's 22
+never-referenced value exports were re-derived by this pass (24 counting two
+type-only declarations) and **kept**, per that entry's reasoning — they are test
+seams and affordances a planned item wants, and deleting them would need that
+entry reversed first. And three byte-identical helper bodies were found — one
+module-private each — which is a refactor of unrelated subsystems, not cleanup of
+this PR's subject, so they are recorded here rather than folded into it.
+
+---
+
 # Master Plan v4 — verbatim record
 
 > Appended 2026-09-11. This is the plan text as recorded in session; the
@@ -2400,7 +2443,7 @@ side and never claim "content as of step k".
 ## 1. Verified Ground Truth *(OG — all verified this session)*
 
 - HEAD `cf3a94e`; **44 modified + 27 untracked = 71 files** uncommitted; none of it `.kilo` state
-- Migrations on disk go **001 → 017** (`017_permissions_profiles_continuation.sql`) — `.clinerules/04`'s "next is 006" claim is **stale debt**
+- Migrations on disk go **001 → 017** (`017_permissions_profiles_continuation.sql`) — the local Cline rules file this was checked against (`.clinerules/`, gitignored and not in this repository) claimed "next is 006", and was **stale debt**
 - MCP process manager **intact**: `src/services/mcp/processManager.ts`, `registry.ts`, `supervisor.ts`, wired via `registerMcpProcessManager` in the orchestrator
 - Design absent — `http/agents.ts` returns coded 501
 - Cowork registered but depth unverified
@@ -2494,7 +2537,7 @@ This requirement exists for a reason and needs engineering, not just an attribut
 
 ### 3.8 Design Tests 🆕 V4
 
-Real-server tests per `.clinerules/05`: boot `createApp()` on port 0, drive the design routes with `fetch`, assert sandbox/CSP headers, brand round-trip, undo restore, and that the design agent **cannot** reach `bash`/`write` even if the model requests it.
+Real-server tests, the standing rule for this repo: boot `createApp()` on port 0, drive the design routes with `fetch`, assert sandbox/CSP headers, brand round-trip, undo restore, and that the design agent **cannot** reach `bash`/`write` even if the model requests it.
 
 ---
 
@@ -2571,7 +2614,7 @@ All items below are **new proposals**, sourced from real verified gaps (the 1.27
 | 4 | Full suite run | OG | ⬜ Never started |
 | 5 | Commit in logical groups | OG | ⬜ Blocked by 4 |
 | 6 | Docs in-commit (API/CONTRACTS/SPEC) | OG | ⬜ With commits |
-| 7 | Fix stale `.clinerules/04` | OG | ⬜ Found |
+| 7 | Stale `.clinerules/04` pointer made self-contained | OG | ✅ 2026-10-04 |
 | 8 | Cowork question resolved | OG | ⬜ Decision |
 | 9 | **Design agent per §3 full spec** | OG | ⬜ Kimi, after 4–8 |
 | 10 | Subagents where needed | OG | ⬜ |
