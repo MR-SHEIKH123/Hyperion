@@ -6344,6 +6344,11 @@ feature rather than failing boot), and the separate port **is** the isolation.
 - The **same Host guard** as the API, against the same `HYPERION_ALLOWED_HOSTS`.
   A proxied deployment (Tailscale included) must list the preview hostname there
   as well; the preview port must **not** be added to `HYPERION_APP_ORIGINS`.
+- The CSP's explicit origin comes from the **validated `Host`**, with
+  `x-forwarded-proto`/`x-forwarded-host` honoured so a TLS-terminating proxy names
+  the origin the browser actually has. The forwarded name is only used after the
+  same allow-list check the `Host` header passed, so a forwarded header can name a
+  host this listener already answers to and never one it would have refused.
 - CSP as a **header**, so it binds in a tab as well as inside an iframe, with
   `sandbox allow-scripts …` and **no `allow-same-origin`**. `sandbox` gives the
   document an opaque origin, where `'self'` is not guaranteed to match the

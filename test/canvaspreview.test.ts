@@ -67,7 +67,12 @@ interface RawResponse {
  */
 function raw(
   route: string,
-  options: { method?: string; host?: string | null; port?: number } = {},
+  options: {
+    method?: string;
+    host?: string | null;
+    port?: number;
+    headers?: Record<string, string>;
+  } = {},
 ): Promise<RawResponse> {
   const port = options.port ?? previewPort;
   const { method = 'GET', host } = options;
@@ -83,6 +88,7 @@ function raw(
         setHost: false,
         headers: {
           ...(host === null ? {} : { Host: host ?? `127.0.0.1:${String(port)}` }),
+          ...(options.headers ?? {}),
         },
       },
       (response) => {
@@ -365,6 +371,46 @@ describe('the preview listener', () => {
     assert.match(csp, /script-src 'self' http:\/\/127\.0\.0\.1:\d+/);
     assert.match(csp, /connect-src 'self' http:\/\/127\.0\.0\.1:\d+/);
     assert.match(csp, /default-src 'none'/);
+  });
+
+  it('follows the proxy headers, so a TLS-terminated origin is the one named', async () => {
+    const { token } = await mint('preview-alpha');
+
+    // Plain HTTP here, HTTPS in the browser. The explicit origin exists to be
+    // the source that matches under `sandbox` when `'self'` does not, so a
+    // hardcoded http:// would leave the page with neither.
+    const forwarded = await raw(`/p/${token}/index.html`, {
+      headers: { 'x-forwarded-proto': 'https', 'x-forwarded-host': `127.0.0.1:${String(previewPort)}` },
+    });
+    const csp = header(forwarded, 'content-security-policy');
+    assert.match(csp, /script-src 'self' https:\/\/127\.0\.0\.1:\d+/);
+    assert.match(csp, /connect-src 'self' https:\/\/127\.0\.0\.1:\d+/);
+
+    // The forwarded host is used verbatim, port included — the browser's origin
+    // carries the port it typed, not the one this process bound.
+    const otherPort = await raw(`/p/${token}/index.html`, {
+      headers: { 'x-forwarded-proto': 'https', 'x-forwarded-host': 'localhost:9999' },
+    });
+    assert.match(header(otherPort, 'content-security-policy'), /https:\/\/localhost:9999/);
+  });
+
+  it('ignores a forwarded host this server would refuse, and a nonsense scheme', async () => {
+    const { token } = await mint('preview-alpha');
+
+    // The forwarded name never widens the policy: it is only used when the same
+    // allow-list check the Host header passed accepts it too.
+    const forged = await raw(`/p/${token}/index.html`, {
+      headers: { 'x-forwarded-host': 'evil.test', 'x-forwarded-proto': 'https' },
+    });
+    const csp = header(forged, 'content-security-policy');
+    assert.equal(csp.includes('evil.test'), false);
+    assert.match(csp, /https:\/\/127\.0\.0\.1:\d+/);
+
+    // A scheme that is not http or https is ignored, not echoed.
+    const nonsense = await raw(`/p/${token}/index.html`, { headers: { 'x-forwarded-proto': 'ftp' } });
+    const plain = header(nonsense, 'content-security-policy');
+    assert.equal(plain.includes('ftp://'), false);
+    assert.match(plain, /http:\/\/127\.0\.0\.1:\d+/);
   });
 
   it('emits no CORS header on the API, where these previews are looked at from', async () => {

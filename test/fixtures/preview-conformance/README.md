@@ -13,6 +13,7 @@ which one did the work.
 
 ```sh
 node scripts/preview-conformance.mjs
+node scripts/preview-conformance.mjs --port 4320 --bind 0.0.0.0   # behind a proxy
 ```
 
 The script copies this directory into a throwaway `HYPERION_HOME`, registers it

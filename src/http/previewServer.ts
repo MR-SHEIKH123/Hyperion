@@ -329,19 +329,46 @@ function refusalFor(error: unknown): { status: number; body: string } {
   return { status: 500, body: 'The preview server could not serve that file.' };
 }
 
+/** One value from a header that may have arrived repeated or comma-joined. */
+function firstHeaderValue(value: string | string[] | undefined): string {
+  const raw = Array.isArray(value) ? (value[0] ?? '') : (value ?? '');
+  return raw.split(',')[0]?.trim() ?? '';
+}
+
 /**
- * The origin the browser used, taken from the validated `Host` header.
+ * The origin the browser used — the `Host` header, or, behind a proxy, the
+ * public name and scheme the proxy reports.
  *
  * The port is the one in the header rather than the one this process bound:
  * they are the same on a direct connection, and when they differ it is because
  * something is proxying — in which case the browser's origin is the header's,
- * and `'self'` may not match it. `null` only if the header is unparseable; the
- * host guard has already refused anything not on the allow-list by then.
+ * and `'self'` may not match it.
+ *
+ * **Why the forwarded headers are read at all.** This listener speaks plain
+ * HTTP, so the scheme cannot be read off the connection, and a hardcoded
+ * `http://` names an origin the browser never used the moment anything
+ * terminates TLS in front of us (Tailscale Serve, nginx, a preview gateway).
+ * That matters more here than in most places: the explicit origin exists to be
+ * the source that matches under `sandbox` when `'self'` does not, so a wrong
+ * scheme would leave the page with neither. `x-forwarded-proto` supplies the
+ * scheme, and `x-forwarded-host` the public name when the proxy rewrites `Host`.
+ *
+ * **Why this cannot widen the policy.** The forwarded name is only used when it
+ * passes the same `isAllowedHost` check the `Host` header just passed — so a
+ * forwarded header can name a host this server already answers to, and never
+ * one it would have refused. A nonsense scheme is ignored rather than honoured.
+ * `null` only when no usable header is present; the host guard has already
+ * refused anything not on the allow-list by then.
  */
 function requestOrigin(request: http.IncomingMessage): string | null {
-  const raw = request.headers.host;
-  if (typeof raw !== 'string' || raw.trim() === '') return null;
-  return canonicalOrigin(`http://${raw.trim()}`);
+  const forwardedHost = firstHeaderValue(request.headers['x-forwarded-host']);
+  const host =
+    forwardedHost !== '' && isAllowedHost(forwardedHost) ? forwardedHost : request.headers.host;
+  if (typeof host !== 'string' || host.trim() === '') return null;
+
+  const forwardedProto = firstHeaderValue(request.headers['x-forwarded-proto']).toLowerCase();
+  const scheme = forwardedProto === 'https' ? 'https' : 'http';
+  return canonicalOrigin(`${scheme}://${host.trim()}`);
 }
 
 function contentSecurityPolicy(request: http.IncomingMessage): string {

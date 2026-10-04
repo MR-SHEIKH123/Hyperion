@@ -2269,6 +2269,22 @@ One bug in this PR's own first draft was found by the tests: `refusalFor` used
 (deliberately free of HTTP-layer imports), so a traversal answered 500. It now
 normalizes with `toAppError` and answers 403.
 
+**Running it behind a TLS proxy found one more defect, fixed.** The listener speaks
+plain HTTP, so `requestOrigin` hardcoded `http://` — and the origin it names is the
+one whose *whole purpose* is to be the source that matches when `'self'` does not
+under the sandbox's opaque origin. Behind anything that terminates TLS (Tailscale
+Serve, nginx, a hosted preview gateway) the browser's document is `https://`, so the
+hardcoded scheme named an origin the page never had, leaving neither mechanism
+available. It now reads `x-forwarded-proto` for the scheme and `x-forwarded-host`
+for the public name when a proxy rewrites `Host` — **only** after the forwarded name
+passes the same `isAllowedHost` check the `Host` header passed, so a forwarded
+header can name a host this listener already answers to and never one it would have
+refused. Asserted both ways in `test/canvaspreview.test.ts`: the proxied request
+carries `https://<host>`, a forged `x-forwarded-host: evil.test` is ignored and the
+CSP still names loopback, and a nonsense scheme (`ftp`) is dropped rather than
+echoed. The conformance script also gained `--port` and `--bind`, because a caller
+behind a proxy already knows which port it will be mapped to.
+
 **The browser-measured half is the owner's to run.** `test/fixtures/preview-conformance/`
 plus `scripts/preview-conformance.mjs` serve a page whose seven rows state their
 expected result — external `.js`, module script, `fetch` of JSON, image, inline

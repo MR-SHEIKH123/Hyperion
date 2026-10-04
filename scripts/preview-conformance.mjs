@@ -15,6 +15,13 @@
  * under `src/` is imported.
  *
  * Usage: `node scripts/preview-conformance.mjs`
+ *
+ * Options, for the case where something in front of this process maps a known
+ * public port (a reverse proxy, a tunnel, a hosted sandbox):
+ *
+ *   --port <n>     listen on that port instead of a free one
+ *   --bind <host>  bind that address instead of HYPERION_BIND (0.0.0.0 when a
+ *                  proxy in front of the process connects from outside it)
  */
 import fs from 'node:fs';
 import http from 'node:http';
@@ -52,25 +59,41 @@ if (!fs.existsSync(path.join(worktree.dir, 'index.html'))) {
   throw new Error(`the fixture was not copied into ${worktree.dir}`);
 }
 
+const argv = process.argv.slice(2);
+const flag = (name) => {
+  const index = argv.indexOf(name);
+  return index >= 0 ? argv[index + 1] : undefined;
+};
+const portFlag = flag('--port');
+const bind = flag('--bind');
+
 // A free port, taken the way the tests take one: `0` is the *disabled* value
 // for HYPERION_PREVIEW_PORT, so "pick one for me" is not something the listener
 // offers — deliberately, because that would make a misconfiguration look like a
-// working preview.
-const port = await new Promise((resolve, reject) => {
-  const probe = http.createServer();
-  probe.once('error', reject);
-  probe.listen(0, '127.0.0.1', () => {
-    const address = probe.address();
-    if (address === null || typeof address === 'string') {
-      reject(new Error('no port'));
-      return;
-    }
-    const { port: free } = address;
-    probe.close(() => resolve(free));
-  });
-});
+// working preview. `--port` is for when the caller already knows which port
+// something in front of this process will map.
+const port =
+  portFlag === undefined
+    ? await new Promise((resolve, reject) => {
+        const probe = http.createServer();
+        probe.once('error', reject);
+        probe.listen(0, '127.0.0.1', () => {
+          const address = probe.address();
+          if (address === null || typeof address === 'string') {
+            reject(new Error('no port'));
+            return;
+          }
+          const { port: free } = address;
+          probe.close(() => resolve(free));
+        });
+      })
+    : Number(portFlag);
+if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+  console.error(`--port needs a whole port number in 1-65535, not "${String(portFlag)}".`);
+  process.exit(1);
+}
 
-startPreviewServer({ port });
+startPreviewServer({ port, ...(bind === undefined ? {} : { host: bind }) });
 const listener = await previewReady();
 if (!listener.running) {
   console.error(`The preview listener did not start: ${listener.reason ?? 'unknown reason'}`);

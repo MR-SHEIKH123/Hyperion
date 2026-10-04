@@ -3941,6 +3941,16 @@ sandbox allow-scripts allow-forms allow-modals allow-popups allow-downloads
   `node scripts/preview-conformance.mjs`) is the browser-verified fixture that
   measures which one did the work; the outcome is recorded in
   `.hyperion/coordination/decisions.md`.
+- **Behind a TLS-terminating proxy, the explicit origin follows the proxy
+  headers.** This listener speaks plain HTTP, so the scheme cannot be read off
+  the connection: a hardcoded `http://` would name an origin the browser never
+  used the moment Tailscale Serve, nginx or another gateway terminates TLS in
+  front of it — and since the explicit origin exists to be the source that
+  matches when `'self'` does not, a wrong scheme would leave the page with
+  neither. `x-forwarded-proto` supplies the scheme and `x-forwarded-host` the
+  public name when the proxy rewrites `Host`; the forwarded name is only used
+  when it passes the same allow-list check the `Host` header did, and a scheme
+  that is not `http`/`https` is ignored rather than echoed.
 - `script-src` keeps `'unsafe-inline'` deliberately: the single-file page an agent
   produces has its script inline, and a preview that silently does not run is not
   a preview. The isolation is the opaque origin, not the script-src.
