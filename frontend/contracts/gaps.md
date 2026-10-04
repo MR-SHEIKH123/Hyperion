@@ -156,12 +156,20 @@ behavior in the browser.
   closes a session yet, and no screen sends the two headers. They exist because a token
   no server mints is not a mechanism, and the minting half is what makes the exemption
   structural rather than a flag a client could set.
-- **The Canvas backend exists and has no client (1.40, 2026-10-03).** The file tree, the
-  file read, the task diff and the sandboxed preview are real routes now
+- **The Canvas has a client, and one screen (1.40 backend, client started 2026-10-04).** The
+  file tree, the file read, the task diff and the sandboxed preview are real routes
   (`GET /api/code/tasks/:taskId/files|file|diff`, `POST|DELETE /api/code/tasks/:taskId/preview`,
-  `docs/API.md` §27), and the five ledger rows are `missing` — the backend half of the
-  contract is what landed, no screen calls it yet, so no `specifiedPath` is recorded. What the
-  Canvas still does not offer, and what a UI must not pretend it does:
+  `docs/API.md` §27), `frontend/src/api/canvas.ts` calls all five and `wire/canvas.ts` pins
+  their shapes — all five are checked against the real backend by `check-wire.mjs`, and the
+  ledger rows are `implemented` on the same standard as `providers.registry` (a client calls
+  the route; a screen is not required). **One screen exists: the Code surface's `inspector`
+  region renders the changed-file list** — per-file additions and deletions split from the
+  patch by `tools/code/patch.ts`, with the base commit named and a direct-mode refusal shown
+  as a refusal. Not yet surfaced, and the next slices: the **file tree** and the **file
+  read** (`getTaskFiles`/`getTaskFile` are called by nothing), the **preview row** (nothing
+  mints; `capability_disabled` still answers while the listener is off), and the **patch text
+  itself** — the list is derived from it, no view renders it. What the Canvas still does not
+  offer, and what a UI must not pretend it does:
   - **Read-only.** No write, rename, delete or create route; the preview serves files, it
     does not accept them.
   - **Not a dev server.** The preview is a static read: no build step, no bundler, no hot

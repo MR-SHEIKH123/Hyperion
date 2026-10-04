@@ -2503,6 +2503,66 @@ by it.
 
 ---
 
+## The session panel's first slice: the Canvas gets a client, and the inspector gets the file list (2026-10-04)
+
+**What landed.** S1 of the plan above, end to end. `frontend/src/contracts/wire/canvas.ts`
+pins the four Canvas shapes and the revoke answer; `frontend/src/api/canvas.ts` calls all
+five routes; `frontend/src/tools/code/patch.ts` splits the exporter's patch into files with
+counts; and the Code surface's `inspector` region renders the result — replacing the
+selection placeholder with the changed-file list, where clicking a path writes the `?file=`
+the version timeline already reads.
+
+**Four decisions the slice rested on.**
+
+1. **The patch is split in the browser, because the wire shape is ratified.** `CanvasDiff`
+   is `{taskId, baseCommit, patch}` in docs/API.md §27.3 — the backend runs `git diff` once
+   and hands over the text. Adding a per-file array would put a parser in the backend and
+   widen a frozen contract for one screen's benefit. `splitPatch` is a pure function over a
+   string, which is also what makes it testable against fixed patches rather than against a
+   repository that has to be built first.
+2. **It is a patch parser, not a hunk model.** New, deleted, renamed, binary and mode-only
+   changes are recognised so none of them reads as `0 +0 −0`, and hunk state is tracked so a
+   deleted line whose text begins `--- ` is content rather than a file header. Nothing
+   attempts hunks, line ranges or a word-level diff.
+3. **The ledger's standard is "a client calls the route", so the five rows are
+   `implemented`.** That is the rule that let `providers.registry` be implemented while no
+   screen used it; what no screen does yet is written into each row's reason and into
+   `frontend/contracts/gaps.md` rather than hidden behind a status. The five routes moved
+   from `deferred-frontend` to `frontend` in the route snapshot for the same reason.
+4. **The wire schemas were proved against the real backend rather than trusted.**
+   `check-wire.mjs`'s fixture grew a real git repository inside the projects scope, a
+   provisioned worktree, a file changed after the base commit and the preview listener, so
+   the tree, file, diff, mint and revoke schemas all parse real responses — `64/64 matched`,
+   up from 59, with `canvasEntrySchema` classified as nested inside the tree it validates.
+   Without the fixture these six schemas would have been the exact defect that script exists
+   to catch: a schema that rejects a real body, discovered by whichever surface is built on
+   it first.
+
+**One thing was verified and then not kept, and the reason is the same boundary.**
+`splitPatch` was checked against real `git diff` output over a scratch repository carrying
+every change kind at once, and that check found a genuine difference — `--numstat` writes a
+rename as `old => new`, its own display notation rather than a path. The check itself was
+not committed: the frontend's test project is browser-typed (`types` excludes `node`) and
+spawning git there needs `@types/node` added program-wide, which would let any surface use
+Node APIs and still typecheck. The fixed patches in `patch.test.ts` are the standing
+guarantee, and the parser's doc comment records what the scratch check covered.
+
+**What is not built, so the next slice is not mistaken for the whole.** The file tree and
+the file read are called by no screen (`getTaskFiles`/`getTaskFile` exist in the client and
+nothing invokes them); the **preview row** is still S2 and still needs the one backend read
+the plan names — a `GET .../preview` answering the live session or `null`, since a client
+that did not mint cannot ask what is live; the processes panel is untouched; and the patch
+text itself is not rendered anywhere — the list is derived from it, so "View all changes"
+is still an open slice.
+
+**Correction to this register.** The 2026-10-04 audit entry above says the frontend has no
+unimported modules; that was a backend-only scan and the claim was wider than the evidence.
+`frontend/src/api/downloads.ts` and `uploads.ts` were imported by nothing at the time. The
+download helper is the one a "Download all" gesture wants, which is why it is named in the
+plan above rather than deleted.
+
+---
+
 # Master Plan v4 — verbatim record
 
 > Appended 2026-09-11. This is the plan text as recorded in session; the

@@ -46,6 +46,8 @@
  * Usage: `npm run wire` (from `frontend/`), exit code 1 on any mismatch.
  */
 import fs, { mkdtempSync, rmSync, readdirSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -331,6 +333,9 @@ const NESTED = new Set([
   // inside the provider responses
   'egressClassSchema', 'egressProxySchema', 'modelSchema', 'providerSchema', 'providerTypeSchema',
   'zdrRequirementSchema', 'zdrStatusSchema',
+  // inside the Canvas tree — `canvasTreeSchema` is checked against a real
+  // listing, and its `entries` are what exercise the entry schema
+  'canvasEntrySchema',
   // inside the task responses
   'orphanedWorktreeSchema', 'taskApprovalSchema', 'taskRunStateSchema', 'taskStateResponseSchema',
   'taskStepSchema', 'taskStepSummarySchema', 'taskToolSchema', 'taskUsageSchema',
@@ -503,6 +508,51 @@ async function main() {
   const project = createProject({ name: 'Wire project', path: path.join(home, 'project'), managed: true });
   openProject(project.id);
 
+  // --- the Canvas routes: a task holding a real checkout ---------------------
+  // A real git repository, because `GET .../diff` delegates to the exporter and
+  // the exporter needs a base commit. A directory that is not a repo would make
+  // every Canvas check a refusal, which would prove nothing about the schemas —
+  // the failure this script exists to catch is a schema that rejects a real
+  // response, and a 400 has no body to reject.
+  // Inside the projects scope, not beside it: `provisionWorktree` resolves a
+  // repository through the same filesystem boundary every other path goes
+  // through, and a path outside it is refused rather than diffed.
+  const repoDir = path.join(getRoot('projects'), 'canvas-repo');
+  fs.mkdirSync(repoDir, { recursive: true });
+  writeFileSync(path.join(repoDir, 'README.md'), '# canvas\n');
+  const git = (...args) => execFileSync('git', args, { cwd: repoDir, encoding: 'utf8' });
+  git('init', '-q');
+  git('config', 'user.email', 'wire@example.test');
+  git('config', 'user.name', 'wire');
+  git('config', 'commit.gpgsign', 'false');
+  git('add', '-A');
+  git('commit', '-qm', 'base');
+
+  const { provisionWorktree } = await import('../../src/services/code/worktree.ts');
+  const canvasWorktree = await provisionWorktree('wire-canvas', repoDir);
+  // Written *after* the base commit, so the diff carries a real file: an empty
+  // patch would parse and exercise nothing inside `canvasDiffSchema`.
+  writeFileSync(path.join(canvasWorktree.dir, 'README.md'), '# canvas\nchanged\n');
+
+  // The second listener, so mint answers with a session rather than with the
+  // `capability_disabled` refusal — that refusal has its own check in the API
+  // suite, and it would leave `mintedPreviewSchema` unexercised here.
+  const { startPreviewServer, stopPreviewServer } = await import('../../src/http/previewServer.ts');
+  const previewPort = await new Promise((resolve, reject) => {
+    const probe = net.createServer();
+    probe.once('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const address = probe.address();
+      if (address === null || typeof address === 'string') {
+        reject(new Error('no port'));
+        return;
+      }
+      const { port } = address;
+      probe.close(() => resolve(port));
+    });
+  });
+  startPreviewServer({ port: previewPort });
+
   startTaskRun({ runId: 'wire-run', taskId: 'wire-task', tool: 'cowork', chatId: chat.id });
   updateTaskRunState('wire-run', 'blocked');
   recordStep({
@@ -582,6 +632,19 @@ async function main() {
   await r('providers.active', 'GET', '/api/providers/active', 'activeProviderResponseSchema');
   await r('providers.activeModels', 'GET', '/api/providers/active/models', 'activeModelsResponseSchema', { requireNonEmpty: 'models' });
   await r('tasks.lane', 'GET', '/api/code/tasks', 'codeLaneSchema');
+  // The Canvas (1.40): the tree, one file, the diff, and the preview's mint and
+  // revoke. `entries` is required non-empty because a tree that parsed as an
+  // empty array would exercise `canvasEntrySchema` zero times.
+  await r('canvas.files', 'GET', '/api/code/tasks/wire-canvas/files?path=.', 'canvasTreeSchema', {
+    requireNonEmpty: 'entries',
+  });
+  await r('canvas.file', 'GET', '/api/code/tasks/wire-canvas/file?path=README.md', 'canvasFileSchema');
+  await r('canvas.diff', 'GET', '/api/code/tasks/wire-canvas/diff', 'canvasDiffSchema');
+  await r('canvas.preview', 'POST', '/api/code/tasks/wire-canvas/preview', 'mintedPreviewSchema', {
+    expectStatus: 201,
+  });
+  await r('canvas.preview.revoke', 'DELETE', '/api/code/tasks/wire-canvas/preview', 'previewRevokedSchema');
+  stopPreviewServer();
   await r('tasks.state', 'GET', '/api/cowork/tasks/wire-task/state', 'taskStateWithUsageResponseSchema');
   // One run per state: `running`, `paused`, `blocked`, `ready_for_review` are active
   // and the other four are terminal, and the frontend has to accept all eight —

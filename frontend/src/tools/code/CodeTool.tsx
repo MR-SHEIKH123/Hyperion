@@ -5,6 +5,7 @@ import { useSearchParams } from 'react-router-dom';
 import { getCodeLane, getTaskState } from '../../api/tasks';
 import { RecoveryPanel } from '../../components/RecoveryPanel/RecoveryPanel';
 import { ParkedTask } from './ParkedTask';
+import { ChangedFiles } from './ChangedFiles';
 import { StartTask } from './StartTask';
 import { RunProgress } from './RunProgress';
 import { useTaskStart } from './useTaskStart';
@@ -191,6 +192,24 @@ export default function CodeTool() {
         >
           Clear selection
         </button>
+        {/* The task's changes, which is what a reader asks about a task that has
+            been running. Selecting a file writes `?file=`, the same parameter the
+            version timeline already reads, so the two regions stay in step
+            without either one knowing about the other. */}
+        {taskId !== null && (
+          <ChangedFiles
+            taskId={taskId}
+            selectedPath={file}
+            onSelect={(path) => {
+              const next = new URLSearchParams(params);
+              // Clicking the selected file clears it, so the list can be read
+              // without leaving a selection behind on every visit.
+              if (path === file) next.delete('file');
+              else next.set('file', path);
+              setParams(next, { replace: true });
+            }}
+          />
+        )}
       </div>
     ),
   };

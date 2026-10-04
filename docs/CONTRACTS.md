@@ -6372,3 +6372,46 @@ flags, and the `direct`-mode task keeps the exporter's reasoned 400 rather than 
 empty patch that reads as "this task changed nothing". `test/gitexec.test.ts`
 gains two cases: a Canvas diff of the hostile repository runs no configured
 command, and a Canvas read refuses `.git` by spelling when `.git` is a file.
+
+## The session panel's first slice, and why the patch is split in the browser (2026-10-04)
+
+Arena's right-hand session panel — totals, a changed-file list with per-file counts,
+a live preview row, a process count — was worth taking, and the frame makes it cheap:
+`AgentWorkspace` already owns an `inspector` region and a `versionTimeline` region,
+per-tool widths and folded state are persisted, and `CodeTool` was filling `inspector`
+with a placeholder. So the first slice fills it, and the pieces it needed were two
+files rather than a subsystem.
+
+- **The patch is split client-side, deliberately.** `GET /api/code/tasks/:taskId/diff`
+  answers `{taskId, baseCommit, patch}` and that shape is ratified in `docs/API.md`
+  §27.3: the backend runs `git diff` once and hands over the text. Adding a per-file
+  array to the wire would put a parser in the backend and widen a frozen contract for
+  one screen's benefit, so `frontend/src/tools/code/patch.ts` parses the text and
+  `splitPatch` stays a pure function over a string — which is what lets it be tested
+  against fixed patches instead of against a repository that must be set up first.
+- **It is a patch parser, not a hunk model.** Files, per-file counts, and the five
+  things that would otherwise read as `0 +0 −0`: new, deleted, renamed, binary, and a
+  mode-only change. No hunks, no line ranges, no word-level diff. A half-built hunk
+  model in the browser would disagree with `git` in ways nobody could check.
+- **Hunk state is tracked, and that is not incidental.** Inside a `@@` hunk the
+  `--- `/`+++ ` prefixes are *content*: a deleted line whose text begins with two dashes
+  and a space would otherwise be read as a file header and the path would change under
+  the reader.
+- **Every empty and missing case is named, because they are different facts.** A
+  direct-mode task has no base commit and gets the exporter's reasoned 400 — rendered as
+  a refusal, never as "no changes". A task that really has no changes says so. A failed
+  read renders as a failure. The list is scoped to the **base commit**, never to a step:
+  the backend cannot answer "what changed in step k", so the header names the commit.
+- **The wire schemas are checked against the real backend, not trusted.**
+  `scripts/check-wire.mjs` gained a fixture that builds a real git repository inside the
+  projects scope, provisions a worktree, changes a file after the base commit and starts
+  the preview listener — so the tree, the file read, the diff and the preview's mint and
+  revoke are all parsed by the frontend's own schemas from real responses (64/64). A
+  400 would have proved nothing: the failure this check exists to catch is a schema
+  rejecting a real body.
+- **The ledger follows one standard: `implemented` means a client calls the route.**
+  All five Canvas rows moved from `missing` to `implemented` on the same rule that made
+  `providers.registry` implemented while no screen used it, and the five routes moved
+  from `deferred-frontend` to `frontend` in the route snapshot. What no screen does yet
+  is stated in each row's reason and in `frontend/contracts/gaps.md`, not hidden by the
+  status.
