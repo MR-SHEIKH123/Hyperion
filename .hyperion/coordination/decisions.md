@@ -2252,8 +2252,10 @@ invites a second writer that skips the expected-hash check and the pre-image row
 A preview served from the API's origin is same-origin with the API: a page an
 agent wrote could `fetch('/api/settings')` and read every stored provider key,
 and no CSP recovers that. `HYPERION_PREVIEW_PORT` (default 4320, `0` disables,
-busy port degrades the feature rather than boot), 256-bit base64url token
-compared in constant time, one session per task, 30-minute TTL, revoked when the
+busy port degrades the feature rather than boot), 256-bit token minted *and
+compared* by `security/tokens.ts` — the same module the terminal sessions use, so
+there is one constant-time comparison in the app rather than two — one session
+per task, 30-minute TTL, revoked when the
 worktree is released, `capability_disabled` + `details.setting` while nothing is
 listening. Same Host guard as the API; CSP as a **header** with
 `sandbox allow-scripts …` and no `allow-same-origin`, naming both `'self'` and

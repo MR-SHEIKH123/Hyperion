@@ -30,7 +30,7 @@ preview panel, which is an `<iframe>`).
 | 4 | `<img src="./pixel.png">` | loads 1×1 | `img-src` |
 | 5 | inline script | runs | `script-src` keeps `'unsafe-inline'` for the single-file pages an agent produces |
 | 6 | `localStorage.getItem('probe')` | **blocked** — `SecurityError` | `sandbox` without `allow-same-origin` gives an opaque origin: this row is the isolation, not a bug |
-| 7 | `postMessage` to the parent | posted | the panel listens; in a tab the parent is the page itself |
+| 7 | `postMessage` to the parent | posted | the panel listens; in a tab the parent is the page itself, so the message echoes back and the row reports *received* rather than only sent |
 
 A row that reports `blocked` for 6 and `ran` for everything else is the pass
 condition. If rows 1–5 fail, `'self'` is not matching under the opaque origin
@@ -41,6 +41,6 @@ against the URL bar.
 
 The outcome belongs in `.hyperion/coordination/decisions.md`, with the browser
 and version it was measured in, because "which mechanism did the work" is a
-claim about browsers rather than about this repository. The page prints an
-`n of 7 probes behaved as expected` line and the script prints a markdown
-skeleton to paste.
+claim about browsers rather than about this repository. Each row is its own
+record — the table is the result — and the script prints a markdown skeleton to
+paste into `decisions.md`.

@@ -228,9 +228,10 @@ describe('minting a preview', () => {
     const before = Date.now();
     const minted = await mint('preview-alpha');
 
-    // 32 random bytes, base64url: no padding, no characters that need escaping
-    // inside a path segment.
-    assert.match(minted.token, /^[A-Za-z0-9_-]{43}$/);
+    // 32 random bytes as hex: 64 characters, no padding and nothing that needs
+    // escaping inside a path segment. Hex rather than base64url because that is
+    // what the app's one minter (`security/tokens.ts`) produces.
+    assert.match(minted.token, /^[0-9a-f]{64}$/);
     assert.equal(minted.taskId, 'preview-alpha');
     assert.equal(minted.url, `http://127.0.0.1:${String(previewPort)}/p/${minted.token}/`);
     assert.ok(minted.expiresAt >= before + previews.DEFAULT_TTL_MS);

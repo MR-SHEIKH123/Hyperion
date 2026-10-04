@@ -3844,8 +3844,8 @@ workspace; `mode` in the listing says which of the two it is.
 
 ```json
 { "taskId": "my-task",
-  "token": "UnozeE_Vzp01uP2geSdTyw_BsVhA9HLejiWKHl813Vw",
-  "url": "http://127.0.0.1:4320/p/UnozeE_Vzp01uP2geSdTyw_BsVhA9HLejiWKHl813Vw/",
+  "token": "8f0c…64 hex characters…",
+  "url": "http://127.0.0.1:4320/p/8f0c…/",
   "expiresAt": 1764571200000 }
 ```
 
@@ -3908,9 +3908,11 @@ Request handling, in order:
    `HYPERION_ALLOWED_HOSTS` — a proxied deployment must list the *preview*
    hostname there too. A refusal is plain text and names no filesystem path.
 2. `GET` and `HEAD` only; anything else is `405` with `Allow: GET, HEAD`.
-3. `/p/<token>/<path>`; the token is 256 random bits in base64url and is compared
-   in constant time. Missing, unknown, expired, revoked and released-task tokens
-   all answer the same `404`, which says nothing about which it was.
+3. `/p/<token>/<path>`; the token is 256 random bits (32 bytes, hex) minted and
+   compared by `security/tokens.ts` — the same module the terminal sessions use,
+   so the app has one constant-time comparison rather than two. Missing, unknown,
+   expired, revoked and released-task tokens all answer the same `404`, which
+   says nothing about which it was.
 4. The path is resolved through the same seam (27.5). `mimetype` comes from an
    allow-list of web types; anything else is `415`. A directory, or the token
    root, serves `index.html`. Above 2 MiB is `413`.

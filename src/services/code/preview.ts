@@ -4,9 +4,9 @@
  * A preview is a URL a browser can open: `http://<host>:<port>/p/<token>/`. The
  * token is the whole of the authorization, because Hyperion has no
  * authentication of its own and the preview listener is a second HTTP port that
- * anybody who can reach the machine can reach. 256 bits from `randomBytes`, one
- * live session per task, and a TTL, because a link that is pasted into a chat
- * window outlives the task that minted it.
+ * anybody who can reach the machine can reach. 256 bits from the one minter the
+ * app has (`security/tokens.ts`), one live session per task, and a TTL, because a
+ * link that is pasted into a chat window outlives the task that minted it.
  *
  * Three decisions worth stating:
  *
@@ -21,15 +21,17 @@
  *     *projects scope* for a task it no longer knows, so a token outliving its
  *     worktree would resolve paths against a wider boundary than the task ever
  *     had.
- *   - **The token is compared in constant time.** The comparison target is
- *     attacker-supplied when someone guesses, and a byte-wise early exit leaks
- *     the length of the matching prefix — which is how a 256-bit token becomes
- *     a byte-at-a-time search. The loop over sessions leaks only how many
- *     sessions exist, which the URL does not depend on.
+ *   - **The token is minted and compared by `security/tokens.ts`.** Not a local
+ *     copy: a comparison that returns early on the first differing byte lets the
+ *     token be recovered one byte at a time by whoever can measure the
+ *     difference, and that module exists so the app has exactly one call site
+ *     that cannot accidentally be written with `===`. A preview token and a
+ *     terminal session token are the same kind of secret. The loop over
+ *     sessions leaks only how many sessions exist, which the URL does not
+ *     depend on.
  */
-import { randomBytes, timingSafeEqual } from 'node:crypto';
-
 import { env } from '../../config/env.ts';
+import { mintToken, tokensMatch } from '../../security/tokens.ts';
 import { AppError } from '../../util/errors.ts';
 import { getWorktree } from './worktree.ts';
 
@@ -85,19 +87,6 @@ export function previewUrl(token: string, options: { host?: string; port?: numbe
   const host = authority(options.host ?? previewHost());
   const port = options.port ?? env.previewPort;
   return `http://${host}:${String(port)}/p/${token}/`;
-}
-
-/** 256 bits, base64url so it is safe in a path segment without escaping. */
-function mintToken(): string {
-  return randomBytes(32).toString('base64url');
-}
-
-/** Length-safe constant-time comparison. Lengths are not secret. */
-export function tokensMatch(expected: string, candidate: string): boolean {
-  const a = Buffer.from(expected, 'utf8');
-  const b = Buffer.from(candidate, 'utf8');
-  if (a.byteLength !== b.byteLength) return false;
-  return timingSafeEqual(a, b);
 }
 
 /**
