@@ -2391,9 +2391,14 @@ flags are `@types/*` and the `tsc`/`eslint` binaries, which are never imported b
 name); `src/` modules nothing imports — **0**.
 
 **`.clinerules/` and `.kilo/` are not in the repository and never were.** Both are
-local-only agent-tooling directories, gitignored (`.gitignore`, `/.clinerules/`,
-with the reason written next to it), and `git log --all -- .clinerules .kilo` is
-empty — so there is nothing here to delete. What the tree *did* carry was three
+local-only agent-tooling directories, `git log --all -- .clinerules .kilo` is
+empty and `git ls-files` has no entry for either — so there is nothing here to
+delete. Their ignore status differs, and this entry overstated it: `.clinerules/`
+is ignored (`/.clinerules/`, with the reason written next to it), while `.kilo/`
+is **not** in `.gitignore` at all. It is absent rather than hidden, and it stays
+that way deliberately — a directory that reappears should show up as untracked
+rather than vanish into an ignore rule, which is the same reason the rules above
+are anchored. What the tree *did* carry was three
 pointers into them, and those were junk: `§1`'s ground-truth line, `§3.8`'s "per
 `.clinerules/05`", and the v4 deliverables checklist's own row 7, "Fix stale
 `.clinerules/04`" — a found-but-never-fixed item naming item numbers in a
