@@ -194,7 +194,7 @@ export function ProviderForm(props: ProviderFormProps) {
                     {props.puterAdvisory.data.catalogueUrl}
                   </a>
                 </li>
-                <li>Leaving the base URL empty uses {props.puterAdvisory.data.defaultBaseUrl}.</li>
+                <li>The address for the Base URL field: {props.puterAdvisory.data.defaultBaseUrl}.</li>
               </ul>
             </>
           ) : (

@@ -21,6 +21,8 @@ import {
   unpricedTaskSpendFixture,
 } from './fixtures/codeSurface';
 import { attentionQueueFixture } from './fixtures/attentionQueue';
+import { ProviderList } from '../tools/settings/ProviderList';
+import { providerModelsFixture, providersFixture } from './fixtures/providers';
 import { operationalFixtures } from './fixtures/operationalStates';
 import { taskStateFixtures } from './fixtures/taskStates';
 
@@ -36,6 +38,48 @@ function fixtureTitle(id: string) {
  * (the exact command, the working directory, and a decision) without pretending
  * the surrounding task view exists.
  */
+/**
+ * Provider rows from fixtures (Settings 2.5, slice 1).
+ *
+ * The production list, not a copy: `ProviderList` takes every fact as props
+ * and never fetches, which is why the harness can show active/standby,
+ * health, cooldown, ZDR and proxy states without a server. Actions record a
+ * local note and send nothing. The form and dialogs need the API client, so
+ * they are covered by the section's own tests, not here.
+ */
+function ProvidersFixture() {
+  const [notice, setNotice] = useState<string | null>(null);
+  const note = (text: string) => () => setNotice(text);
+  return (
+    <section aria-labelledby="providers-fixture-heading" className={styles.section}>
+      <h2 className={styles.sectionHeading} id="providers-fixture-heading">
+        Provider fixtures
+      </h2>
+      <p className={styles.note}>
+        Every provider type and the states a row can carry, rendered by the production
+        list. Buttons record a fixture note and send nothing.
+      </p>
+      {notice === null ? null : <p className={styles.note} role="status">{notice}</p>}
+      <div data-fixture="providers-list">
+        <ProviderList
+          providers={providersFixture}
+          testingId={null}
+          testResults={{}}
+          modelsPanels={{ [providerModelsFixture.providerId]: { status: 'ready', data: providerModelsFixture } }}
+          onEnable={(provider) => note(`Fixture only: "${provider.name}" would be enabled (after the demote confirmation).`)()}
+          onDisable={(provider) => note(`Fixture only: "${provider.name}" would be disabled.`)()}
+          onDelete={(provider) => note(`Fixture only: "${provider.name}" would ask for delete confirmation.`)()}
+          onEdit={(provider) => note(`Fixture only: "${provider.name}" would open the edit form.`)()}
+          onEditZdr={(provider) => note(`Fixture only: "${provider.name}" would open the ZDR editor.`)()}
+          onTest={(provider) => note(`Fixture only: "${provider.name}" would be tested.`)()}
+          onToggleModels={note('Fixture only: the model list would collapse.')}
+          onRefreshModels={note('Fixture only: models would be refreshed.')}
+        />
+      </div>
+    </section>
+  );
+}
+
 function DangerousCommandDialog() {
   const [open, setOpen] = useState(false);
   return (
@@ -231,6 +275,8 @@ export function Component() {
       <ProvenanceFixture />
 
       <CodeSurfaceFixture />
+
+      <ProvidersFixture />
 
       <section aria-labelledby="dialog-fixtures-heading" className={styles.section}>
         <h2 className={styles.sectionHeading} id="dialog-fixtures-heading">Dialog fixtures</h2>

@@ -129,9 +129,10 @@
     },
     {
       "id": "providers.egress-proxy",
-      "method": "PUT",
-      "expectedPath": "/api/providers/:id/proxy",
-      "status": "missing"
+      "method": "PATCH",
+      "expectedPath": "/api/providers/:id",
+      "status": "implemented",
+      "reason": "Corrected in Settings 2.5 slice 1 (code wins): there is no `PUT /api/providers/:id/proxy` route and there never was \u2014 the egress proxy is a body field on `POST /api/providers` (create) and `PATCH /api/providers/:id` (update), parsed by `parseEgressProxy`. The Settings form sets it through `api/providers.ts` `createProvider`/`updateProvider`, treats the field as a secret (a proxy URL can carry a password), and reads back only the redacted form the provider object serves."
     },
     {
       "id": "providers.puter",
