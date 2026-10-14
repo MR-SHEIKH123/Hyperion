@@ -355,7 +355,7 @@ const NESTED = new Set([
   // inside the terminal session list — the list is checked against a real store
   // that holds one live and one ended session, which is what exercises both arms
   // of `endedAt`/`endedReason`
-  'terminalSessionSchema',
+  'terminalSessionSchema', 'reloadProfileSchema',
   // inside the task responses
   'orphanedWorktreeSchema', 'taskApprovalSchema', 'taskRunStateSchema', 'taskStateResponseSchema',
   'taskStepSchema', 'taskStepSummarySchema', 'taskToolSchema', 'taskUsageSchema',
@@ -655,6 +655,20 @@ async function main() {
   await r('settings.capabilities', 'GET', '/api/settings/capabilities', 'capabilitiesResponseSchema');
   await r('settings.preferences', 'GET', '/api/settings/preferences', 'preferencesResponseSchema');
   await r('settings.limits', 'GET', '/api/settings/limits', 'limitsResponseSchema');
+  // Safety and limits writes (Settings 2.5 slice 2). Each payload names the
+  // value the fixture already holds, so the checks leave the ephemeral wire
+  // database as they found it; limitsPut sends 0, which clears a cap that was
+  // never set.
+  await r('settings.networkEgress', 'GET', '/api/settings/network-egress', 'networkEgressResponseSchema');
+  await r('settings.networkEgressPut', 'PUT', '/api/settings/network-egress', 'networkEgressResponseSchema', { payload: { enabled: true } });
+  await r('settings.redactionCheck', 'GET', '/api/settings/redaction-check', 'redactionCheckResponseSchema');
+  await r('settings.redactionCheckPut', 'PUT', '/api/settings/redaction-check', 'redactionCheckResponseSchema', { payload: { enabled: false } });
+  await r('settings.zdrPolicy', 'GET', '/api/settings/zdr', 'zdrPolicyResponseSchema');
+  await r('settings.zdrPolicyPut', 'PUT', '/api/settings/zdr', 'zdrPolicyResponseSchema', { payload: { requirement: 'off' } });
+  await r('settings.toolAccessMode', 'GET', '/api/settings/tool-access-mode', 'toolAccessModeResponseSchema');
+  await r('settings.toolAccessModePut', 'PUT', '/api/settings/tool-access-mode', 'toolAccessModeResponseSchema', { payload: { mode: 'always_loaded' } });
+  await r('settings.limitsPut', 'PUT', '/api/settings/limits', 'limitsResponseSchema', { payload: { dailySpendCapUsd: 0 } });
+  await r('settings.reloadConfig', 'POST', '/api/settings/reload-config', 'reloadConfigResponseSchema', { payload: {} });
   await r('projects.registry', 'GET', '/api/projects', 'projectsResponseSchema', { requireNonEmpty: 'projects' });
   await r('projects.tasks', 'GET', `/api/projects/${project.id}/tasks`, 'projectTasksResponseSchema', { requireNonEmpty: 'tasks' });
   await r('providers.list', 'GET', '/api/providers', 'providersResponseSchema', { requireNonEmpty: 'providers' });

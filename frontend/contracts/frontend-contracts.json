@@ -227,7 +227,7 @@
       "expectedPath": "/api/settings/limits",
       "status": "route-mismatch",
       "specifiedPath": "/api/settings/spending-cap",
-      "reason": "Spending cap is part of the implemented limits contract."
+      "reason": "Settings 2.5 slice 2: the cap is read and written as part of the limits route \u2014 the Safety and limits section renders `spend` beside the cap it belongs to and writes `dailySpendCapUsd` via `updateLimits`. The row stays route-mismatch because the specification asked for a dedicated `/api/settings/spending-cap` path that does not exist."
     },
     {
       "id": "settings.reload",
@@ -235,7 +235,42 @@
       "expectedPath": "/api/settings/reload-config",
       "status": "route-mismatch",
       "specifiedPath": "GET|PUT /api/settings/reload-config",
-      "reason": "The spec asked for `GET|PUT /api/settings/reload-config`; the implementation is a `POST`. A `PUT` would have to name what it replaces, and nothing is cached to replace \u2014 `db/settings.ts` keeps settings un-cached and project files are read per task \u2014 while the route itself only re-reads, validates and reports the on-disk configuration, which is why `docs/CONTRACTS.md` argues it adds no cache at all. The capability is present, so this row is a verb mismatch rather than a missing route: a client that followed the specification and sent a GET would get a 404."
+      "reason": "Settings 2.5 slice 2: the Safety and limits section calls this route as the POST it is (`api/settings.ts` `reloadConfig`) for its Reload Config check. The spec asked for `GET|PUT /api/settings/reload-config`; a `PUT` would have to name what it replaces, and nothing is cached to replace \u2014 `db/settings.ts` keeps settings un-cached and project files are read per task \u2014 so the row stays a verb mismatch rather than a missing route."
+    },
+    {
+      "id": "settings.network-egress",
+      "method": "PUT",
+      "expectedPath": "/api/settings/network-egress",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 2: the Safety and limits section reads and writes this route (`api/settings.ts` `getNetworkEgress`/`setNetworkEgress`) and renders stored vs effective separately, including the requiresCodeExecution dependency the GET states."
+    },
+    {
+      "id": "settings.redaction-check",
+      "method": "PUT",
+      "expectedPath": "/api/settings/redaction-check",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 2: the Safety and limits section toggles the outbound credential-pattern check through this route (`api/settings.ts` `getRedactionCheck`/`setRedactionCheck`) and states its pattern_match limits in the backend's own terms."
+    },
+    {
+      "id": "settings.zdr",
+      "method": "PUT",
+      "expectedPath": "/api/settings/zdr",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 2: the Safety and limits section sets the standing ZDR requirement (off/prefer/require) through this route (`api/settings.ts` `getZdrPolicy`/`setZdrRequirement`); enforcement stays provider selection, as the GET's `enforced` field states."
+    },
+    {
+      "id": "settings.tool-access-mode",
+      "method": "PUT",
+      "expectedPath": "/api/settings/tool-access-mode",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 2: the Safety and limits section sets the mode through this route (`api/settings.ts` `getToolAccessMode`/`setToolAccessMode`) and labels it advisory, because nothing in the backend enforces it."
+    },
+    {
+      "id": "settings.limits",
+      "method": "PUT",
+      "expectedPath": "/api/settings/limits",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 2: the Safety and limits section writes the spending cap and ceilings through this route (`api/settings.ts` `updateLimits`), sending only the fields the user changed; the GET half is `settings.spending-cap`'s read."
     },
     {
       "id": "backup.inspect",
