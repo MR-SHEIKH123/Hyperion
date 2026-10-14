@@ -3959,7 +3959,7 @@ The CSP is a **header**, so it binds in a tab as well as inside an iframe:
 ```
 default-src 'none'; script-src 'self' http://<host>:<port> 'unsafe-inline'; … ;
 frame-ancestors http://127.0.0.1:4318 http://localhost:4318;
-sandbox allow-scripts allow-forms allow-modals allow-popups allow-downloads
+sandbox allow-scripts allow-forms allow-pointer-lock
 ```
 
 - `frame-ancestors` comes from `HYPERION_APP_ORIGINS`. **The preview port must

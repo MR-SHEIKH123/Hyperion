@@ -78,6 +78,27 @@
           <td>posted (the parent receives it when framed; posting to itself in a tab)</td>
           <td class="observed" id="observed-postmessage">pending…</td>
         </tr>
+        <tr>
+          <td>8</td>
+          <td><button type="button" id="probe-pointer-lock">Request pointer lock</button></td>
+          <td>allowed — <code>allow-pointer-lock</code></td>
+          <td class="observed" id="observed-pointer-lock">manual — click the button</td>
+        </tr>
+        <tr>
+          <td>9</td>
+          <td><button type="button" id="probe-popup">Open popup</button></td>
+          <td>blocked — no <code>allow-popups</code></td>
+          <td class="observed" id="observed-popup">manual — click the button</td>
+        </tr>
+        <tr>
+          <td>10</td>
+          <td>
+            <button type="button" id="probe-modal">Show alert</button>
+            <a href="./data.json" download="data.json" id="probe-download">Download data.json</a>
+          </td>
+          <td>blocked — no <code>allow-modals</code>, no <code>allow-downloads</code></td>
+          <td class="observed" id="observed-modal-download">manual — no dialog or download should appear</td>
+        </tr>
       </tbody>
     </table>
 
@@ -175,6 +196,46 @@
         if (window.parent === window) return;
         report('postmessage', 'posted to the parent', true);
       }
+
+      // 8. Pointer lock needs a user gesture, so it is a button, not a load-time
+      //    probe: an automatic request would be refused even with the token.
+      document.getElementById('probe-pointer-lock').addEventListener('click', () => {
+        const done = () =>
+          report('pointer-lock', 'allowed', document.pointerLockElement !== null);
+        document.addEventListener('pointerlockchange', done, { once: true });
+        document.addEventListener(
+          'pointerlockerror',
+          () => report('pointer-lock', 'blocked: pointerlockerror', false),
+          { once: true }
+        );
+        try {
+          const result = document.body.requestPointerLock();
+          if (result && typeof result.catch === 'function') {
+            result.catch(() => report('pointer-lock', 'blocked: request rejected', false));
+          }
+        } catch (error) {
+          report('pointer-lock', 'blocked: ' + error.name, false);
+        }
+      });
+
+      // 9. A popup the sandbox does not allow never gets a window handle.
+      document.getElementById('probe-popup').addEventListener('click', () => {
+        const popup = window.open('./data.json', '_blank', 'width=200,height=200');
+        report('popup', popup === null ? 'blocked' : 'opened (unexpected)', popup === null);
+        if (popup !== null) popup.close();
+      });
+
+      // 10. Modals and downloads leave no page-observable trace when blocked,
+      //     so this row is settled by eye: neither a dialog nor a file.
+      document.getElementById('probe-modal').addEventListener('click', () => {
+        window.alert('preview conformance probe');
+        document.getElementById('observed-modal-download').textContent =
+          'alert attempted — blocked if no dialog appeared';
+      });
+      document.getElementById('probe-download').addEventListener('click', () => {
+        document.getElementById('observed-modal-download').textContent =
+          'download attempted — blocked if no file arrived';
+      });
 
       // The module may have loaded before this script if the browser reordered
       // anything; post anyway once the table has had a chance to settle.

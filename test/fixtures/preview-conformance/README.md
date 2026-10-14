@@ -21,6 +21,15 @@ as a Code task's workspace, starts the real preview listener and prints a URL.
 Open that URL in a real browser (a tab, and — if the app is running — inside the
 preview panel, which is an `<iframe>`).
 
+The sandbox directive under test is exactly
+`sandbox allow-scripts allow-forms allow-pointer-lock`. No automatic row
+below depends on `allow-popups`, `allow-downloads` or `allow-modals`, so
+removing those tokens does not change rows 1–7: scripts, fetches, images
+and `postMessage` keep their expectations, and `localStorage` stays
+blocked by the opaque origin. `allow-pointer-lock`, popups, modals and
+downloads are manual rows (8–10) because pointer lock and dialogs need a
+user gesture and a download leaves no trace a page can observe.
+
 ## The rows
 
 | # | Probe | Expected | Why |
@@ -32,9 +41,13 @@ preview panel, which is an `<iframe>`).
 | 5 | inline script | runs | `script-src` keeps `'unsafe-inline'` for the single-file pages an agent produces |
 | 6 | `localStorage.getItem('probe')` | **blocked** — `SecurityError` | `sandbox` without `allow-same-origin` gives an opaque origin: this row is the isolation, not a bug |
 | 7 | `postMessage` to the parent | posted | the panel listens; in a tab the parent is the page itself, so the message echoes back and the row reports *received* rather than only sent |
+| 8 | pointer lock from a click (manual button) | **allowed** | `allow-pointer-lock` keeps mouse-capture previews (games) working |
+| 9 | `window.open` popup (manual button) | **blocked** | no `allow-popups`: generated code must not open windows |
+| 10 | `alert()` dialog and a download link (manual) | **blocked** | no `allow-modals` and no `allow-downloads`: no dialogs, no file downloads |
 
 A row that reports `blocked` for 6 and `ran` for everything else is the pass
-condition. If rows 1–5 fail, `'self'` is not matching under the opaque origin
+condition for the automatic rows; rows 8–10 pass when 8 is allowed and 9–10
+are blocked. If rows 1–5 fail, `'self'` is not matching under the opaque origin
 *and* the explicit origin is missing or wrong — check the CSP header's sources
 against the URL bar.
 

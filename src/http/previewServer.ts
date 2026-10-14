@@ -394,8 +394,11 @@ function contentSecurityPolicy(request: http.IncomingMessage): string {
     `frame-ancestors ${frameAncestors}`,
     // No `allow-same-origin`: with it the sandbox stops isolating anything, and
     // the served page becomes same-origin with every other preview on this
-    // listener. `allow-scripts` is what makes a preview a preview.
-    'sandbox allow-scripts allow-forms allow-modals allow-popups allow-downloads',
+    // listener. No `allow-popups`, `allow-downloads` or `allow-modals` either:
+    // generated code must not open windows, trigger downloads or raise dialogs.
+    // `allow-pointer-lock` is present so mouse-capture previews work, and
+    // `allow-scripts` is what makes a preview a preview.
+    'sandbox allow-scripts allow-forms allow-pointer-lock',
   ].join('; ');
 }
 

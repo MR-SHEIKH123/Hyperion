@@ -6350,7 +6350,12 @@ feature rather than failing boot), and the separate port **is** the isolation.
   same allow-list check the `Host` header passed, so a forwarded header can name a
   host this listener already answers to and never one it would have refused.
 - CSP as a **header**, so it binds in a tab as well as inside an iframe, with
-  `sandbox allow-scripts …` and **no `allow-same-origin`**. `sandbox` gives the
+  `sandbox allow-scripts allow-forms allow-pointer-lock` and **no
+  `allow-same-origin`, `allow-top-navigation` or
+  `allow-popups-to-escape-sandbox`** — and no `allow-popups`, `allow-downloads`
+  or `allow-modals`: generated code may not open windows, trigger downloads
+  or raise dialogs, while `allow-pointer-lock` keeps mouse-capture previews
+  working. `sandbox` gives the
   document an opaque origin, where `'self'` is not guaranteed to match the
   document's own URL, so the header names both `'self'` and the explicit origin
   built from the validated `Host`. `test/fixtures/preview-conformance/` is the
