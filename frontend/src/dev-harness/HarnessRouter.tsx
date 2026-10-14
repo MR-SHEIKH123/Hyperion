@@ -23,6 +23,15 @@ import {
 import { attentionQueueFixture } from './fixtures/attentionQueue';
 import { ProviderList } from '../tools/settings/ProviderList';
 import { providerModelsFixture, providersFixture } from './fixtures/providers';
+import { EgressPanel, LimitsPanel, RedactionPanel, ReloadPanel, ToolAccessPanel, ZdrPanel } from '../tools/settings/SafetyPanels';
+import {
+  limitsFixture,
+  networkEgressFixture,
+  redactionCheckFixture,
+  reloadConfigFixture,
+  toolAccessModeFixture,
+  zdrPolicyFixture,
+} from './fixtures/safety';
 import { operationalFixtures } from './fixtures/operationalStates';
 import { taskStateFixtures } from './fixtures/taskStates';
 
@@ -74,6 +83,62 @@ function ProvidersFixture() {
           onTest={(provider) => note(`Fixture only: "${provider.name}" would be tested.`)()}
           onToggleModels={note('Fixture only: the model list would collapse.')}
           onRefreshModels={note('Fixture only: models would be refreshed.')}
+        />
+      </div>
+    </section>
+  );
+}
+
+/**
+ * Safety and limits panels from fixtures (Settings 2.5, slice 2).
+ *
+ * The production panels, rendered from typed fixtures with local state:
+ * toggles and radios move, the limits form validates, Reload reports the
+ * fixture — and nothing is sent anywhere. The point of showing egress
+ * stored-on-but-not-effective here is that the state is real backend
+ * behaviour, not a rendering trick.
+ */
+function SafetyFixture() {
+  const [egress, setEgress] = useState(networkEgressFixture);
+  const [redaction, setRedaction] = useState(redactionCheckFixture);
+  const [zdr, setZdr] = useState(zdrPolicyFixture);
+  const [mode, setMode] = useState(toolAccessModeFixture);
+  const [reloadResult, setReloadResult] = useState<typeof reloadConfigFixture | null>(null);
+  return (
+    <section aria-labelledby="safety-fixture-heading" className={styles.section}>
+      <h2 className={styles.sectionHeading} id="safety-fixture-heading">
+        Safety and limits fixtures
+      </h2>
+      <p className={styles.note}>
+        Every Slice 2 control in the state the backend can actually report, rendered by the
+        production panels. Interactions are local only.
+      </p>
+      <div data-fixture="safety-panels" style={{ display: 'grid', gap: 16 }}>
+        <EgressPanel
+          data={egress}
+          pending={false}
+          error={null}
+          onToggle={(enabled) => setEgress((current) => ({ ...current, enabled, effective: enabled && current.effective }))}
+        />
+        <RedactionPanel
+          data={redaction}
+          pending={false}
+          error={null}
+          onToggle={(enabled) => setRedaction((current) => ({ ...current, enabled }))}
+        />
+        <ZdrPanel
+          data={zdr}
+          pending={false}
+          error={null}
+          onChange={(requirement) => setZdr((current) => ({ ...current, requirement }))}
+        />
+        <LimitsPanel data={limitsFixture} pending={false} error={null} onSave={() => Promise.resolve(null)} />
+        <ToolAccessPanel mode={mode} pending={false} error={null} onChange={setMode} />
+        <ReloadPanel
+          pending={false}
+          result={reloadResult}
+          error={null}
+          onReload={() => setReloadResult(reloadConfigFixture)}
         />
       </div>
     </section>
@@ -277,6 +342,8 @@ export function Component() {
       <CodeSurfaceFixture />
 
       <ProvidersFixture />
+
+      <SafetyFixture />
 
       <section aria-labelledby="dialog-fixtures-heading" className={styles.section}>
         <h2 className={styles.sectionHeading} id="dialog-fixtures-heading">Dialog fixtures</h2>

@@ -124,11 +124,11 @@ behavior in the browser.
   review decision about the specification's inventory rather than a fix to make quietly.
   Until then, the honest reading of `exposure: frontend` is *the frontend is meant to call
   this*, not *the frontend does*.
-- **No client posts `POST /api/settings/reload-config` (1.28).** The route re-reads and
-  validates the on-disk permissions and profiles on demand, caching nothing, and is covered by
-  three route cases; nothing calls it. The Settings surface exists since 2.5 slice 1
-  (Providers), and Reload Config belongs to its Slice 2 (Safety and limits), which has not
-  been built — the same reason the memory import routes above are uncalled.
+- ~~No client posts `POST /api/settings/reload-config` (1.28).~~ **Closed by Settings 2.5
+  slice 2.** The route re-reads and validates the on-disk permissions and profiles on demand,
+  caching nothing, and is covered by three route cases. The Safety and limits section now
+  calls it (`api/settings.ts` `reloadConfig`) as its Reload Config check; the ledger row
+  stays `route-mismatch` because the specification asked for GET|PUT and the route is a POST.
 - **No profile-import client (1.28).** `POST /api/code/agents/import` files uploaded `.md`
   profiles into the active project's `.hyperion/agents/` with per-file results, but nothing
   calls it: there is no profiles surface, and no Settings screen to host one. A folder picker
