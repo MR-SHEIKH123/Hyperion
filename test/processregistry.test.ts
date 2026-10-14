@@ -80,7 +80,19 @@ describe('the process registry', () => {
     assert.notEqual(first.token, second.token, 'a token minted twice is not a token');
     assert.match(first.id, /^proc_[0-9a-f-]{36}$/, 'the id names a process; it is not the pid');
     assert.match(first.token, /^[0-9a-f]{64}$/);
-    assert.equal(first.id.includes('1234'), false, 'the pid is bound, not reused as the identity');
+    // The pid is bound, not reused as the identity — proved without looking
+    // inside random content. Inspecting the UUID for the substring '1234'
+    // failed ~1 run in 4000 whenever the random hex happened to contain it,
+    // although nothing had leaked. The deterministic facts are these: the
+    // same pid minted two different ids above, and the entry still reports
+    // the pid it was registered with as a field.
+    assert.equal(registry.status(first.id, first.token).pid, 1234, 'the pid is bound, not reused as the identity');
+    // The id does not leak or encode the ownership token. This also cannot
+    // depend on random content: the token is 64 characters and the whole id
+    // is 41, so the token can never appear inside the id, whatever either
+    // random value happens to be.
+    assert.equal(first.id.includes(first.token), false, 'the id does not leak the ownership token');
+    assert.notEqual(first.id, first.token, 'the id is not the ownership token');
   });
 
   test('refuses a read with a different token, a missing token, or a bare id', () => {
