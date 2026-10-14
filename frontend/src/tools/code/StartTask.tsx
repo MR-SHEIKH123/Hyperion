@@ -1,3 +1,5 @@
+import { Link } from 'react-router-dom';
+
 import { Button } from '../../design-system/components/Button/Button';
 import { useModelSelection } from '../chat/useModelSelection';
 import { PrivacyIndicator } from '../../components/PrivacyIndicator/PrivacyIndicator';
@@ -145,7 +147,13 @@ export function StartTask({ stream, onStarted }: { stream: StartStream; onStarte
             // looking for a broken provider instead of a missing one. The hook's own
             // string is kept for every other failure.
             model.activeProviderId === null && model.ready
-            ? 'No provider is enabled, so there is nothing to run on. Add one and enable it, then the model list appears here.'
+            ? (
+              <>
+                No provider is enabled, so there is nothing to run on.{' '}
+                <Link to="/settings/providers">Add one in Settings — Providers</Link> and enable it, then the
+                model list appears here.
+              </>
+            )
             : `The model list could not be read: ${model.error}`
           : model.ready && model.models.length === 0
             ? 'No active provider offers a model, so there is nothing to run on. Configure a provider and its model list first.'

@@ -142,12 +142,16 @@ export const colibriAdvisorySchema = z.object({
   acknowledgementRequired:z.literal(true), acknowledgementField:z.literal('acknowledgeSlow'),
 }).passthrough();
 export type ProviderWire = z.infer<typeof providerSchema>;
+export type ProviderTypeWire = z.infer<typeof providerTypeSchema>;
 export type ProviderZdrWire = z.infer<typeof providerZdrSchema>;
 export type ZdrSupportWire = z.infer<typeof zdrSupportSchema>;
 export type PuterAdvisoryWire = z.infer<typeof puterAdvisorySchema>;
 export type ColibriAdvisoryWire = z.infer<typeof colibriAdvisorySchema>;
 export type LocalDetectionWire = z.infer<typeof localDetectionSchema>;
 export type ConnectionTestWire = z.infer<typeof connectionTestSchema>;
+export type ColibriProbeWire = z.infer<typeof colibriProbeSchema>;
+export type ProviderModelsResponseWire = z.infer<typeof providerModelsResponseSchema>;
+export type ProviderEnabledResponseWire = z.infer<typeof providerEnabledResponseSchema>;
 export type ProviderCooldownWire = NonNullable<ProviderWire['cooldown']>;
 export type ModelWire = z.infer<typeof modelSchema>;
 export type EgressClassWire = z.infer<typeof egressClassSchema>;

@@ -13,10 +13,11 @@ const AttentionCenter = lazy(() => import('../attention/AttentionCenter'));
 const ChatTool = lazy(() => import('../tools/chat/ChatTool'));
 const CodeTool = lazy(() => import('../tools/code/CodeTool'));
 const ToolPlaceholder = lazy(() => import('../shell/ToolPlaceholder'));
+const SettingsTool = lazy(() => import('../tools/settings/SettingsTool'));
 
 // Code landed first (1.39 A3): it is the surface the attention queue already
 // deep-links to, so its items stop landing on a placeholder.
-const PLACEHOLDER_TOOLS = ['cowork', 'design', 'playground', 'plugins', 'skills', 'settings'] as const;
+const PLACEHOLDER_TOOLS = ['cowork', 'design', 'playground', 'plugins', 'skills'] as const;
 
 function RouteFallback({ label }: { label?: string }) {
   return (
@@ -42,6 +43,9 @@ const shellChildren: RouteObject[] = [
   { path: 'attention', ...lazyRoute(<AttentionCenter />) },
   { path: 'chat/*', ...lazyRoute(<ChatTool />) },
   { path: 'code/*', ...lazyRoute(<CodeTool />) },
+  // Settings (Addendum 2.5): Slice 1 makes Providers a real section; the
+  // remaining sections land with their own slices and say so in place.
+  { path: 'settings/*', ...lazyRoute(<SettingsTool />) },
   ...PLACEHOLDER_TOOLS.map((tool) => ({
     path: `${tool}/*`,
     ...lazyRoute(<ToolPlaceholder />),

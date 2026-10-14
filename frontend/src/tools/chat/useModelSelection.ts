@@ -25,6 +25,8 @@ export interface ModelSelection {
   preferred: string | null;
   setSelectedId: (id: string) => void;
   error: string | null;
+  /** True when the backend says no provider is active (the structured form of the error above). */
+  noProvider: boolean;
 }
 
 export function useModelSelection(preferred: string | null): ModelSelection {
@@ -84,6 +86,9 @@ export function useModelSelection(preferred: string | null): ModelSelection {
 
   return {
     ready: !modelsQuery.isPending && !providerQuery.isPending,
+    // Structured form of the "No provider is active" error below, so surfaces
+    // can render it as a link to the provider settings instead of bare text.
+    noProvider: !providerQuery.isPending && providerQuery.data?.provider === null,
     privacy,
     models,
     activeProviderName: activeProvider?.name ?? null,

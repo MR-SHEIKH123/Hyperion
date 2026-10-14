@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
+import { Link } from 'react-router-dom';
 import { Square } from 'lucide-react';
 import { Button } from '../../design-system/components/Button/Button';
 import {
@@ -123,6 +124,11 @@ export function Composer({ model, phase, notice, onSend, onStop, privacy, initia
             ))}
           </select>
         </label>
+        {model.noProvider ? (
+          <Link className={styles.settingsLink} to="/settings/providers">
+            No provider is active — add and enable one in Settings
+          </Link>
+        ) : null}
         <div className={styles.trailing}>
           {privacy !== null && <PrivacyIndicator privacy={privacy} />}
           <span className={styles.hint}>Enter to send · Shift+Enter for a new line</span>
