@@ -52,8 +52,9 @@ behavior in the browser.
   (`/puterai/chat/models/details`, which carries each model's context window), not from
   `{base}/models`. `GET /api/providers/puter/advisory` now states the credential kind, the
   default base URL and catalogue URL, `requiresPaidPlan` and what a rejection does — a
-  settings screen needs to hard-code none of it. There is still no settings form that creates
-  one, and nothing renders the advisory.
+  settings screen needs to hard-code none of it. **The form and the rendering landed with
+  Settings 2.5 slice 1:** the Add-provider form renders this advisory from the route and
+  posts the create, and `providers.puter` / `providers.puter-advisory` are `implemented`.
 - ~~No way to see what an interrupted run left.~~ **Closed for Code on 2026-09-21 (1.31).**
   `GET /api/{tool}/tasks/:taskId/recovery` reports the run's bounded step history with SQL
   totals over all of it, the leftover checkout and what discarding it would lose, and
@@ -125,9 +126,9 @@ behavior in the browser.
   this*, not *the frontend does*.
 - **No client posts `POST /api/settings/reload-config` (1.28).** The route re-reads and
   validates the on-disk permissions and profiles on demand, caching nothing, and is covered by
-  three route cases; nothing calls it, because there is no Settings surface at all (the same
-  reason the memory import routes above are uncalled). A reload control belongs there when
-  that surface exists.
+  three route cases; nothing calls it. The Settings surface exists since 2.5 slice 1
+  (Providers), and Reload Config belongs to its Slice 2 (Safety and limits), which has not
+  been built — the same reason the memory import routes above are uncalled.
 - **No profile-import client (1.28).** `POST /api/code/agents/import` files uploaded `.md`
   profiles into the active project's `.hyperion/agents/` with per-file results, but nothing
   calls it: there is no profiles surface, and no Settings screen to host one. A folder picker

@@ -33,8 +33,8 @@ export const providerSchema = z.object({
    *
    * Declared here rather than left to `passthrough()` so it is a *contract*: the
    * backend serves it on every provider read, and a settings screen that could
-   * not see it could not edit it. Nothing renders it yet — the settings surface
-   * is still missing, which `frontend/contracts/gaps.md` records.
+   * not see it could not edit it. The Settings Providers surface (2.5 slice 1)
+   * renders and edits it.
    */
   maxContextTokens:z.number().int().positive().nullable(),
   /**
