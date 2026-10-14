@@ -408,15 +408,15 @@ describe('Settings shell', () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
       <QueryClientProvider client={client}>
-        <MemoryRouter initialEntries={['/settings/safety']}>
+        <MemoryRouter initialEntries={['/settings/memory']}>
           <Routes>
             <Route path="/settings/*" element={<SettingsTool />} />
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>,
     );
-    expect(screen.getByRole('heading', { name: 'Safety and limits' })).toBeInTheDocument();
-    expect(screen.getByText(/arrives with Settings Slice 2/)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Memory and data' })).toBeInTheDocument();
+    expect(screen.getByText(/arrives with Settings Slice 3/)).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Providers/ })).toBeInTheDocument();
   });
 });
