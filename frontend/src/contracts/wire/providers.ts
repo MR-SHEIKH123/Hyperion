@@ -1,6 +1,27 @@
 import { z } from 'zod';
 
 export const providerTypeSchema = z.enum(['remote', 'local', 'opencodex', 'colibri', 'puter']);
+export const zdrSupportSchema = z.enum([
+  'unknown', 'supported_default', 'supported_opt_in', 'not_supported', 'not_applicable',
+]);
+/**
+ * Per-provider zero-data-retention facts, exactly as `toPublic` serves them
+ * (docs/API.md §3.1). Required on every provider read: the settings surface
+ * edits this record, and a schema that let it be absent would render "nothing
+ * recorded" for a payload that simply did not say. `requestFlag.value` is a
+ * policy declaration the backend returns in plaintext (never a credential —
+ * the write path refuses credential-shaped values), so it is modelled here.
+ */
+export const providerZdrSchema = z.object({
+  support: zdrSupportSchema,
+  requestFlag: z.object({
+    location: z.enum(['header', 'body']),
+    key: z.string(),
+    value: z.string(),
+  }).passthrough().nullable(),
+  confirmedAt: z.number().nullable(),
+  confirmedNote: z.string().nullable(),
+}).passthrough();
 export const providerSchema = z.object({
   id:z.string(), name:z.string(), type:providerTypeSchema, baseUrl:z.string(),
   hasKey:z.boolean(), apiKeyHint:z.string().nullable(), enabled:z.boolean(), priority:z.number(),
@@ -33,6 +54,14 @@ export const providerSchema = z.object({
     source:z.enum(['table','retry_after']),
     reason:z.string(),
   }).nullable(),
+  /**
+   * The egress proxy as a read may disclose it: the redacted string
+   * (`user:***@host:port` at most), or null. Not the structured object the
+   * `/active` route serves — on a provider read the only consumer is the
+   * disclosure, and a structure would invite reconstructing the dial URL.
+   */
+  egressProxy:z.string().nullable(),
+  zdr:providerZdrSchema,
   createdAt:z.number(), updatedAt:z.number(),
 }).passthrough();
 export const modelSchema = z.object({ id:z.string(), label:z.string().optional(), ownedBy:z.string().optional(), contextLength:z.number().int().positive().optional() }).passthrough();
@@ -75,7 +104,50 @@ export const activeProviderResponseSchema = z.object({
   // where the honest answer is "nothing has been recorded".
   zdr:z.object({ status:zdrStatusSchema.nullable(), requirement:zdrRequirementSchema }).passthrough(),
 }).passthrough();
+/**
+ * Enable/disable answers: the provider plus the registry summary the backend
+ * spreads in (docs/API.md §3.2). The summary is what reports which provider
+ * is active after the change — enabling demotes the previous one to standby.
+ */
+export const providerEnabledResponseSchema = z.object({
+  provider:providerSchema,
+  activeProviderId:z.string().nullable(), activeProviderName:z.string().nullable(),
+  providerCount:z.number().int().nonnegative(), hasAnyProvider:z.boolean(),
+}).passthrough();
+export const providerModelsResponseSchema = z.object({
+  providerId:z.string(), models:z.array(modelSchema),
+}).passthrough();
+/** Bare answer of POST /:id/test — informational, never a gate on saving. */
+export const connectionTestSchema = z.object({
+  ok:z.boolean(), message:z.string(),
+  modelCount:z.number().int().nonnegative().optional(), code:z.string().optional(),
+}).passthrough();
+/** Bare answer of POST /detect-local: 200 even when nothing was detected. */
+export const localDetectionSchema = z.object({
+  detected:z.boolean(), baseUrl:z.string(), models:z.array(modelSchema),
+  attempts:z.number().int().nonnegative(), reason:z.string().optional(),
+  providerId:z.string().optional(),
+}).passthrough();
+export const colibriProbeSchema = z.object({
+  detected:z.boolean(), baseUrl:z.string(), models:z.array(modelSchema),
+  reason:z.string().optional(), defaultBaseUrl:z.string(),
+}).passthrough();
+export const puterAdvisorySchema = z.object({
+  type:z.literal('puter'), defaultBaseUrl:z.string(), credential:z.literal('auth_token'),
+  egress:z.literal('remote'), catalogueUrl:z.string(), requiresPaidPlan:z.literal(true),
+  note:z.string(),
+}).passthrough();
+export const colibriAdvisorySchema = z.object({
+  type:z.literal('colibri'), defaultBaseUrl:z.string(), caveat:z.string(),
+  acknowledgementRequired:z.literal(true), acknowledgementField:z.literal('acknowledgeSlow'),
+}).passthrough();
 export type ProviderWire = z.infer<typeof providerSchema>;
+export type ProviderZdrWire = z.infer<typeof providerZdrSchema>;
+export type ZdrSupportWire = z.infer<typeof zdrSupportSchema>;
+export type PuterAdvisoryWire = z.infer<typeof puterAdvisorySchema>;
+export type ColibriAdvisoryWire = z.infer<typeof colibriAdvisorySchema>;
+export type LocalDetectionWire = z.infer<typeof localDetectionSchema>;
+export type ConnectionTestWire = z.infer<typeof connectionTestSchema>;
 export type ProviderCooldownWire = NonNullable<ProviderWire['cooldown']>;
 export type ModelWire = z.infer<typeof modelSchema>;
 export type EgressClassWire = z.infer<typeof egressClassSchema>;

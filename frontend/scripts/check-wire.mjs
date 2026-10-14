@@ -347,7 +347,7 @@ const NESTED = new Set([
   // inside the provenance responses
   'artifactVersionSchema', 'runKnowledgeSourceSchema',
   // inside the provider responses
-  'egressClassSchema', 'egressProxySchema', 'modelSchema', 'providerSchema', 'providerTypeSchema',
+  'egressClassSchema', 'egressProxySchema', 'modelSchema', 'providerSchema', 'providerTypeSchema', 'providerZdrSchema', 'zdrSupportSchema',
   'zdrRequirementSchema', 'zdrStatusSchema',
   // inside the Canvas tree — `canvasTreeSchema` is checked against a real
   // listing, and its `entries` are what exercise the entry schema
@@ -507,6 +507,15 @@ async function main() {
     maxContextTokens: 5,
   });
   enableProvider(providerRow.id);
+  // Disposable, never enabled until the CRUD checks at the end: the provider
+  // write routes (create/patch/zdr/enable/disable/test/models) are exercised
+  // against it so the active fixture above is not mutated mid-run.
+  const disposableProvider = createProvider({
+    name: 'Wire disposable provider',
+    type: 'remote',
+    baseUrl: providerBase,
+    apiKey: 'wire-key',
+  });
 
   const chat = createChat({ tool: 'chat', title: 'Wire chat' });
   appendMessage({ chatId: chat.id, role: 'user', content: 'hello' });
@@ -651,6 +660,12 @@ async function main() {
   await r('providers.list', 'GET', '/api/providers', 'providersResponseSchema', { requireNonEmpty: 'providers' });
   await r('providers.active', 'GET', '/api/providers/active', 'activeProviderResponseSchema');
   await r('providers.activeModels', 'GET', '/api/providers/active/models', 'activeModelsResponseSchema', { requireNonEmpty: 'models' });
+  await r('providers.puterAdvisory', 'GET', '/api/providers/puter/advisory', 'puterAdvisorySchema');
+  await r('providers.colibriAdvisory', 'GET', '/api/providers/colibri/advisory', 'colibriAdvisorySchema');
+  await r('providers.colibriProbe', 'POST', '/api/providers/colibri/probe', 'colibriProbeSchema', { payload: { baseUrl: providerBase } });
+  await r('providers.detectLocal', 'POST', '/api/providers/detect-local', 'localDetectionSchema', { payload: { baseUrl: providerBase } });
+  await r('providers.models', 'GET', `/api/providers/${disposableProvider.id}/models`, 'providerModelsResponseSchema', { requireNonEmpty: 'models' });
+  await r('providers.test', 'POST', `/api/providers/${disposableProvider.id}/test`, 'connectionTestSchema', { payload: {} });
   await r('tasks.lane', 'GET', '/api/code/tasks', 'codeLaneSchema');
   // The Canvas (1.40): the tree, one file, the diff, and the preview's mint and
   // revoke. `entries` is required non-empty because a tree that parsed as an
@@ -718,7 +733,21 @@ async function main() {
   await r('attention.queue', 'GET', '/api/attention', 'attentionQueueSchema', { requireNonEmpty: 'items' });
   await r('projects.create', 'POST', '/api/projects', 'projectResponseSchema', { payload: { name: 'Wire project 2' }, expectStatus: 201 });
   await r('projects.open', 'POST', `/api/projects/${project.id}/open`, 'openedProjectResponseSchema', { payload: {} });
-  await r('providers.enable', 'POST', `/api/providers/${providerRow.id}/enable`, 'providerResponseSchema', { payload: {} });
+  await r('providers.enable', 'POST', `/api/providers/${providerRow.id}/enable`, 'providerEnabledResponseSchema', { payload: {} });
+  await r('providers.create', 'POST', '/api/providers', 'providerResponseSchema', {
+    payload: { name: 'Wire created provider', type: 'remote', baseUrl: providerBase, apiKey: 'wire-key' },
+    expectStatus: 201,
+  });
+  await r('providers.patch', 'PATCH', `/api/providers/${disposableProvider.id}`, 'providerResponseSchema', {
+    payload: { priority: 42 },
+  });
+  await r('providers.zdr', 'PUT', `/api/providers/${disposableProvider.id}/zdr`, 'providerResponseSchema', {
+    payload: { support: 'supported_default' },
+  });
+  await r('providers.enableDisposable', 'POST', `/api/providers/${disposableProvider.id}/enable`, 'providerEnabledResponseSchema', { payload: {} });
+  await r('providers.disableDisposable', 'POST', `/api/providers/${disposableProvider.id}/disable`, 'providerEnabledResponseSchema', { payload: {} });
+  // The disable above leaves nothing active; restore the fixture provider for the checks that follow.
+  await r('providers.enable', 'POST', `/api/providers/${providerRow.id}/enable`, 'providerEnabledResponseSchema', { payload: {} });
   await r('error.envelope(404)', 'GET', '/api/wire-check-does-not-exist', 'errorEnvelopeSchema', { expectStatus: 404 });
   await r('error.envelope(400)', 'GET', '/api/artifacts/versions', 'errorEnvelopeSchema', { expectStatus: 400 });
   await r('attention.decide', 'POST', '/api/cowork/tasks/wire-task/approve', 'approvalResultSchema', {
