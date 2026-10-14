@@ -6,7 +6,8 @@ export const errorCodeSchema = z.enum([
   'no_healthy_provider', 'local_provider_not_detected', 'busy', 'run_not_paused',
   'run_not_found', 'aborted', 'agent_not_registered', 'terminal_not_registered',
   'capability_disabled', 'network_egress_disabled', 'spending_cap_reached',
-  'redaction_flagged', 'scope_violation', 'encryption_failed', 'storage_error', 'internal_error',
+  'redaction_flagged', 'zdr_requirement_unmet', 'approval_required', 'permission_denied',
+  'scope_violation', 'encryption_failed', 'storage_error', 'internal_error',
 ]);
 
 export type ErrorCode = z.infer<typeof errorCodeSchema>;

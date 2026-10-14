@@ -221,10 +221,13 @@ behavior in the browser.
   resolvable, rather than rendering a stack of links that 404. That means **labelling the
   versions that are unavailable after release**, not quietly omitting them: a row that
   vanishes teaches the user the edit never happened.
-- **`errorCodeSchema` lags the backend by three codes, and nothing checks it (found 2026-10-03,
-  pre-existing).** The frontend's closed enum in `src/contracts/wire/common.ts` lists 25 codes;
-  `src/util/errors.ts` has 28. Missing: `approval_required`, `permission_denied`,
-  `zdr_requirement_unmet` — and no extras, so the enum is a subset, not a divergent set.
+- ~~**`errorCodeSchema` lags the backend by three codes, and nothing checks it (found 2026-10-03,
+  pre-existing).**~~ **Closed 2026-10-14.** The frontend's closed enum in
+  `src/contracts/wire/common.ts` listed 25 codes; `src/util/errors.ts` has 28.
+  Missing were `approval_required`, `permission_denied`,
+  `zdr_requirement_unmet` — and no extras, so the enum was a subset, not a divergent set.
+  The enum is now synced and `src/contracts/wire/common.test.ts` parses the backend
+  union from `src/util/errors.ts` at test time, so the two diverging fails that test.
   Measured by diffing the two declarations, not by reading them. Today the gap is **latent**,
   and it is worth saying exactly why so nobody "fixes" the wrong thing:
   - the chat stream's refusal reaches the client as an **SSE error frame**, whose
@@ -239,8 +242,8 @@ behavior in the browser.
   which is exactly the failure a closed enum that lags produces. The Canvas routes do not
   widen the gap (they reuse `capability_disabled`, `scope_violation`, `bad_request`,
   `not_found`), which is the point of not minting a new code for a disabled preview.
-  **2.4's first commit should sync the enum to the backend union and add the drift test**, as
-  its own revertable commit.
+  Syncing the enum and adding the drift test landed as its own revertable commit,
+  as this entry recommended.
 - No Design file tree, version timeline, rendered diff, or design-system context contract. (1.31's "Design environment" clause lives here now: reclassified out of Prompt 1 to Design's Prompt 2 build, 2026-09-24.)
 - ~~No general artifact lineage/list endpoint.~~ **Partly closed 2026-09-21**: `GET /api/artifacts/versions?key=…`
   lists one artifact's version chain with its derived parent (Prompt 1.39 A6). There is still no
