@@ -33,22 +33,29 @@ is active at a time, with standby failover to alternates.
   streams its frames as they arrive, settling on the persisted run rather
   than on the socket when the stream ends; the lane rail — running slots,
   queue depth, capacity, and the parked worktrees that hold disk rather than
-  a slot — beside the selected task's state, recorded spend and version
-  timeline; the parked-task panel, where a held call's arguments are shown
-  before it is allowed once, allowed for the session, or denied, and the run
-  continues from that answer; and the recovery panel for a run a restart
+  a slot — beside the selected task's state and recorded spend; the session
+  panel in the inspector — a changed-file list splitting per-file additions
+  and deletions from the task's diff against its base commit, a live preview
+  row that shows whether a preview is running and offers to start, open or
+  stop it, the processes list of live terminal sessions, and the selected
+  file's version timeline beside the run's steps; the parked-task panel,
+  where a held call's arguments are shown before it is allowed once, allowed
+  for the session, or denied, and the run continues from that answer; and the
+  recovery panel for a run a restart
   interrupted, which reports what it got as far as doing, discards the
   leftover checkout on request, and resumes by filling the composer with the
   task id whose checkout the re-run adopts. Cowork, Design, Playground,
   Plugins, Skills, and Settings still resolve to a placeholder that says so.
 
-The **Code Canvas backend** (1.40) is done and unreferenced by any screen: a
-read-only file listing, file read and task diff for a Code task's workspace, plus
-a sandboxed browser preview served by a **second HTTP server** on
-`HYPERION_PREVIEW_PORT` (default 4320; `0` disables). Nothing calls those routes
-yet — the panel is the Code surface's next pass — which is why they are recorded
-as `missing` contracts in `frontend/contracts/gaps.md` rather than as work the
-frontend already has.
+The **Code Canvas backend** (1.40) has a client and screens: a read-only file
+listing, file read and task diff for a Code task's workspace, plus a sandboxed
+browser preview served by a **second HTTP server** on
+`HYPERION_PREVIEW_PORT` (default 4320; `0` disables). `frontend/src/api/canvas.ts`
+calls all six routes and the ledger records them as `implemented`: the
+changed-file list and the preview row above render the diff and the preview
+in the Code surface's inspector. What no screen renders yet is the file tree,
+the file contents and the patch text itself — the list is derived from it —
+as `frontend/contracts/gaps.md` records.
 
 ## The agent architecture
 
