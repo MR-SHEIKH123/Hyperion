@@ -24,6 +24,14 @@ import { attentionQueueFixture } from './fixtures/attentionQueue';
 import { ProviderList } from '../tools/settings/ProviderList';
 import { providerModelsFixture, providersFixture } from './fixtures/providers';
 import { EgressPanel, LimitsPanel, RedactionPanel, ReloadPanel, ToolAccessPanel, ZdrPanel } from '../tools/settings/SafetyPanels';
+import { AddMemoryForm, ImportPanel, MemoryList, MemoryStatusPanel } from '../tools/settings/MemoryView';
+import { MEMORY_NO_MERGE_LINE } from '../tools/settings/memoryModel';
+import {
+  memoryAvailableFixture,
+  memoryEntriesFixture,
+  memoryImportFixture,
+  memoryUnavailableFixture,
+} from './fixtures/memory';
 import {
   limitsFixture,
   networkEgressFixture,
@@ -139,6 +147,52 @@ function SafetyFixture() {
           result={reloadResult}
           error={null}
           onReload={() => setReloadResult(reloadConfigFixture)}
+        />
+      </div>
+    </section>
+  );
+}
+
+/**
+ * Memory panels from fixtures (Settings 2.5, slice 3a).
+ *
+ * The unavailable status is shown beside the available one because the
+ * whole point of the status object is that they are different answers;
+ * a harness that only showed the happy state would hide the distinction
+ * the section exists to render. Handlers record nothing and send less.
+ */
+function MemoryFixture() {
+  const [notice, setNotice] = useState<string | null>(null);
+  return (
+    <section aria-labelledby="memory-fixture-heading" className={styles.section}>
+      <h2 className={styles.sectionHeading} id="memory-fixture-heading">
+        Memory fixtures
+      </h2>
+      <p className={styles.note}>{MEMORY_NO_MERGE_LINE}</p>
+      {notice === null ? null : <p className={styles.note} role="status">{notice}</p>}
+      <div data-fixture="memory-panels" style={{ display: 'grid', gap: 16 }}>
+        <MemoryStatusPanel
+          status={memoryUnavailableFixture}
+          pending={false}
+          error={null}
+          onEnable={() => setNotice('Fixture only: the backend load would be retried.')}
+          onDisable={() => setNotice('Fixture only: memory would be switched off.')}
+        />
+        <MemoryStatusPanel
+          status={memoryAvailableFixture}
+          pending={false}
+          error={null}
+          onEnable={() => undefined}
+          onDisable={() => setNotice('Fixture only: memory would be switched off (stored memories kept).')}
+        />
+        <MemoryList
+          memories={memoryEntriesFixture}
+          onDeleteOne={(memory) => setNotice(`Fixture only: "${memory.id}" would be deleted.`)}
+        />
+        <AddMemoryForm onAdd={() => Promise.resolve(setNotice('Fixture only: the memory would be stored.'))} />
+        <ImportPanel
+          onImportText={() => Promise.resolve(memoryImportFixture)}
+          onImportFiles={() => Promise.resolve(memoryImportFixture)}
         />
       </div>
     </section>
@@ -344,6 +398,8 @@ export function Component() {
       <ProvidersFixture />
 
       <SafetyFixture />
+
+      <MemoryFixture />
 
       <section aria-labelledby="dialog-fixtures-heading" className={styles.section}>
         <h2 className={styles.sectionHeading} id="dialog-fixtures-heading">Dialog fixtures</h2>
