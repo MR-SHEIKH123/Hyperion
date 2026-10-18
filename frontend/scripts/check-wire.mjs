@@ -356,6 +356,14 @@ const NESTED = new Set([
   // that holds one live and one ended session, which is what exercises both arms
   // of `endedAt`/`endedReason`
   'terminalSessionSchema', 'reloadProfileSchema', 'memoryEntrySchema', 'memoryStatusSchema', 'memoryImportFileSchema',
+  // inside the backup responses — the list, destinations, inspection and audit
+  // envelopes are checked against a real export of the wire database
+  'backupFileSchema', 's3FieldSchema', 's3PublicConfigSchema', 'backupManifestSchema', 'tableDeltaSchema',
+  'archiveInspectionSchema', 'restoreAuditEntrySchema', 's3ProbeStepSchema',
+  // inside the storage responses
+  'cleanupLogEntrySchema', 'assetSchema',
+  // inside the usage responses — buckets are what every summary is made of
+  'usageBucketSchema', 'exposureBucketSchema', 'zdrBucketSchema', 'modelPriceSchema',
   // inside the task responses
   'orphanedWorktreeSchema', 'taskApprovalSchema', 'taskRunStateSchema', 'taskStateResponseSchema',
   'taskStepSchema', 'taskStepSummarySchema', 'taskToolSchema', 'taskUsageSchema',
@@ -646,6 +654,20 @@ async function main() {
   });
   finishSubagentRun(subagent.id, 'complete', { summary: 'done' });
 
+  // Data fixtures (Settings 2.5 slice 3b). A priced and an unpriced usage row:
+  // the summary's `costUsd` is a sum over priced rows only, and a check that
+  // only ever saw priced rows could not catch the null measures collapsing.
+  const { setPrice, recordUsage } = await import('../../src/db/usage.ts');
+  const { saveAsset } = await import('../../src/services/storage/gallery.ts');
+  const { exportBackup } = await import('../../src/services/backup/export.ts');
+  setPrice({ modelId: 'wire-model', providerId: null, inputPer1mUsd: 10, outputPer1mUsd: 30 });
+  recordUsage({ tool: 'chat', modelId: 'wire-model', providerId: providerRow.id, tokensIn: 1000, tokensOut: 500 });
+  recordUsage({ tool: 'chat', modelId: 'wire-unpriced', providerId: providerRow.id, tokensIn: 200, tokensOut: 100 });
+  const wireAsset = await saveAsset({ filename: 'wire.txt', buffer: Buffer.from('wire asset'), mimeType: 'text/plain', origin: 'uploaded' });
+  // A real archive of the wire database, so inspect and the dry-run restore read
+  // a manifest the export route itself wrote rather than a hand-built zip.
+  const wireBackup = await exportBackup({ includeKeys: false, includeAttachments: true });
+
   // --- checks ---------------------------------------------------------------
   // Reads that depend on `wire-run` still being parked come first; the decision
   // at the end finalises it, which is also why nothing below re-reads it.
@@ -681,6 +703,28 @@ async function main() {
   await r('memory.disable', 'POST', '/api/memory/disable', 'memoryStatusResponseSchema', { payload: {} });
   await r('memory.deleteOne', 'DELETE', '/api/memory/wire-nonexistent', 'memoryDeletedResponseSchema');
   await r('memory.clear', 'DELETE', '/api/memory', 'memoryClearedResponseSchema');
+  // Backup, storage and usage (Settings 2.5 slice 3b). The S3 test answers the
+  // not-configured report: no destination exists in the wire home, and that
+  // report is the honest shape the UI renders. The restore is a dry run — it
+  // writes an audit row and changes nothing else.
+  await r('backup.list', 'GET', '/api/backup', 'backupListResponseSchema', { requireNonEmpty: 'backups' });
+  await r('backup.destinations', 'GET', '/api/backup/destinations', 'backupDestinationsResponseSchema');
+  await r('backup.s3Put', 'PUT', '/api/backup/destinations/s3', 's3ConfigResponseSchema', { payload: { region: 'us-east-1' } });
+  await r('backup.s3Test', 'POST', '/api/backup/destinations/s3/test', 's3TestResponseSchema', { payload: {} });
+  await r('backup.inspect', 'POST', '/api/backup/inspect', 'inspectResponseSchema', { payload: { file: wireBackup.filename } });
+  await r('backup.restoreDryRun', 'POST', '/api/backup/import', 'restoreResultSchema', { payload: { file: wireBackup.filename, dryRun: true } });
+  await r('backup.restores', 'GET', '/api/backup/restores', 'restoreAuditResponseSchema', { requireNonEmpty: 'restores' });
+  await r('storage.stats', 'GET', '/api/storage/stats', 'storageStatsResponseSchema');
+  await r('storage.assets', 'GET', '/api/storage/assets', 'assetListingResponseSchema', { requireNonEmpty: 'assets' });
+  await r('storage.assetPin', 'POST', `/api/storage/assets/${wireAsset.id}/pin`, 'assetResponseSchema', { payload: { pinned: true } });
+  await r('storage.assetDelete', 'DELETE', `/api/storage/assets/${wireAsset.id}`, 'assetDeletedResponseSchema');
+  await r('storage.cleanupDryRun', 'POST', '/api/storage/cleanup', 'cleanupResultSchema', { payload: { dryRun: true } });
+  await r('storage.cleanupLog', 'GET', '/api/storage/cleanup/log', 'cleanupLogResponseSchema');
+  await r('usage.summary', 'GET', '/api/usage', 'usageSummaryResponseSchema', { requireNonEmpty: 'byDay' });
+  await r('usage.exposure', 'GET', '/api/usage/exposure-summary', 'exposureSummaryResponseSchema');
+  await r('usage.prices', 'GET', '/api/usage/prices', 'pricesResponseSchema', { requireNonEmpty: 'prices' });
+  await r('usage.pricePut', 'PUT', '/api/usage/prices', 'priceResponseSchema', { payload: { modelId: 'wire-priced', providerId: null, inputPer1mUsd: 1, outputPer1mUsd: 2 } });
+  await r('usage.priceDelete', 'DELETE', '/api/usage/prices', 'priceDeletedResponseSchema', { payload: { modelId: 'wire-priced', providerId: null } });
   await r('projects.registry', 'GET', '/api/projects', 'projectsResponseSchema', { requireNonEmpty: 'projects' });
   await r('projects.tasks', 'GET', `/api/projects/${project.id}/tasks`, 'projectTasksResponseSchema', { requireNonEmpty: 'tasks' });
   await r('providers.list', 'GET', '/api/providers', 'providersResponseSchema', { requireNonEmpty: 'providers' });

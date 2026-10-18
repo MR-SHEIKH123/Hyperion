@@ -276,13 +276,15 @@
       "id": "backup.inspect",
       "method": "POST",
       "expectedPath": "/api/backup/inspect",
-      "status": "implemented"
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: reads an archive's manifest and per-table diff before any restore is offered (`api/backup.ts` `inspectArchive`)."
     },
     {
       "id": "backup.encrypted-destinations",
       "method": "GET",
       "expectedPath": "/api/backup/destinations",
-      "status": "missing"
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: the Data section reads the local mirror and the redacted S3 destination here (`api/backup.ts` `getBackupDestinations`); the secret is never returned, only `hasSecret`."
     },
     {
       "id": "cowork.pulse",
@@ -392,6 +394,125 @@
       "expectedPath": "/api/memory",
       "status": "implemented",
       "reason": "Settings 2.5 slice 3a: delete-all, behind a confirmation naming the count (`api/memory.ts` `clearMemories`)."
+    },
+    {
+      "id": "backup.list",
+      "method": "GET",
+      "expectedPath": "/api/backup",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: archives on disk, so an earlier export can be downloaded again or restored by name (`api/backup.ts` `listBackups`)."
+    },
+    {
+      "id": "backup.export",
+      "method": "POST",
+      "expectedPath": "/api/backup/export",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: builds the archive and streams it as a download (`api/backup.ts` `exportBackupToDownload`); optional passphrase in the body and `uploadToS3` reporting its key in the `x-hyperion-s3-key` header. Streams binary, so no response schema \u2014 failures are read as the error envelope."
+    },
+    {
+      "id": "backup.s3-save",
+      "method": "PUT",
+      "expectedPath": "/api/backup/destinations/s3",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: partial update of the S3 destination (`api/backup.ts` `saveS3Config`); the secret access key is write-only."
+    },
+    {
+      "id": "backup.s3-test",
+      "method": "POST",
+      "expectedPath": "/api/backup/destinations/s3/test",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: the put/head/delete round-trip probe (`api/backup.ts` `testS3Destination`), rendered per step; a failed delete step is a warning, not a failure."
+    },
+    {
+      "id": "backup.import",
+      "method": "POST",
+      "expectedPath": "/api/backup/import",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: restore, gated on an inspect result and an explicit confirmation (`api/backup.ts` `restoreArchive`); a dry run answers what would change."
+    },
+    {
+      "id": "backup.restores",
+      "method": "GET",
+      "expectedPath": "/api/backup/restores",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: the restore audit trail, read under the restore controls (`api/backup.ts` `listRestores`)."
+    },
+    {
+      "id": "storage.stats",
+      "method": "GET",
+      "expectedPath": "/api/storage/stats",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: asset and chat totals for the storage panel (`api/storage.ts` `getStorageStats`)."
+    },
+    {
+      "id": "storage.cleanup-log",
+      "method": "GET",
+      "expectedPath": "/api/storage/cleanup/log",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: previous sweeps under the cleanup controls (`api/storage.ts` `getCleanupLog`)."
+    },
+    {
+      "id": "storage.cleanup",
+      "method": "POST",
+      "expectedPath": "/api/storage/cleanup",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: the retention sweep (`api/storage.ts` `runCleanup`); the UI previews with `dryRun` and only runs for real behind a confirmation."
+    },
+    {
+      "id": "storage.assets",
+      "method": "GET",
+      "expectedPath": "/api/storage/assets",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: the asset list with pin and delete (`api/storage.ts` `listAssets`)."
+    },
+    {
+      "id": "storage.asset-pin",
+      "method": "POST",
+      "expectedPath": "/api/storage/assets/:id/pin",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: pin/unpin (`api/storage.ts` `setAssetPinned`)."
+    },
+    {
+      "id": "storage.asset-delete",
+      "method": "DELETE",
+      "expectedPath": "/api/storage/assets/:id",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: delete one asset behind a confirmation naming the file (`api/storage.ts` `deleteAsset`)."
+    },
+    {
+      "id": "usage.summary",
+      "method": "GET",
+      "expectedPath": "/api/usage",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: totals and by-day/by-provider/by-model buckets (`api/usage.ts` `getUsageSummary`); nullable cache and duration measures stay null, never zero."
+    },
+    {
+      "id": "usage.exposure",
+      "method": "GET",
+      "expectedPath": "/api/usage/exposure-summary",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: spend by egress class and ZDR status (`api/usage.ts` `getExposureSummary`)."
+    },
+    {
+      "id": "usage.prices",
+      "method": "GET",
+      "expectedPath": "/api/usage/prices",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: the model price list (`api/usage.ts` `listPrices`)."
+    },
+    {
+      "id": "usage.price-save",
+      "method": "PUT",
+      "expectedPath": "/api/usage/prices",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: upsert a model price (`api/usage.ts` `savePrice`), validated as the route validates."
+    },
+    {
+      "id": "usage.price-delete",
+      "method": "DELETE",
+      "expectedPath": "/api/usage/prices",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: remove a model price (`api/usage.ts` `deletePrice`)."
     }
   ]
 }
