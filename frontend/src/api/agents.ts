@@ -9,9 +9,8 @@ import {
   rulesResponseSchema,
   type ProfileImportWire,
 } from '../contracts/wire/agents';
-import { request } from './client';
-import { ApiError, networkError, responseError } from './errors';
-import type { z } from 'zod';
+import { parseResponse, request } from './client';
+import { networkError } from './errors';
 
 /**
  * Agent profiles, the default profile, profile import, and the read-only
@@ -24,26 +23,6 @@ import type { z } from 'zod';
  * function here pretends otherwise.
  */
 
-async function parseWith<T>(response: Response, schema: z.ZodType<T>): Promise<T> {
-  if (!response.ok) throw await responseError(response);
-  let payload: unknown;
-  try {
-    payload = await response.json();
-  } catch {
-    throw new ApiError('Hyperion returned an unreadable response.', 'invalid_response', response.status, false);
-  }
-  const parsed = schema.safeParse(payload);
-  if (!parsed.success) {
-    throw new ApiError(
-      'Hyperion returned a response that does not match this frontend version.',
-      'invalid_response',
-      response.status,
-      false,
-      { issues: parsed.error.issues },
-    );
-  }
-  return parsed.data;
-}
 
 /** Hidden profiles are included: hidden is a listing concern, and an editor that cannot see one cannot un-hide it. */
 export const getAgentProfiles = (signal?: AbortSignal) =>
@@ -94,7 +73,7 @@ export async function importAgentProfiles(
   } catch (error) {
     throw networkError(error);
   }
-  return parseWith(response, profileImportResponseSchema);
+  return parseResponse(response, profileImportResponseSchema);
 }
 
 export const getPermissions = (options: { mode?: string; profile?: string } = {}, signal?: AbortSignal) => {

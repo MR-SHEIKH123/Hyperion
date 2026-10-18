@@ -9,8 +9,8 @@ import {
   type ArchiveInspectionWire,
   type RestoreResultWire,
 } from '../contracts/wire/backup';
-import { request } from './client';
-import { ApiError, networkError, responseError } from './errors';
+import { parseResponse, request } from './client';
+import { networkError, responseError } from './errors';
 import type { z } from 'zod';
 
 /**
@@ -26,26 +26,6 @@ import type { z } from 'zod';
  * backend's refusal envelope or a fixed local string.
  */
 
-async function parseWith<T>(response: Response, schema: z.ZodType<T>): Promise<T> {
-  if (!response.ok) throw await responseError(response);
-  let payload: unknown;
-  try {
-    payload = await response.json();
-  } catch {
-    throw new ApiError('Hyperion returned an unreadable response.', 'invalid_response', response.status, false);
-  }
-  const parsed = schema.safeParse(payload);
-  if (!parsed.success) {
-    throw new ApiError(
-      'Hyperion returned a response that does not match this frontend version.',
-      'invalid_response',
-      response.status,
-      false,
-      { issues: parsed.error.issues },
-    );
-  }
-  return parsed.data;
-}
 
 /* --- exports (binary) ---------------------------------------------------- */
 
@@ -179,7 +159,7 @@ async function postArchive<T>(
   } catch (error) {
     throw networkError(error);
   }
-  return parseWith(response, schema);
+  return parseResponse(response, schema);
 }
 
 export async function inspectArchive(
