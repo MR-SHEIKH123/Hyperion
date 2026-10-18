@@ -31,6 +31,8 @@ interface Call {
 interface StubOptions {
   providers?: ProviderWire[];
   listResponse?: () => Response;
+  /** Answers for successive GET /api/providers calls; the last one repeats. */
+  listResponses?: Array<() => Response>;
   createResponse?: (body: Record<string, unknown>) => Response;
   testResult?: Record<string, unknown>;
   advisoriesFail?: boolean;
@@ -48,6 +50,7 @@ const byId = (id: string) => providersFixture.find((provider) => provider.id ===
 
 function stubApi(options: StubOptions = {}) {
   const calls: Call[] = [];
+  let listCall = 0;
   const providers = options.providers ?? providersFixture;
   vi.stubGlobal(
     'fetch',
@@ -57,7 +60,14 @@ function stubApi(options: StubOptions = {}) {
       const body = typeof init?.body === 'string' ? (JSON.parse(init.body) as Record<string, unknown>) : undefined;
       calls.push({ method, url, body });
 
-      if (method === 'GET' && url === '/api/providers') return Promise.resolve(options.listResponse?.() ?? json(listBody(providers)));
+      if (method === 'GET' && url === '/api/providers') {
+        if (options.listResponses !== undefined) {
+          const respond = options.listResponses[Math.min(listCall, options.listResponses.length - 1)] as () => Response;
+          listCall += 1;
+          return Promise.resolve(respond());
+        }
+        return Promise.resolve(options.listResponse?.() ?? json(listBody(providers)));
+      }
       if (method === 'GET' && url.endsWith('/advisory'))
         return Promise.resolve(
           options.advisoriesFail === true
@@ -220,6 +230,7 @@ describe('enable, disable, delete', () => {
     await screen.findByText('Hosted endpoint');
     await userEvent.click(within(rowOf('Hosted endpoint')).getByRole('button', { name: 'Enable' }));
     const dialog = screen.getByRole('dialog', { name: 'Enable Hosted endpoint?' });
+    expect(await within(dialog).findByText(/is active now and will be moved to standby/)).toBeInTheDocument();
     expect(dialog).toHaveTextContent('“Ollama on this machine” is active now and will be moved to standby');
     await userEvent.click(within(dialog).getByRole('button', { name: 'Enable' }));
     await waitFor(() => expect(screen.getByText(/“Hosted endpoint” is now the active provider\./)).toBeInTheDocument());
@@ -234,12 +245,47 @@ describe('enable, disable, delete', () => {
     const dialog = screen.getByRole('dialog', { name: 'Enable Colibrì (sovereign node)?' });
     const confirm = within(dialog).getByRole('button', { name: 'Enable' });
     expect(confirm).toBeDisabled();
-    await userEvent.click(within(dialog).getByLabelText(/I understand Colibrì inference can be extremely slow/));
+    await userEvent.click(await within(dialog).findByLabelText(/I understand Colibrì inference can be extremely slow/));
     expect(confirm).toBeEnabled();
     await userEvent.click(confirm);
     await waitFor(() =>
       expect(calls.some((call) => call.url.endsWith('/enable') && call.body?.['acknowledgeSlow'] === true)).toBe(true),
     );
+  });
+
+  it('names the provider that is active at dialog time, not the one from page load', async () => {
+    // The page loads with Ollama active. By the time the dialog opens, a fresh
+    // read says Colibrì is the active one (another tab, a failover) — the
+    // confirmation must name Colibrì, because that is who would be demoted.
+    const staleList = providersFixture;
+    const freshList = providersFixture.map((provider) => ({
+      ...provider,
+      enabled: provider.id === 'provider-colibri',
+    }));
+    stubApi({ listResponses: [() => json(listBody(staleList)), () => json(listBody(freshList))] });
+    renderSection();
+    await screen.findByText('Hosted endpoint');
+    await userEvent.click(within(rowOf('Hosted endpoint')).getByRole('button', { name: 'Enable' }));
+    const dialog = screen.getByRole('dialog', { name: 'Enable Hosted endpoint?' });
+    expect(await within(dialog).findByText(/“Colibrì \(sovereign node\)” is active now/)).toBeInTheDocument();
+    expect(dialog).not.toHaveTextContent('“Ollama on this machine” is active now');
+  });
+
+  it('pauses the enable confirmation when the fresh read fails, naming nobody', async () => {
+    stubApi({
+      listResponses: [
+        () => json(listBody(providersFixture)),
+        () => envelope('internal_error', 'The registry file is unreadable.', 500),
+      ],
+    });
+    renderSection();
+    await screen.findByText('Hosted endpoint');
+    await userEvent.click(within(rowOf('Hosted endpoint')).getByRole('button', { name: 'Enable' }));
+    const dialog = screen.getByRole('dialog', { name: 'Enable Hosted endpoint?' });
+    expect(await within(dialog).findByText(/could not be confirmed/)).toBeInTheDocument();
+    expect(dialog).not.toHaveTextContent('is active now and will be moved to standby');
+    expect(within(dialog).getByRole('button', { name: 'Enable' })).toBeDisabled();
+    expect(within(dialog).getByRole('button', { name: 'Try the check again' })).toBeInTheDocument();
   });
 
   it('deletes only after confirmation', async () => {

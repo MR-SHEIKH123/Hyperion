@@ -59,6 +59,12 @@ export function ProvidersSection() {
   const [confirm, setConfirm] = useState<ConfirmState>(null);
   const [enableAck, setEnableAck] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  // The enable confirmation names the provider it will demote. That name is
+  // only ever taken from a fresh read taken when the dialog opens — the list
+  // the page happens to be showing may predate another tab, a failover, or a
+  // test having refreshed a provider's health since it loaded.
+  const [confirmRead, setConfirmRead] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [confirmProviders, setConfirmProviders] = useState<ProviderWire[] | null>(null);
   const [actionPending, setActionPending] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [zdrProvider, setZdrProvider] = useState<ProviderWire | null>(null);
@@ -121,10 +127,31 @@ export function ProvidersSection() {
 
   // --- row actions -----------------------------------------------------------
 
+  const readForConfirm = () => {
+    setConfirmRead('loading');
+    setConfirmProviders(null);
+    void providersQuery
+      .refetch()
+      .then((result) => {
+        // A failed refetch still carries the previous data on the result, so
+        // `isError` — not missing data — is what says the read did not land.
+        if (result.isError || result.data === undefined) {
+          setConfirmRead('error');
+        } else {
+          setConfirmProviders(result.data.providers);
+          setConfirmRead('ready');
+        }
+      })
+      .catch(() => setConfirmRead('error'));
+  };
+
   const openConfirm = (kind: 'enable' | 'disable' | 'delete', provider: ProviderWire) => {
     setActionError(null);
     setEnableAck(false);
     setConfirm({ kind, provider });
+    // Enabling demotes whoever is active; re-read before naming them. The
+    // other confirmations name only the row they were opened from.
+    if (kind === 'enable') readForConfirm();
   };
 
   const runConfirm = async () => {
@@ -232,7 +259,16 @@ export function ProvidersSection() {
   // --- render ----------------------------------------------------------------
 
   const confirmProvider = confirm?.provider ?? null;
-  const demoted = confirmProvider !== null && active !== null && active.id !== confirmProvider.id ? active : null;
+  // Once the fresh read lands, it — not the page's list — says who is active.
+  const demoted =
+    confirmProvider !== null && confirmRead === 'ready' && confirmProviders !== null
+      ? (confirmProviders.find((provider) => provider.enabled && provider.id !== confirmProvider.id) ?? null)
+      : null;
+  const targetNowActive =
+    confirmRead === 'ready' &&
+    confirmProviders !== null &&
+    confirmProvider !== null &&
+    confirmProviders.some((provider) => provider.id === confirmProvider.id && provider.enabled);
   const enableNeedsAck = confirmProvider?.type === 'colibri';
 
   return (
@@ -346,18 +382,35 @@ export function ProvidersSection() {
       >
         {confirm !== null && confirmProvider !== null ? (
           <div className={styles.confirmBody}>
-            {confirm.kind === 'enable' ? (
+            {confirm.kind === 'enable' && confirmRead === 'loading' ? (
+              <p role="status">Checking which provider is currently active…</p>
+            ) : confirm.kind === 'enable' && confirmRead === 'error' ? (
               <>
-                <p>
-                  “{confirmProvider.name}” becomes the active provider — the one Chat and Code run on.
-                  {demoted !== null ? (
-                    <>
-                      {' '}
-                      “{demoted.name}” is active now and will be moved to standby: it stays configured with its
-                      key and models, and can be enabled again at any time.
-                    </>
-                  ) : null}
+                <p role="alert">
+                  The current active provider could not be confirmed — the provider list could not be re-read
+                  just now. Rather than name a provider from a possibly stale list, this confirmation is
+                  paused. Nothing has been enabled.
                 </p>
+                <div className={styles.confirmActions}>
+                  <Button onClick={readForConfirm}>Try the check again</Button>
+                </div>
+              </>
+            ) : confirm.kind === 'enable' ? (
+              <>
+                {targetNowActive ? (
+                  <p>“{confirmProvider.name}” is already the active provider — there is nothing to change.</p>
+                ) : (
+                  <p>
+                    “{confirmProvider.name}” becomes the active provider — the one Chat and Code run on.
+                    {demoted !== null ? (
+                      <>
+                        {' '}
+                        “{demoted.name}” is active now and will be moved to standby: it stays configured with
+                        its key and models, and can be enabled again at any time.
+                      </>
+                    ) : null}
+                  </p>
+                )}
                 {enableNeedsAck ? (
                   <>
                     {colibriAdvisoryQuery.data !== undefined ? (
@@ -399,7 +452,11 @@ export function ProvidersSection() {
               <Button
                 variant="primary"
                 onClick={() => void runConfirm()}
-                disabled={actionPending || (confirm.kind === 'enable' && enableNeedsAck && !enableAck)}
+                disabled={
+                  actionPending ||
+                  (confirm.kind === 'enable' &&
+                    (confirmRead !== 'ready' || targetNowActive || (enableNeedsAck && !enableAck)))
+                }
               >
                 {actionPending
                   ? 'Working…'
