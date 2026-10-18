@@ -73,6 +73,7 @@ export const s3TestResponseSchema = z.object({
   steps: z.array(s3ProbeStepSchema),
 });
 export type S3TestReportWire = z.infer<typeof s3TestResponseSchema>;
+export type S3ProbeStepWire = z.infer<typeof s3ProbeStepSchema>;
 
 export const backupManifestSchema = z.object({
   format: z.number(),

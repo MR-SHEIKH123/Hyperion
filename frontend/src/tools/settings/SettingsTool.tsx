@@ -5,6 +5,7 @@ import { usePersistenceStore } from '../../state/persistence/PersistenceProvider
 import { ProvidersSection } from './ProvidersSection';
 import { SafetySection } from './SafetySection';
 import { MemorySection } from './MemorySection';
+import { DataSection } from './DataSection';
 import styles from './SettingsTool.module.css';
 
 /**
@@ -81,7 +82,10 @@ export function SettingsTool() {
         ) : section === 'safety' ? (
           <SafetySection />
         ) : section === 'memory' ? (
-          <MemorySection />
+          <>
+            <MemorySection />
+            <DataSection />
+          </>
         ) : (
           <section aria-labelledby="settings-pending-title">
             <h2 id="settings-pending-title">{current.label}</h2>
