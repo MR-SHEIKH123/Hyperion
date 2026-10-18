@@ -129,10 +129,11 @@ behavior in the browser.
   caching nothing, and is covered by three route cases. The Safety and limits section now
   calls it (`api/settings.ts` `reloadConfig`) as its Reload Config check; the ledger row
   stays `route-mismatch` because the specification asked for GET|PUT and the route is a POST.
-- **No profile-import client (1.28).** `POST /api/code/agents/import` files uploaded `.md`
-  profiles into the active project's `.hyperion/agents/` with per-file results, but nothing
-  calls it: there is no profiles surface, and no Settings screen to host one. A folder picker
-  can POST the folder's files to it unchanged when that surface exists.
+- ~~No profile-import client (1.28).~~ **Closed by Settings 2.5 slice 4.** The Agents and
+  permissions section calls it (`api/agents.ts` `importAgentProfiles`) with the three conflict
+  policies; overwrite asks first, naming the files it replaces, and only then sends
+  `confirm: true`, and the per-file results render as returned. The no-active-project 409 is
+  shown in the backend's own words.
 - No global search endpoint; later shell search must report federated partial coverage.
 
 ## Later

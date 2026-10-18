@@ -44,8 +44,8 @@ is active at a time, with standby failover to alternates.
   recovery panel for a run a restart
   interrupted, which reports what it got as far as doing, discards the
   leftover checkout on request, and resumes by filling the composer with the
-  task id whose checkout the re-run adopts. The **Settings tool has its first
-  two sections**: Providers — every provider with its health, cooldown,
+  task id whose checkout the re-run adopts. The **Settings tool has all four
+  of its sections**: Providers — every provider with its health, cooldown,
   zero-data-retention state and redacted egress proxy on the row; add and edit
   forms per provider type that render the Puter and Colibrì advisories from
   the backend rather than a copy of them; enable with a confirmation naming
@@ -62,10 +62,21 @@ is active at a time, with standby failover to alternates.
   spending cap and the runaway ceilings beside today's spend and the requests
   it could not price; the tool-access mode, labelled advisory because nothing
   enforces it; and Reload Config, which validates the on-disk configuration
-  because there is no cache for it to clear. Cowork, Design, Playground,
-  Plugins, and Skills still resolve to a placeholder that says so, as do
-  Settings' two remaining sections, Memory and data and Agents and
-  permissions.
+  because there is no cache for it to clear — Memory and data: memory opt-in
+  with the disabled, unavailable, and empty states kept distinct; the stored
+  list rendered as text only; add, paste and folder import with per-file
+  results; delete-all behind a confirmation naming the count; and the Data
+  panels: export with an optional passphrase and S3 upload, restore gated on
+  an inspection whose diff the confirmation names, the S3 destination whose
+  secret is write-only and whose failed probe step reads as a warning,
+  storage with a dry-run-gated cleanup, and usage that reports "not recorded"
+  rather than zero beside every unpriced count — and Agents and permissions:
+  the stored default profile with Ask and Plan shown resolving to their own
+  built-ins regardless, the profile list including hidden profiles, .md
+  import whose overwrite asks first and names the files it replaces, and the
+  permission layers in evaluation order, read-only because the rules live in
+  project files. Cowork, Design, Playground, Plugins, and Skills still
+  resolve to a placeholder that says so.
 
 The **Code Canvas backend** (1.40) has a client and screens: a read-only file
 listing, file read and task diff for a Code task's workspace, plus a sandboxed
