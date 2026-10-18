@@ -4,16 +4,17 @@ import { Link, Navigate, useLocation } from 'react-router-dom';
 import { usePersistenceStore } from '../../state/persistence/PersistenceProvider';
 import { ProvidersSection } from './ProvidersSection';
 import { SafetySection } from './SafetySection';
+import { MemorySection } from './MemorySection';
 import styles from './SettingsTool.module.css';
 
 /**
- * Settings (Addendum 2.5). Slice 1 built Providers, Slice 2 Safety and limits; the other sections
+ * Settings (Addendum 2.5). Slice 1 built Providers, Slice 2 Safety and limits, Slice 3 Memory and data; the remaining section
  * are named here with the slice that builds them and render the same honest
  * "not built yet" answer the placeholders use — no fake panels, no dead
  * controls. The last visited section is remembered as presentation state (a
  * section slug only — nothing about providers themselves is stored).
  */
-const LIVE_SECTIONS: ReadonlySet<string> = new Set(['providers', 'safety']);
+const LIVE_SECTIONS: ReadonlySet<string> = new Set(['providers', 'safety', 'memory']);
 
 export const SETTINGS_SECTIONS = [
   { id: 'providers', label: 'Providers', slice: 'Slice 1' },
@@ -79,6 +80,8 @@ export function SettingsTool() {
           <ProvidersSection />
         ) : section === 'safety' ? (
           <SafetySection />
+        ) : section === 'memory' ? (
+          <MemorySection />
         ) : (
           <section aria-labelledby="settings-pending-title">
             <h2 id="settings-pending-title">{current.label}</h2>
