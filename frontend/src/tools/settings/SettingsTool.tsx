@@ -6,6 +6,7 @@ import { ProvidersSection } from './ProvidersSection';
 import { SafetySection } from './SafetySection';
 import { MemorySection } from './MemorySection';
 import { DataSection } from './DataSection';
+import { AgentsSection } from './AgentsSection';
 import styles from './SettingsTool.module.css';
 
 /**
@@ -15,7 +16,7 @@ import styles from './SettingsTool.module.css';
  * controls. The last visited section is remembered as presentation state (a
  * section slug only — nothing about providers themselves is stored).
  */
-const LIVE_SECTIONS: ReadonlySet<string> = new Set(['providers', 'safety', 'memory']);
+const LIVE_SECTIONS: ReadonlySet<string> = new Set(['providers', 'safety', 'memory', 'agents']);
 
 export const SETTINGS_SECTIONS = [
   { id: 'providers', label: 'Providers', slice: 'Slice 1' },
@@ -86,6 +87,8 @@ export function SettingsTool() {
             <MemorySection />
             <DataSection />
           </>
+        ) : section === 'agents' ? (
+          <AgentsSection />
         ) : (
           <section aria-labelledby="settings-pending-title">
             <h2 id="settings-pending-title">{current.label}</h2>

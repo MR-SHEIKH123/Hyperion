@@ -127,6 +127,8 @@ export const projectAgentSchema = z.object({
   model: z.string().nullable(),
 });
 
+export type ProjectAgentWire = z.infer<typeof projectAgentSchema>;
+
 export const projectAgentsResponseSchema = z.object({
   count: z.number(),
   agents: z.array(projectAgentSchema),
@@ -137,6 +139,8 @@ export const projectCommandSchema = z.object({
   description: z.string().nullable(),
   path: z.string(),
 });
+
+export type ProjectCommandWire = z.infer<typeof projectCommandSchema>;
 
 export const projectCommandsResponseSchema = z.object({
   count: z.number(),
