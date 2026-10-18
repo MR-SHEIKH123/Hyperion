@@ -513,6 +513,62 @@
       "expectedPath": "/api/usage/prices",
       "status": "implemented",
       "reason": "Settings 2.5 slice 3b: remove a model price (`api/usage.ts` `deletePrice`)."
+    },
+    {
+      "id": "settings.agent-profiles",
+      "method": "GET",
+      "expectedPath": "/api/settings/agent-profiles",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 4: every selectable profile including hidden ones (`api/agents.ts` `getAgentProfiles`); the listing omits the profile body by design."
+    },
+    {
+      "id": "settings.agents",
+      "method": "GET",
+      "expectedPath": "/api/settings/agents",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 4: the stored default profile and what ask/plan/act actually resolve to (`api/agents.ts` `getAgentsSettings`)."
+    },
+    {
+      "id": "settings.agents-save",
+      "method": "PUT",
+      "expectedPath": "/api/settings/agents",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 4: set or clear the default profile (`api/agents.ts` `setDefaultAgentProfile`)."
+    },
+    {
+      "id": "code.agents-import",
+      "method": "POST",
+      "expectedPath": "/api/code/agents/import",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 4: file .md profiles into the active project's .hyperion/agents (`api/agents.ts` `importAgentProfiles`); overwrite sends confirm:true only after the UI names the files it replaces."
+    },
+    {
+      "id": "code.permissions",
+      "method": "GET",
+      "expectedPath": "/api/code/permissions",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 4: the layered permission rules in evaluation order, read-only (`api/agents.ts` `getPermissions`)."
+    },
+    {
+      "id": "code.rules",
+      "method": "GET",
+      "expectedPath": "/api/code/rules",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 4: the project's rule files and where they were found (`api/agents.ts` `getProjectRules`)."
+    },
+    {
+      "id": "code.agents",
+      "method": "GET",
+      "expectedPath": "/api/code/agents",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 4: sub-agent files declared for the project (`api/agents.ts` `getProjectAgents`)."
+    },
+    {
+      "id": "code.commands",
+      "method": "GET",
+      "expectedPath": "/api/code/commands",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 4: custom commands declared for the project (`api/agents.ts` `getProjectCommands`)."
     }
   ]
 }

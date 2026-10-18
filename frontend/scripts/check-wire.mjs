@@ -150,6 +150,49 @@ async function check(name, method, route, schemaName, { payload, expectStatus, r
 }
 
 /**
+ * The profile import is multipart, which `check` (JSON-only) cannot send.
+ * Same discipline: a real file through the real route, parsed against the
+ * exported schema, and non-empty results so the nested result schema is
+ * actually exercised. The check runs against the project the wire home
+ * opened above, so the import has a real destination.
+ */
+async function checkImport(name, files, fields, schemaName, { schemas } = {}) {
+  const schema = schemas[schemaName];
+  if (schema === undefined) {
+    results.push({ name, ok: false, detail: `the frontend exports no schema named ${schemaName}` });
+    return;
+  }
+  used.add(schemaName);
+  const form = new FormData();
+  for (const file of files) form.append('files', new Blob([file.content], { type: 'text/markdown' }), file.filename);
+  for (const [key, value] of Object.entries(fields)) form.append(key, value);
+  let status = 0;
+  let body;
+  try {
+    const response = await fetch(`${base}/api/code/agents/import`, { method: 'POST', body: form });
+    status = response.status;
+    body = await response.json();
+  } catch (error) {
+    results.push({ name, ok: false, detail: `request failed: ${String(error)}` });
+    return;
+  }
+  if (status >= 300) {
+    results.push({ name, ok: false, detail: `HTTP ${status}: ${JSON.stringify(body).slice(0, 300)}` });
+    return;
+  }
+  const parsed = schema.safeParse(body);
+  if (!parsed.success) {
+    results.push({ name, ok: false, detail: `schema rejected a real response: ${JSON.stringify(parsed.error.issues).slice(0, 1500)}`, schemaName });
+    return;
+  }
+  if (!Array.isArray(body?.results) || body.results.length === 0) {
+    results.push({ name, ok: false, detail: '`results` came back empty, so the nested schema was never exercised' });
+    return;
+  }
+  results.push({ name, ok: true, schemaName });
+}
+
+/**
  * Read a streamed response into frames, the way a client's SSE parser does.
  *
  * Split on the blank line that terminates a frame, keep the event name, and join
@@ -356,6 +399,10 @@ const NESTED = new Set([
   // that holds one live and one ended session, which is what exercises both arms
   // of `endedAt`/`endedReason`
   'terminalSessionSchema', 'reloadProfileSchema', 'memoryEntrySchema', 'memoryStatusSchema', 'memoryImportFileSchema',
+  // inside the agent and permissions responses
+  'publicProfileSchema', 'permissionRuleSchema', 'permissionActionSchema', 'agentModeSchema',
+  'profileImportResultSchema', 'projectRuleSchema', 'projectAgentSchema', 'projectCommandSchema',
+  'permissionLayerNameSchema',
   // inside the backup responses — the list, destinations, inspection and audit
   // envelopes are checked against a real export of the wire database
   'backupFileSchema', 's3FieldSchema', 's3PublicConfigSchema', 'backupManifestSchema', 'tableDeltaSchema',
@@ -725,6 +772,24 @@ async function main() {
   await r('usage.prices', 'GET', '/api/usage/prices', 'pricesResponseSchema', { requireNonEmpty: 'prices' });
   await r('usage.pricePut', 'PUT', '/api/usage/prices', 'priceResponseSchema', { payload: { modelId: 'wire-priced', providerId: null, inputPer1mUsd: 1, outputPer1mUsd: 2 } });
   await r('usage.priceDelete', 'DELETE', '/api/usage/prices', 'priceDeletedResponseSchema', { payload: { modelId: 'wire-priced', providerId: null } });
+  // Agents and permissions (Settings 2.5 slice 4). The default is set and then
+  // cleared again so the wire database is left as it was found. The import
+  // writes one real profile into the wire project's .hyperion/agents/.
+  await r('settings.agentProfiles', 'GET', '/api/settings/agent-profiles?includeHidden=true', 'agentProfilesResponseSchema', { requireNonEmpty: 'profiles' });
+  await r('settings.agentsSettings', 'GET', '/api/settings/agents', 'agentsSettingsResponseSchema', { requireNonEmpty: 'builtin' });
+  await r('settings.agentsSettingsPut', 'PUT', '/api/settings/agents', 'agentsSettingsPutResponseSchema', { payload: { defaultAgentProfile: 'act' } });
+  await r('settings.agentsSettingsClear', 'PUT', '/api/settings/agents', 'agentsSettingsPutResponseSchema', { payload: { defaultAgentProfile: '' } });
+  await r('code.permissions', 'GET', '/api/code/permissions', 'permissionsResponseSchema', { requireNonEmpty: 'layers' });
+  await r('code.rules', 'GET', '/api/code/rules', 'rulesResponseSchema');
+  await r('code.agentsList', 'GET', '/api/code/agents', 'projectAgentsResponseSchema');
+  await r('code.commands', 'GET', '/api/code/commands', 'projectCommandsResponseSchema');
+  await checkImport(
+    'code.agentsImport',
+    [{ filename: 'wire-helper.md', content: '# Wire helper\n\nA profile filed by the wire check.\n' }],
+    { onConflict: 'skip' },
+    'profileImportResponseSchema',
+    { schemas },
+  );
   await r('projects.registry', 'GET', '/api/projects', 'projectsResponseSchema', { requireNonEmpty: 'projects' });
   await r('projects.tasks', 'GET', `/api/projects/${project.id}/tasks`, 'projectTasksResponseSchema', { requireNonEmpty: 'tasks' });
   await r('providers.list', 'GET', '/api/providers', 'providersResponseSchema', { requireNonEmpty: 'providers' });
