@@ -61,12 +61,12 @@ function stubAgentsApi(overrides: Record<string, (call: Call) => Response> = {})
     vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = input instanceof Request ? input.url : String(input);
       const method = init?.method ?? 'GET';
-      const isForm = init?.body instanceof FormData;
+      const formBody = init?.body instanceof FormData ? init.body : undefined;
       const call: Call = {
         method,
         url,
-        body: isForm ? undefined : typeof init?.body === 'string' ? JSON.parse(init.body) : undefined,
-        ...(isForm ? { form: init!.body as FormData } : {}),
+        body: formBody !== undefined ? undefined : typeof init?.body === 'string' ? JSON.parse(init.body) : undefined,
+        ...(formBody !== undefined ? { form: formBody } : {}),
       };
       calls.push(call);
       const key = `${method} ${url}`;

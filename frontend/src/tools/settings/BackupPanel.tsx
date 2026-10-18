@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import {
@@ -190,7 +190,18 @@ export function BackupSection() {
     }
   };
 
+  // Monotonic token for the inspect request in flight. Switching the
+  // archive (or inspecting again) invalidates the previous request: a
+  // slow answer for archive A must never land after the user moved to B
+  // and arm B's restore with A's inspection.
+  const inspectSeq = useRef(0);
+  // Bumped to remount the file input empty when a named backup takes over
+  // as the source — otherwise the input goes on displaying the last file
+  // picked while the selection is actually the named archive.
+  const [fileInputEpoch, setFileInputEpoch] = useState(0);
+
   const chooseSource = (next: ArchiveSource | null) => {
+    inspectSeq.current += 1;
     if (next === null) {
       setPickedFile(null);
       setNamedBackup('');
@@ -200,6 +211,7 @@ export function BackupSection() {
     } else {
       setNamedBackup(next.filename);
       setPickedFile(null);
+      setFileInputEpoch((epoch) => epoch + 1);
     }
     // A stale inspection must never arm the restore for a different archive.
     setInspection(null);
@@ -208,16 +220,20 @@ export function BackupSection() {
 
   const runInspect = async () => {
     if (source === null) return;
+    const seq = ++inspectSeq.current;
     setInspectPending(true);
     setInspectError(null);
     setRestoreResult(null);
     try {
-      setInspection(await inspectArchive(source, restorePassphrase === '' ? undefined : restorePassphrase));
+      const result = await inspectArchive(source, restorePassphrase === '' ? undefined : restorePassphrase);
+      if (inspectSeq.current !== seq) return;
+      setInspection(result);
     } catch (error) {
+      if (inspectSeq.current !== seq) return;
       setInspection(null);
       setInspectError(describeApiError(error));
     } finally {
-      setInspectPending(false);
+      if (inspectSeq.current === seq) setInspectPending(false);
     }
   };
 
@@ -344,6 +360,7 @@ export function BackupSection() {
         <div className={styles.field}>
           <label htmlFor="restore-file">Archive file</label>
           <input
+            key={fileInputEpoch}
             id="restore-file"
             type="file"
             accept=".zip,.hypbak"

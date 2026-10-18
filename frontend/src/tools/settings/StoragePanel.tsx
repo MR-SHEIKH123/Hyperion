@@ -236,7 +236,11 @@ export function StorageSection() {
           <Button onClick={() => void runPreview()} disabled={previewPending}>
             {previewPending ? 'Previewing…' : 'Preview cleanup (dry run)'}
           </Button>
-          <Button variant="primary" onClick={() => setConfirmCleanup(true)} disabled={preview === null || cleanupPending}>
+          <Button
+            variant="primary"
+            onClick={() => setConfirmCleanup(true)}
+            disabled={preview === null || preview.dryRun !== true || cleanupPending}
+          >
             Run cleanup…
           </Button>
         </div>
@@ -294,10 +298,20 @@ export function StorageSection() {
       <Dialog open={confirmCleanup} title="Run cleanup?" onClose={() => setConfirmCleanup(false)}>
         <div className={styles.confirmBody}>
           <p>
-            The dry run above found {preview?.chatsDeleted ?? 0} chat{(preview?.chatsDeleted ?? 0) === 1 ? '' : 's'}{' '}
-            and {preview?.assetsDeleted ?? 0} file{(preview?.assetsDeleted ?? 0) === 1 ? '' : 's'} to remove (
-            {formatBytes(preview?.bytesFreed ?? 0)}). Removed chats and files cannot be recovered; pinned files are
-            kept. Counts may have shifted since the preview — run the preview again to refresh them.
+            {preview?.dryRun === true ? (
+              <>
+                The dry run above found {preview.chatsDeleted} chat{preview.chatsDeleted === 1 ? '' : 's'} and{' '}
+                {preview.assetsDeleted} file{preview.assetsDeleted === 1 ? '' : 's'} to remove (
+                {formatBytes(preview.bytesFreed)}).
+              </>
+            ) : (
+              <>
+                The last cleanup on screen was a real run, so its counts describe what was already removed, not what
+                this run would do.
+              </>
+            )}{' '}
+            Removed chats and files cannot be recovered; pinned files are kept. Counts may have shifted since the
+            preview — run the preview again to refresh them.
           </p>
           <div className={styles.confirmActions}>
             <Button onClick={() => setConfirmCleanup(false)} disabled={cleanupPending}>

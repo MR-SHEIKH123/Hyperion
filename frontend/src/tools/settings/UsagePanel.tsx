@@ -28,7 +28,21 @@ import styles from './DataView.module.css';
  * the exact numbers in the table under it.
  */
 
-export function BucketRows({ buckets, labelHeader }: { buckets: readonly UsageBucketWire[]; labelHeader: string }) {
+const EGRESS_LABELS: Record<string, string> = {
+  local: 'Local (this machine)',
+  remote: 'Remote providers',
+  unknown: 'Unknown',
+};
+
+export function BucketRows({
+  buckets,
+  labelHeader,
+  labelFor,
+}: {
+  buckets: readonly UsageBucketWire[];
+  labelHeader: string;
+  labelFor?: (key: string) => string;
+}) {
   if (buckets.length === 0) return <p className={styles.fact}>Nothing was recorded.</p>;
   return (
     <table className={styles.table}>
@@ -43,7 +57,7 @@ export function BucketRows({ buckets, labelHeader }: { buckets: readonly UsageBu
       <tbody>
         {buckets.map((bucket) => (
           <tr key={bucket.key}>
-            <td>{bucket.key}</td>
+            <td>{labelFor === undefined ? bucket.key : labelFor(bucket.key)}</td>
             <td className={styles.num}>{formatCount(bucket.requests)}</td>
             <td className={styles.num}>
               {formatTokens(bucket.tokensIn)} / {formatTokens(bucket.tokensOut)}
@@ -293,7 +307,11 @@ export function UsageSection() {
           </p>
         ) : exposure !== undefined ? (
           <>
-            <BucketRows buckets={exposure.byClass} labelHeader="Destination" />
+            <BucketRows
+              buckets={exposure.byClass}
+              labelHeader="Destination"
+              labelFor={(key) => EGRESS_LABELS[key] ?? key}
+            />
             {exposure.hasUnclassified ? (
               <p className={styles.warning}>
                 Some requests could not be classified — their provider is gone or predates classification. They are

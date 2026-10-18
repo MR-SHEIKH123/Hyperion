@@ -13,9 +13,10 @@ import styles from './DataView.module.css';
  *
  * Secret rules, applied literally: the stored secret is never read back
  * (the API only reports `hasSecret`), a typed secret lives in this
- * component's state and is cleared on save success, on save failure
- * (the form below is dropped and remounted from the saved config), and
- * on unmount. Only fields the user touched are sent — the route is a
+ * component's state and is cleared when a save settles — on success the
+ * form reseeds from the save response, on failure the rest of the draft
+ * stays for correction — and on unmount. Only fields the user touched
+ * are sent — the route is a
  * partial update, and sending untouched fields would clear values the
  * user never meant to change. Clearing is explicit: the remove-secret
  * checkbox sends `null`, an emptied text field sends `''`, both of
@@ -67,6 +68,10 @@ function S3Form({ config, onSaved }: { config: S3PublicConfigWire; onSaved: () =
   const [secret, setSecret] = useState('');
   const [removeSecret, setRemoveSecret] = useState(false);
   const [enabled, setEnabled] = useState(config.enabled);
+  // What the backend last reported (hasSecret, missing fields), kept
+  // locally and reseeded from each save response: reading it from the
+  // query prop would show pre-save state until the refetch lands.
+  const [reported, setReported] = useState(config);
   const [touched, setTouched] = useState<ReadonlySet<string>>(new Set());
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -86,10 +91,21 @@ function S3Form({ config, onSaved }: { config: S3PublicConfigWire; onSaved: () =
     setPending(true);
     setError(null);
     try {
-      await saveS3Config(patch);
+      const saved = await saveS3Config(patch);
+      // Reseed from the save response, which is the backend's own report
+      // of what is now stored. Remounting on the parent's invalidated
+      // query instead would seed from data that is stale until the
+      // refetch lands — and nothing would correct it afterwards.
+      setEndpoint(saved.s3.endpoint ?? '');
+      setRegion(saved.s3.region);
+      setBucket(saved.s3.bucket ?? '');
+      setPrefix(saved.s3.prefix ?? '');
+      setAccessKeyId(saved.s3.accessKeyId ?? '');
+      setEnabled(saved.s3.enabled);
+      setReported(saved.s3);
+      setTouched(new Set());
       setSecret('');
-      // Remount from the saved config: cleared fields and the dirty set
-      // start over from what the backend now reports.
+      setRemoveSecret(false);
       onSaved();
     } catch (saveError) {
       // Failure also clears the secret; the rest of the draft stays so
@@ -181,17 +197,17 @@ function S3Form({ config, onSaved }: { config: S3PublicConfigWire; onSaved: () =
             autoComplete="new-password"
             value={secret}
             disabled={removeSecret}
-            placeholder={config.hasSecret ? 'Stored — type a new one to replace it' : 'Not set'}
+            placeholder={reported.hasSecret ? 'Stored — type a new one to replace it' : 'Not set'}
             onChange={(event) => setSecret(event.target.value)}
           />
           <p className={styles.note}>
-            {config.hasSecret
+            {reported.hasSecret
               ? 'A secret is stored. It is never shown; typing a new one replaces it.'
               : 'No secret is stored.'}
           </p>
         </div>
       </div>
-      {config.hasSecret ? (
+      {reported.hasSecret ? (
         <label className={styles.checkField}>
           <input
             type="checkbox"
@@ -204,9 +220,9 @@ function S3Form({ config, onSaved }: { config: S3PublicConfigWire; onSaved: () =
           <span>Remove the stored secret on save</span>
         </label>
       ) : null}
-      {config.missing.length > 0 ? (
+      {reported.missing.length > 0 ? (
         <p className={styles.warning}>
-          Not configured yet — still missing: {config.missing.map((field) => S3_FIELD_LABELS[field]).join(', ')}.
+          Not configured yet — still missing: {reported.missing.map((field) => S3_FIELD_LABELS[field]).join(', ')}.
         </p>
       ) : (
         <p className={styles.fact}>Configured. Saving changes only the fields you edited.</p>
@@ -231,15 +247,11 @@ export function S3Section() {
     queryKey: ['data', 'destinations'],
     queryFn: ({ signal }) => getBackupDestinations(signal),
   });
-  // Bump to remount the form from the newly saved config (which also
-  // discards any secret left in local state).
-  const [formEpoch, setFormEpoch] = useState(0);
   const [report, setReport] = useState<S3TestReportWire | null>(null);
   const [testPending, setTestPending] = useState(false);
   const [testError, setTestError] = useState<string | null>(null);
 
   const refresh = () => {
-    setFormEpoch((epoch) => epoch + 1);
     void queryClient.invalidateQueries({ queryKey: ['data', 'destinations'] });
   };
 
@@ -270,7 +282,7 @@ export function S3Section() {
         </p>
       ) : (
         <>
-          <S3Form key={formEpoch} config={destinationsQuery.data.s3} onSaved={refresh} />
+          <S3Form config={destinationsQuery.data.s3} onSaved={refresh} />
           {destinationsQuery.data.local.mirror !== null ? (
             <p className={styles.note}>
               A local mirror folder is also configured ({destinationsQuery.data.local.mirror}); it is set by the

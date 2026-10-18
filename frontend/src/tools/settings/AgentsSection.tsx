@@ -148,6 +148,11 @@ export function AgentsSection() {
             <p className={styles.panelError} role="alert">
               The default profile could not be read. {describeApiError(settingsQuery.error)}
             </p>
+          ) : profilesQuery.isError ? (
+            <p className={styles.panelError} role="alert">
+              The profile list could not be read, so there is nothing honest to offer as a choice.{' '}
+              {describeApiError(profilesQuery.error)}
+            </p>
           ) : (
             <>
               <p className={styles.fact}>
@@ -307,6 +312,9 @@ export function AgentsSection() {
             </div>
             <div className={styles.field}>
               <label htmlFor="permissions-profile">Profile</label>
+              {profilesQuery.isError ? (
+                <p className={styles.note}>The profile list failed to load; only the resolved profile is available.</p>
+              ) : null}
               <select
                 id="permissions-profile"
                 value={profileChoice}

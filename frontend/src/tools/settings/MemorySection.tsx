@@ -203,7 +203,7 @@ export function MemorySection() {
               Cancel
             </Button>
             <Button variant="primary" onClick={() => void clearAll()} disabled={clearPending}>
-              {clearPending ? 'Deleting…' : `Delete all ${countLabel} memories`}
+              {clearPending ? 'Deleting…' : capped ? 'Delete all memories (at least 200 stored)' : `Delete all ${countLabel} memories`}
             </Button>
           </div>
         </div>

@@ -164,6 +164,23 @@ describe('S3 destination', () => {
     await waitFor(() => expectSecretNowhere(SECRET, screen.getByLabelText('Secret access key')));
   });
 
+  it('reseeds the form from the save response, not from a stale destinations read', async () => {
+    // The destinations GET keeps answering the pre-save config (the
+    // refetch has not landed, or lands stale). A form seeded from that
+    // read would show the old bucket forever; the save response is the
+    // only honest source for what is now stored.
+    stubDataApi({
+      'PUT /api/backup/destinations/s3': () => json({ s3: { ...s3ConfiguredFixture, bucket: 'laptop-2' } }),
+    });
+    renderSection(<S3Section />);
+    const bucket = await screen.findByLabelText<HTMLInputElement>('Bucket');
+    expect(bucket.value).toBe('hyperion-backups');
+    await userEvent.clear(bucket);
+    await userEvent.type(bucket, 'laptop-2');
+    await userEvent.click(screen.getByRole('button', { name: 'Save destination' }));
+    await waitFor(() => expect(screen.getByLabelText<HTMLInputElement>('Bucket').value).toBe('laptop-2'));
+  });
+
   it('clears the secret after a failed save and keeps it out of the rendered error', async () => {
     stubDataApi({
       'PUT /api/backup/destinations/s3': () => envelope('bad_request', 'S3 bucket must be a valid bucket name.'),

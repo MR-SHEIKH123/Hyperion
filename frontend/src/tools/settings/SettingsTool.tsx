@@ -10,19 +10,16 @@ import { AgentsSection } from './AgentsSection';
 import styles from './SettingsTool.module.css';
 
 /**
- * Settings (Addendum 2.5). Slice 1 built Providers, Slice 2 Safety and limits, Slice 3 Memory and data; the remaining section
- * are named here with the slice that builds them and render the same honest
- * "not built yet" answer the placeholders use — no fake panels, no dead
- * controls. The last visited section is remembered as presentation state (a
- * section slug only — nothing about providers themselves is stored).
+ * Settings (Addendum 2.5). All four sections are live: Providers, Safety
+ * and limits, Memory and data, Agents and permissions. The last visited
+ * section is remembered as presentation state (a section slug only —
+ * nothing about providers themselves is stored).
  */
-const LIVE_SECTIONS: ReadonlySet<string> = new Set(['providers', 'safety', 'memory', 'agents']);
-
 export const SETTINGS_SECTIONS = [
-  { id: 'providers', label: 'Providers', slice: 'Slice 1' },
-  { id: 'safety', label: 'Safety and limits', slice: 'Slice 2' },
-  { id: 'memory', label: 'Memory and data', slice: 'Slice 3' },
-  { id: 'agents', label: 'Agents and permissions', slice: 'Slice 4' },
+  { id: 'providers', label: 'Providers' },
+  { id: 'safety', label: 'Safety and limits' },
+  { id: 'memory', label: 'Memory and data' },
+  { id: 'agents', label: 'Agents and permissions' },
 ] as const;
 
 export type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]['id'];
@@ -56,8 +53,6 @@ export function SettingsTool() {
   if (segment === undefined) return <Navigate to={`/settings/${rememberedSection}`} replace />;
   if (section === null) return <Navigate to="/settings/providers" replace />;
 
-  const current = SETTINGS_SECTIONS.find((entry) => entry.id === section) ?? SETTINGS_SECTIONS[0];
-
   return (
     <div className={styles.layout}>
       <nav className={styles.nav} aria-label="Settings sections">
@@ -71,7 +66,6 @@ export function SettingsTool() {
                 aria-current={entry.id === section ? 'page' : undefined}
               >
                 {entry.label}
-                {LIVE_SECTIONS.has(entry.id) ? null : <span className={styles.navSlice}>{entry.slice}</span>}
               </Link>
             </li>
           ))}
@@ -87,16 +81,8 @@ export function SettingsTool() {
             <MemorySection />
             <DataSection />
           </>
-        ) : section === 'agents' ? (
-          <AgentsSection />
         ) : (
-          <section aria-labelledby="settings-pending-title">
-            <h2 id="settings-pending-title">{current.label}</h2>
-            <p className={styles.pending} role="note">
-              This section is not built yet — it arrives with Settings {current.slice} ({current.label}). Providers
-              (Slice 1) is the live section today; nothing here is a control, and nothing is stored from this page.
-            </p>
-          </section>
+          <AgentsSection />
         )}
       </div>
     </div>
