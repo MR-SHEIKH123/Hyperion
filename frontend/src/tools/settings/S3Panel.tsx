@@ -92,11 +92,11 @@ function S3Form({ config, onSaved }: { config: S3PublicConfigWire; onSaved: () =
       // start over from what the backend now reports.
       onSaved();
     } catch (saveError) {
-      // Failure also clears the secret: the form is remounted by the
-      // parent refresh, and nothing typed survives in any state.
+      // Failure also clears the secret; the rest of the draft stays so
+      // the user can correct it, and the error is theirs to read — the
+      // secret is never part of it.
       setSecret('');
       setError(describeApiError(saveError));
-      onSaved();
     } finally {
       setPending(false);
     }
