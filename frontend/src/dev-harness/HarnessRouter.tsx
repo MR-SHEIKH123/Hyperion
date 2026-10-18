@@ -25,6 +25,22 @@ import { ProviderList } from '../tools/settings/ProviderList';
 import { providerModelsFixture, providersFixture } from './fixtures/providers';
 import { EgressPanel, LimitsPanel, RedactionPanel, ReloadPanel, ToolAccessPanel, ZdrPanel } from '../tools/settings/SafetyPanels';
 import { AddMemoryForm, ImportPanel, MemoryList, MemoryStatusPanel } from '../tools/settings/MemoryView';
+import { InspectionView, RestoreHistory } from '../tools/settings/BackupPanel';
+import { S3TestReportView } from '../tools/settings/S3Panel';
+import { AssetList, CleanupResultView } from '../tools/settings/StoragePanel';
+import { BucketRows, DailyChart, PriceForm } from '../tools/settings/UsagePanel';
+import {
+  assetsFixture,
+  backupFilesFixture,
+  cleanupDryRunFixture,
+  exposureFixture,
+  inspectionFixture,
+  pricesFixture,
+  restoresFixture,
+  s3ConfiguredFixture,
+  s3TestReportFixture,
+  usageSummaryFixture,
+} from './fixtures/data';
 import { MEMORY_NO_MERGE_LINE } from '../tools/settings/memoryModel';
 import {
   memoryAvailableFixture,
@@ -161,6 +177,53 @@ function SafetyFixture() {
  * a harness that only showed the happy state would hide the distinction
  * the section exists to render. Handlers record nothing and send less.
  */
+
+/**
+ * Data panels from fixtures (Settings 2.5, slice 3b).
+ *
+ * The fixture values are the point: an inspection whose archive holds
+ * fewer chats than the present, a probe that worked but left its object
+ * behind, and costs standing next to their unpriced counts. Handlers only
+ * record the interaction; nothing here can reach the network.
+ */
+function DataFixture() {
+  const [notice, setNotice] = useState<string | null>(null);
+  const note = (message: string) => setNotice(message);
+  return (
+    <section aria-labelledby="data-fixture-heading" className={styles.section}>
+      <h2 className={styles.sectionHeading} id="data-fixture-heading">
+        Data fixtures
+      </h2>
+      {notice === null ? null : <p className={styles.note} role="status">{notice}</p>}
+      <div data-fixture="data-panels" style={{ display: 'grid', gap: 16 }}>
+        <p className={styles.note}>
+          Archives: {backupFilesFixture.map((backup) => backup.filename).join(', ')} · S3 configured:{' '}
+          {s3ConfiguredFixture.configured ? 'yes' : 'no'}
+        </p>
+        <InspectionView inspection={inspectionFixture} />
+        <RestoreHistory restores={restoresFixture} />
+        <S3TestReportView report={s3TestReportFixture} />
+        <CleanupResultView result={cleanupDryRunFixture} />
+        <AssetList
+          assets={assetsFixture}
+          pendingId={null}
+          onTogglePin={(asset) => note(`Fixture only: ${asset.filename} would be ${asset.pinned ? 'unpinned' : 'pinned'}.`)}
+          onDelete={(asset) => note(`Fixture only: deleting ${asset.filename} would ask for confirmation first.`)}
+        />
+        <DailyChart days={usageSummaryFixture.byDay} />
+        <BucketRows buckets={usageSummaryFixture.byModel} labelHeader="Model" />
+        <BucketRows buckets={exposureFixture.byClass} labelHeader="Destination" />
+        <PriceForm
+          initial={{ modelId: pricesFixture[0]!.modelId, providerId: '', inputPer1mUsd: '10', outputPer1mUsd: '30' }}
+          pending={false}
+          error={null}
+          onSubmit={() => note('Fixture only: the price would be saved.')}
+        />
+      </div>
+    </section>
+  );
+}
+
 function MemoryFixture() {
   const [notice, setNotice] = useState<string | null>(null);
   return (
@@ -400,6 +463,8 @@ export function Component() {
       <SafetyFixture />
 
       <MemoryFixture />
+
+      <DataFixture />
 
       <section aria-labelledby="dialog-fixtures-heading" className={styles.section}>
         <h2 className={styles.sectionHeading} id="dialog-fixtures-heading">Dialog fixtures</h2>
