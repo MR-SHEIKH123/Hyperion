@@ -44,8 +44,28 @@ is active at a time, with standby failover to alternates.
   recovery panel for a run a restart
   interrupted, which reports what it got as far as doing, discards the
   leftover checkout on request, and resumes by filling the composer with the
-  task id whose checkout the re-run adopts. Cowork, Design, Playground,
-  Plugins, Skills, and Settings still resolve to a placeholder that says so.
+  task id whose checkout the re-run adopts. The **Settings tool has its first
+  two sections**: Providers — every provider with its health, cooldown,
+  zero-data-retention state and redacted egress proxy on the row; add and edit
+  forms per provider type that render the Puter and Colibrì advisories from
+  the backend rather than a copy of them; enable with a confirmation naming
+  the provider it demotes; the Colibrì slow-inference acknowledgement,
+  unticked until it is read; a connection test that explains a 402 in the
+  provider's own words; per-provider models with the context length the
+  provider reported and no figure where it reported none; delete behind a
+  confirmation; and the ZDR editor, on the backend's support, request-flag
+  and confirmation fields rather than a toggle it does not have — and Safety
+  and limits: network egress shown as stored and as effective, which are not
+  the same switch; the outbound credential-pattern check, off by default and
+  refusing a send rather than rewriting it; the standing ZDR policy, where
+  `require` fails closed on a provider whose support is unknown; the daily
+  spending cap and the runaway ceilings beside today's spend and the requests
+  it could not price; the tool-access mode, labelled advisory because nothing
+  enforces it; and Reload Config, which validates the on-disk configuration
+  because there is no cache for it to clear. Cowork, Design, Playground,
+  Plugins, and Skills still resolve to a placeholder that says so, as do
+  Settings' two remaining sections, Memory and data and Agents and
+  permissions.
 
 The **Code Canvas backend** (1.40) has a client and screens: a read-only file
 listing, file read and task diff for a Code task's workspace, plus a sandboxed

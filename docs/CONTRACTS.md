@@ -5572,8 +5572,9 @@ is a fact about paths and stays true without a caller. That tolerance has a pric
 the price was paid the next day: `tasks.continue` had **no** client, and because the
 rule only asks about `implemented` rows, the gate could not see it. The gap was found
 by hand, recorded in `frontend/contracts/gaps.md`, and closed on 2026-09-22 by the
-parked-task panel (see the next section). `settings.reload` still has no client, for
-the reason recorded beside it: there is no Settings surface to put the control on.
+parked-task panel (see the next section). `settings.reload` has a client since Settings 2.5 slice 2: the Safety and
+limits section posts to it as its Reload Config check, and `gaps.md` records
+the closure beside this one.
 
 The lesson is not that the rule is wrong — a `route-mismatch` row is a statement about
 paths, and requiring a client of it would make the status mean two things. It is that

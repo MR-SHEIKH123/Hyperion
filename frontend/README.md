@@ -73,6 +73,17 @@ run. Details in `contracts/README.md` and `docs/CONTRACTS.md`.
   overclaim. Both reads render their own failure; the panel is shown in the dev
   harness, and since 2026-09-21 the Code surface hosts the timeline at
   `/code?file=<artifact key>`.
+- `src/tools/settings/` is the Settings tool (Addendum 2.5): two live sections
+  on the typed settings and provider clients — Providers (the provider list
+  and per-type forms, enable-behind-a-demote-confirmation, the ZDR editor)
+  and Safety and limits (network egress, the outbound data check, the
+  standing ZDR policy, limits, the advisory tool-access mode, Reload
+  Config) — with the last-visited section remembered as a slug in the
+  presentation store and the two unbuilt sections (Memory and data, Agents
+  and permissions) naming the slice that builds them. Panels and the
+  provider list are presentational, so the dev harness renders them from
+  fixtures without a network call; keys and proxy addresses exist only in
+  form state and are never persisted, prefilled, or echoed into an error.
 - `src/tools/code/` is the first tool to populate the workspace frame (Prompt 1.39
   A3): a read view of the Code lane (running slots, queue depth, capacity, and
   parked worktrees listed apart because they hold disk rather than a slot), the
@@ -156,7 +167,8 @@ run. Details in `contracts/README.md` and `docs/CONTRACTS.md`.
   is longer). A dropped stream is never replayed.
 
 Remaining increments: the Code, Cowork, and Design tool workflows, then
-Playground, Plugins, Skills, and Settings.
+Playground, Plugins, and Skills, and Settings' two remaining sections
+(Memory and data, Agents and permissions).
 
 ## Confirmed contract limitation
 
