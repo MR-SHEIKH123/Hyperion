@@ -449,20 +449,35 @@ describe('keyboard operation', () => {
 });
 
 describe('Settings shell', () => {
-  it('names the slice that builds each unbuilt section', () => {
-    stubApi({ providers: [] });
+  it('routes every section to its live surface; none names a future slice', async () => {
+    // An all-404 stub: each section renders its own honest error state,
+    // which is still a live section — the assertion is that the shell
+    // itself no longer parks any section behind a "not built yet" panel.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(
+          new Response(JSON.stringify({ error: { code: 'not_found', message: 'No stub.', retryable: false } }), {
+            status: 404,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        ),
+      ),
+    );
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
       <QueryClientProvider client={client}>
-        <MemoryRouter initialEntries={['/settings/memory']}>
+        <MemoryRouter initialEntries={['/settings/agents']}>
           <Routes>
             <Route path="/settings/*" element={<SettingsTool />} />
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>,
     );
-    expect(screen.getByRole('heading', { name: 'Memory and data' })).toBeInTheDocument();
-    expect(screen.getByText(/arrives with Settings Slice 3/)).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: /Providers/ })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Agents and permissions' })).toBeInTheDocument();
+    expect(screen.queryByText(/not built yet|arrives with Settings/)).not.toBeInTheDocument();
+    for (const label of ['Providers', 'Safety and limits', 'Memory and data', 'Agents and permissions']) {
+      expect(screen.getAllByRole('link', { name: new RegExp(label) }).length).toBeGreaterThan(0);
+    }
   });
 });
