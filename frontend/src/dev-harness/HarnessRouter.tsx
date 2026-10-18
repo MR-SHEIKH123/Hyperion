@@ -25,6 +25,14 @@ import { ProviderList } from '../tools/settings/ProviderList';
 import { providerModelsFixture, providersFixture } from './fixtures/providers';
 import { EgressPanel, LimitsPanel, RedactionPanel, ReloadPanel, ToolAccessPanel, ZdrPanel } from '../tools/settings/SafetyPanels';
 import { AddMemoryForm, ImportPanel, MemoryList, MemoryStatusPanel } from '../tools/settings/MemoryView';
+import { ImportResultsView, PermissionLayersView, ProfileList, ProjectAgentsList, ProjectCommandsList } from '../tools/settings/AgentsView';
+import {
+  importOutcomeFixture,
+  permissionsFixture,
+  profilesFixture,
+  projectAgentsFixture,
+  projectCommandsFixture,
+} from './fixtures/agents';
 import { InspectionView, RestoreHistory } from '../tools/settings/BackupPanel';
 import { S3TestReportView } from '../tools/settings/S3Panel';
 import { AssetList, CleanupResultView } from '../tools/settings/StoragePanel';
@@ -186,6 +194,31 @@ function SafetyFixture() {
  * behind, and costs standing next to their unpriced counts. Handlers only
  * record the interaction; nothing here can reach the network.
  */
+
+/**
+ * Agents and permissions views from fixtures (Settings 2.5, slice 4).
+ *
+ * Read-only views are the whole surface here, so the harness shows them
+ * populated — including the hidden profile and the import results that
+ * refused two of four files. There is nothing to click that writes.
+ */
+function AgentsFixture() {
+  return (
+    <section aria-labelledby="agents-fixture-heading" className={styles.section}>
+      <h2 className={styles.sectionHeading} id="agents-fixture-heading">
+        Agents fixtures
+      </h2>
+      <div data-fixture="agents-panels" style={{ display: 'grid', gap: 16 }}>
+        <ProfileList profiles={profilesFixture} />
+        <PermissionLayersView permissions={permissionsFixture} />
+        <ImportResultsView results={importOutcomeFixture.results} />
+        <ProjectAgentsList agents={projectAgentsFixture} />
+        <ProjectCommandsList commands={projectCommandsFixture} />
+      </div>
+    </section>
+  );
+}
+
 function DataFixture() {
   const [notice, setNotice] = useState<string | null>(null);
   const note = (message: string) => setNotice(message);
@@ -465,6 +498,8 @@ export function Component() {
       <MemoryFixture />
 
       <DataFixture />
+
+      <AgentsFixture />
 
       <section aria-labelledby="dialog-fixtures-heading" className={styles.section}>
         <h2 className={styles.sectionHeading} id="dialog-fixtures-heading">Dialog fixtures</h2>
