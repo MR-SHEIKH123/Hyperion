@@ -355,7 +355,7 @@ const NESTED = new Set([
   // inside the terminal session list — the list is checked against a real store
   // that holds one live and one ended session, which is what exercises both arms
   // of `endedAt`/`endedReason`
-  'terminalSessionSchema', 'reloadProfileSchema',
+  'terminalSessionSchema', 'reloadProfileSchema', 'memoryEntrySchema', 'memoryStatusSchema', 'memoryImportFileSchema',
   // inside the task responses
   'orphanedWorktreeSchema', 'taskApprovalSchema', 'taskRunStateSchema', 'taskStateResponseSchema',
   'taskStepSchema', 'taskStepSummarySchema', 'taskToolSchema', 'taskUsageSchema',
@@ -371,6 +371,8 @@ const NESTED = new Set([
  */
 const NOT_EXERCISED = {
   approvalDecisionSchema: 'an input vocabulary `allow_once|allow_session|deny` — it validates what a client sends, and no response body carries it (the route it is sent to is checked through `approvalResultSchema`)',
+  memoryStoredResponseSchema: 'a memory can only be stored when the mem0 backend has loaded, which the wire database never does — the write route answers `capability_disabled`/`storage_error` envelopes instead (the refusal side is what the in-process backend can honestly produce)',
+  memoryImportResponseSchema: 'same reason: a successful import needs the live mem0 backend; with it absent the import route refuses with a `storage_error` envelope carrying the counts in `details`, which no success schema may claim',
 };
 
 async function main() {
@@ -669,6 +671,16 @@ async function main() {
   await r('settings.toolAccessModePut', 'PUT', '/api/settings/tool-access-mode', 'toolAccessModeResponseSchema', { payload: { mode: 'always_loaded' } });
   await r('settings.limitsPut', 'PUT', '/api/settings/limits', 'limitsResponseSchema', { payload: { dailySpendCapUsd: 0 } });
   await r('settings.reloadConfig', 'POST', '/api/settings/reload-config', 'reloadConfigResponseSchema', { payload: {} });
+  // Memory (Settings 2.5 slice 3a): the reads and the toggle round-trip are
+  // exercisable with the backend absent; the store paths are not (see
+  // NOT_EXERCISED). Deleting with no backend answers `{deleted:false}`, which
+  // is the honest shape and is checked as such.
+  await r('memory.status', 'GET', '/api/memory/status', 'memoryStatusResponseSchema');
+  await r('memory.list', 'GET', '/api/memory', 'memoryListResponseSchema');
+  await r('memory.enable', 'POST', '/api/memory/enable', 'memoryStatusResponseSchema', { payload: {} });
+  await r('memory.disable', 'POST', '/api/memory/disable', 'memoryStatusResponseSchema', { payload: {} });
+  await r('memory.deleteOne', 'DELETE', '/api/memory/wire-nonexistent', 'memoryDeletedResponseSchema');
+  await r('memory.clear', 'DELETE', '/api/memory', 'memoryClearedResponseSchema');
   await r('projects.registry', 'GET', '/api/projects', 'projectsResponseSchema', { requireNonEmpty: 'projects' });
   await r('projects.tasks', 'GET', `/api/projects/${project.id}/tasks`, 'projectTasksResponseSchema', { requireNonEmpty: 'tasks' });
   await r('providers.list', 'GET', '/api/providers', 'providersResponseSchema', { requireNonEmpty: 'providers' });

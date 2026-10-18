@@ -350,6 +350,48 @@
       "expectedPath": "/api/code/tasks/:taskId/preview",
       "status": "implemented",
       "reason": "Called by `api/canvas.ts` (`revokePreview`). The Stop control is on `tools/code/PreviewRow.tsx`; the `{revoked:false}` answer for a session that was already gone stays meaningful because polling does not mint."
+    },
+    {
+      "id": "memory.status",
+      "method": "GET",
+      "expectedPath": "/api/memory/status",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3a: the Memory section reads this to distinguish disabled, unavailable, and failed before rendering anything else (`api/memory.ts` `getMemoryStatus`)."
+    },
+    {
+      "id": "memory.list",
+      "method": "GET",
+      "expectedPath": "/api/memory",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3a: the stored list, rendered as text only (`api/memory.ts` `getMemories`)."
+    },
+    {
+      "id": "memory.add",
+      "method": "POST",
+      "expectedPath": "/api/memory",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3a: the add form posts one memory (`api/memory.ts` `addMemory`); its three refusals (disabled, invalid, backend unavailable) are shown in their own words."
+    },
+    {
+      "id": "memory.import",
+      "method": "POST",
+      "expectedPath": "/api/memory/import",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3a: paste and folder imports post here (`api/memory.ts` `importMemoryText`/`importMemoryFiles`), rendering the per-file imported/dropped/found/error rows."
+    },
+    {
+      "id": "memory.delete",
+      "method": "DELETE",
+      "expectedPath": "/api/memory/:id",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3a: delete-one (`api/memory.ts` `deleteMemory`)."
+    },
+    {
+      "id": "memory.clear",
+      "method": "DELETE",
+      "expectedPath": "/api/memory",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3a: delete-all, behind a confirmation naming the count (`api/memory.ts` `clearMemories`)."
     }
   ]
 }
