@@ -52,8 +52,9 @@ behavior in the browser.
   (`/puterai/chat/models/details`, which carries each model's context window), not from
   `{base}/models`. `GET /api/providers/puter/advisory` now states the credential kind, the
   default base URL and catalogue URL, `requiresPaidPlan` and what a rejection does — a
-  settings screen needs to hard-code none of it. There is still no settings form that creates
-  one, and nothing renders the advisory.
+  settings screen needs to hard-code none of it. **The form and the rendering landed with
+  Settings 2.5 slice 1:** the Add-provider form renders this advisory from the route and
+  posts the create, and `providers.puter` / `providers.puter-advisory` are `implemented`.
 - ~~No way to see what an interrupted run left.~~ **Closed for Code on 2026-09-21 (1.31).**
   `GET /api/{tool}/tasks/:taskId/recovery` reports the run's bounded step history with SQL
   totals over all of it, the leftover checkout and what discarding it would lose, and
@@ -123,15 +124,16 @@ behavior in the browser.
   review decision about the specification's inventory rather than a fix to make quietly.
   Until then, the honest reading of `exposure: frontend` is *the frontend is meant to call
   this*, not *the frontend does*.
-- **No client posts `POST /api/settings/reload-config` (1.28).** The route re-reads and
-  validates the on-disk permissions and profiles on demand, caching nothing, and is covered by
-  three route cases; nothing calls it, because there is no Settings surface at all (the same
-  reason the memory import routes above are uncalled). A reload control belongs there when
-  that surface exists.
-- **No profile-import client (1.28).** `POST /api/code/agents/import` files uploaded `.md`
-  profiles into the active project's `.hyperion/agents/` with per-file results, but nothing
-  calls it: there is no profiles surface, and no Settings screen to host one. A folder picker
-  can POST the folder's files to it unchanged when that surface exists.
+- ~~No client posts `POST /api/settings/reload-config` (1.28).~~ **Closed by Settings 2.5
+  slice 2.** The route re-reads and validates the on-disk permissions and profiles on demand,
+  caching nothing, and is covered by three route cases. The Safety and limits section now
+  calls it (`api/settings.ts` `reloadConfig`) as its Reload Config check; the ledger row
+  stays `route-mismatch` because the specification asked for GET|PUT and the route is a POST.
+- ~~No profile-import client (1.28).~~ **Closed by Settings 2.5 slice 4.** The Agents and
+  permissions section calls it (`api/agents.ts` `importAgentProfiles`) with the three conflict
+  policies; overwrite asks first, naming the files it replaces, and only then sends
+  `confirm: true`, and the per-file results render as returned. The no-active-project 409 is
+  shown in the backend's own words.
 - No global search endpoint; later shell search must report federated partial coverage.
 
 ## Later
@@ -221,10 +223,13 @@ behavior in the browser.
   resolvable, rather than rendering a stack of links that 404. That means **labelling the
   versions that are unavailable after release**, not quietly omitting them: a row that
   vanishes teaches the user the edit never happened.
-- **`errorCodeSchema` lags the backend by three codes, and nothing checks it (found 2026-10-03,
-  pre-existing).** The frontend's closed enum in `src/contracts/wire/common.ts` lists 25 codes;
-  `src/util/errors.ts` has 28. Missing: `approval_required`, `permission_denied`,
-  `zdr_requirement_unmet` — and no extras, so the enum is a subset, not a divergent set.
+- ~~**`errorCodeSchema` lags the backend by three codes, and nothing checks it (found 2026-10-03,
+  pre-existing).**~~ **Closed 2026-10-14.** The frontend's closed enum in
+  `src/contracts/wire/common.ts` listed 25 codes; `src/util/errors.ts` has 28.
+  Missing were `approval_required`, `permission_denied`,
+  `zdr_requirement_unmet` — and no extras, so the enum was a subset, not a divergent set.
+  The enum is now synced and `src/contracts/wire/common.test.ts` parses the backend
+  union from `src/util/errors.ts` at test time, so the two diverging fails that test.
   Measured by diffing the two declarations, not by reading them. Today the gap is **latent**,
   and it is worth saying exactly why so nobody "fixes" the wrong thing:
   - the chat stream's refusal reaches the client as an **SSE error frame**, whose
@@ -239,8 +244,8 @@ behavior in the browser.
   which is exactly the failure a closed enum that lags produces. The Canvas routes do not
   widen the gap (they reuse `capability_disabled`, `scope_violation`, `bad_request`,
   `not_found`), which is the point of not minting a new code for a disabled preview.
-  **2.4's first commit should sync the enum to the backend union and add the drift test**, as
-  its own revertable commit.
+  Syncing the enum and adding the drift test landed as its own revertable commit,
+  as this entry recommended.
 - No Design file tree, version timeline, rendered diff, or design-system context contract. (1.31's "Design environment" clause lives here now: reclassified out of Prompt 1 to Design's Prompt 2 build, 2026-09-24.)
 - ~~No general artifact lineage/list endpoint.~~ **Partly closed 2026-09-21**: `GET /api/artifacts/versions?key=…`
   lists one artifact's version chain with its derived parent (Prompt 1.39 A6). There is still no

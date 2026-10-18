@@ -343,16 +343,33 @@ describe('the preview listener', () => {
     assert.equal(crossed.body.includes('beta'), false);
   });
 
-  it('carries the sandbox directive, and never allow-same-origin', async () => {
+  it('carries the exact sandbox directive, and never the escape hatches', async () => {
     const { token } = await mint('preview-alpha');
     const response = await raw(`/p/${token}/index.html`);
 
     const csp = header(response, 'content-security-policy');
-    assert.match(csp, /sandbox /);
-    assert.match(csp, /allow-scripts/);
-    // With allow-same-origin the sandbox stops isolating anything: the served
+    // Exact pin, not a substring: re-adding any removed token (or an escape
+    // hatch) must fail here. The original design is scripts + forms +
+    // pointer-lock only, so mouse-capture previews work while generated code
+    // cannot open windows, trigger downloads or raise dialogs.
+    const sandbox = csp
+      .split(';')
+      .map((directive) => directive.trim())
+      .find((directive) => directive.startsWith('sandbox'));
+    assert.equal(sandbox, 'sandbox allow-scripts allow-forms allow-pointer-lock');
+    // Named individually so a failure says which hatch came back. With
+    // allow-same-origin the sandbox stops isolating anything: the served
     // page would be same-origin with this listener and every other preview.
-    assert.equal(csp.includes('allow-same-origin'), false);
+    for (const forbidden of [
+      'allow-same-origin',
+      'allow-top-navigation',
+      'allow-popups-to-escape-sandbox',
+      'allow-popups',
+      'allow-downloads',
+      'allow-modals',
+    ]) {
+      assert.equal(csp.includes(forbidden), false, `sandbox must not contain ${forbidden}`);
+    }
     assert.match(csp, /frame-ancestors http:\/\/127\.0\.0\.1:4318/);
 
     // A header, not a meta tag: it binds in a tab as well as inside an iframe.

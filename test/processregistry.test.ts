@@ -80,7 +80,31 @@ describe('the process registry', () => {
     assert.notEqual(first.token, second.token, 'a token minted twice is not a token');
     assert.match(first.id, /^proc_[0-9a-f-]{36}$/, 'the id names a process; it is not the pid');
     assert.match(first.token, /^[0-9a-f]{64}$/);
-    assert.equal(first.id.includes('1234'), false, 'the pid is bound, not reused as the identity');
+    // The pid is bound, not reused as the identity — proved without looking
+    // inside random content. Inspecting the UUID for the substring '1234'
+    // failed ~1 run in 4000 whenever the random hex happened to contain it,
+    // although nothing had leaked. The deterministic facts are these: the
+    // same pid minted two different ids above, and the entry still reports
+    // the pid it was registered with as a field.
+    assert.equal(registry.status(first.id, first.token).pid, 1234, 'the pid is bound, not reused as the identity');
+    // The id does not leak or encode the ownership token. The module offers
+    // no seam to inject a known token, so the check is on shared substrings:
+    // no 16-hex-character window of the token may appear in the id. A leak
+    // by derivation (an id sliced or hashed out of token bytes) shares long
+    // windows by construction and fails here at once. For two independent
+    // random hex strings the false-positive odds are bounded by
+    // 49 windows × 17 positions × 16^-16 ≈ 2^-54 — about one run in 10^16 —
+    // which is why this can stand where the old '1234'-in-a-UUID assertion,
+    // at roughly one failure in 4000 runs, could not.
+    const idHex = first.id.replace('proc_', '').replaceAll('-', '');
+    for (let offset = 0; offset + 16 <= first.token.length; offset += 1) {
+      assert.equal(
+        idHex.includes(first.token.slice(offset, offset + 16)),
+        false,
+        'no 16-character window of the token appears in the id',
+      );
+    }
+    assert.notEqual(first.id, first.token, 'the id is not the ownership token');
   });
 
   test('refuses a read with a different token, a missing token, or a bare id', () => {

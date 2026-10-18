@@ -21,6 +21,49 @@ import {
   unpricedTaskSpendFixture,
 } from './fixtures/codeSurface';
 import { attentionQueueFixture } from './fixtures/attentionQueue';
+import { ProviderList } from '../tools/settings/ProviderList';
+import { providerModelsFixture, providersFixture } from './fixtures/providers';
+import { EgressPanel, LimitsPanel, RedactionPanel, ReloadPanel, ToolAccessPanel, ZdrPanel } from '../tools/settings/SafetyPanels';
+import { AddMemoryForm, ImportPanel, MemoryList, MemoryStatusPanel } from '../tools/settings/MemoryView';
+import { ImportResultsView, PermissionLayersView, ProfileList, ProjectAgentsList, ProjectCommandsList } from '../tools/settings/AgentsView';
+import {
+  importOutcomeFixture,
+  permissionsFixture,
+  profilesFixture,
+  projectAgentsFixture,
+  projectCommandsFixture,
+} from './fixtures/agents';
+import { InspectionView, RestoreHistory } from '../tools/settings/BackupPanel';
+import { S3TestReportView } from '../tools/settings/S3Panel';
+import { AssetList, CleanupResultView } from '../tools/settings/StoragePanel';
+import { BucketRows, DailyChart, PriceForm } from '../tools/settings/UsagePanel';
+import {
+  assetsFixture,
+  backupFilesFixture,
+  cleanupDryRunFixture,
+  exposureFixture,
+  inspectionFixture,
+  pricesFixture,
+  restoresFixture,
+  s3ConfiguredFixture,
+  s3TestReportFixture,
+  usageSummaryFixture,
+} from './fixtures/data';
+import { MEMORY_NO_MERGE_LINE } from '../tools/settings/memoryModel';
+import {
+  memoryAvailableFixture,
+  memoryEntriesFixture,
+  memoryImportFixture,
+  memoryUnavailableFixture,
+} from './fixtures/memory';
+import {
+  limitsFixture,
+  networkEgressFixture,
+  redactionCheckFixture,
+  reloadConfigFixture,
+  toolAccessModeFixture,
+  zdrPolicyFixture,
+} from './fixtures/safety';
 import { operationalFixtures } from './fixtures/operationalStates';
 import { taskStateFixtures } from './fixtures/taskStates';
 
@@ -36,6 +79,222 @@ function fixtureTitle(id: string) {
  * (the exact command, the working directory, and a decision) without pretending
  * the surrounding task view exists.
  */
+/**
+ * Provider rows from fixtures (Settings 2.5, slice 1).
+ *
+ * The production list, not a copy: `ProviderList` takes every fact as props
+ * and never fetches, which is why the harness can show active/standby,
+ * health, cooldown, ZDR and proxy states without a server. Actions record a
+ * local note and send nothing. The form and dialogs need the API client, so
+ * they are covered by the section's own tests, not here.
+ */
+function ProvidersFixture() {
+  const [notice, setNotice] = useState<string | null>(null);
+  const note = (text: string) => () => setNotice(text);
+  return (
+    <section aria-labelledby="providers-fixture-heading" className={styles.section}>
+      <h2 className={styles.sectionHeading} id="providers-fixture-heading">
+        Provider fixtures
+      </h2>
+      <p className={styles.note}>
+        Every provider type and the states a row can carry, rendered by the production
+        list. Buttons record a fixture note and send nothing.
+      </p>
+      {notice === null ? null : <p className={styles.note} role="status">{notice}</p>}
+      <div data-fixture="providers-list">
+        <ProviderList
+          providers={providersFixture}
+          testingId={null}
+          testResults={{}}
+          modelsPanels={{ [providerModelsFixture.providerId]: { status: 'ready', data: providerModelsFixture } }}
+          onEnable={(provider) => note(`Fixture only: "${provider.name}" would be enabled (after the demote confirmation).`)()}
+          onDisable={(provider) => note(`Fixture only: "${provider.name}" would be disabled.`)()}
+          onDelete={(provider) => note(`Fixture only: "${provider.name}" would ask for delete confirmation.`)()}
+          onEdit={(provider) => note(`Fixture only: "${provider.name}" would open the edit form.`)()}
+          onEditZdr={(provider) => note(`Fixture only: "${provider.name}" would open the ZDR editor.`)()}
+          onTest={(provider) => note(`Fixture only: "${provider.name}" would be tested.`)()}
+          onToggleModels={note('Fixture only: the model list would collapse.')}
+          onRefreshModels={note('Fixture only: models would be refreshed.')}
+        />
+      </div>
+    </section>
+  );
+}
+
+/**
+ * Safety and limits panels from fixtures (Settings 2.5, slice 2).
+ *
+ * The production panels, rendered from typed fixtures with local state:
+ * toggles and radios move, the limits form validates, Reload reports the
+ * fixture — and nothing is sent anywhere. The point of showing egress
+ * stored-on-but-not-effective here is that the state is real backend
+ * behaviour, not a rendering trick.
+ */
+function SafetyFixture() {
+  const [egress, setEgress] = useState(networkEgressFixture);
+  const [redaction, setRedaction] = useState(redactionCheckFixture);
+  const [zdr, setZdr] = useState(zdrPolicyFixture);
+  const [mode, setMode] = useState(toolAccessModeFixture);
+  const [reloadResult, setReloadResult] = useState<typeof reloadConfigFixture | null>(null);
+  return (
+    <section aria-labelledby="safety-fixture-heading" className={styles.section}>
+      <h2 className={styles.sectionHeading} id="safety-fixture-heading">
+        Safety and limits fixtures
+      </h2>
+      <p className={styles.note}>
+        Every Slice 2 control in the state the backend can actually report, rendered by the
+        production panels. Interactions are local only.
+      </p>
+      <div data-fixture="safety-panels" style={{ display: 'grid', gap: 16 }}>
+        <EgressPanel
+          data={egress}
+          pending={false}
+          error={null}
+          onToggle={(enabled) => setEgress((current) => ({ ...current, enabled, effective: enabled && current.effective }))}
+        />
+        <RedactionPanel
+          data={redaction}
+          pending={false}
+          error={null}
+          onToggle={(enabled) => setRedaction((current) => ({ ...current, enabled }))}
+        />
+        <ZdrPanel
+          data={zdr}
+          pending={false}
+          error={null}
+          onChange={(requirement) => setZdr((current) => ({ ...current, requirement }))}
+        />
+        <LimitsPanel data={limitsFixture} pending={false} error={null} onSave={() => Promise.resolve(null)} />
+        <ToolAccessPanel mode={mode} pending={false} error={null} onChange={setMode} />
+        <ReloadPanel
+          pending={false}
+          result={reloadResult}
+          error={null}
+          onReload={() => setReloadResult(reloadConfigFixture)}
+        />
+      </div>
+    </section>
+  );
+}
+
+/**
+ * Memory panels from fixtures (Settings 2.5, slice 3a).
+ *
+ * The unavailable status is shown beside the available one because the
+ * whole point of the status object is that they are different answers;
+ * a harness that only showed the happy state would hide the distinction
+ * the section exists to render. Handlers record nothing and send less.
+ */
+
+/**
+ * Data panels from fixtures (Settings 2.5, slice 3b).
+ *
+ * The fixture values are the point: an inspection whose archive holds
+ * fewer chats than the present, a probe that worked but left its object
+ * behind, and costs standing next to their unpriced counts. Handlers only
+ * record the interaction; nothing here can reach the network.
+ */
+
+/**
+ * Agents and permissions views from fixtures (Settings 2.5, slice 4).
+ *
+ * Read-only views are the whole surface here, so the harness shows them
+ * populated — including the hidden profile and the import results that
+ * refused two of four files. There is nothing to click that writes.
+ */
+function AgentsFixture() {
+  return (
+    <section aria-labelledby="agents-fixture-heading" className={styles.section}>
+      <h2 className={styles.sectionHeading} id="agents-fixture-heading">
+        Agents fixtures
+      </h2>
+      <div data-fixture="agents-panels" style={{ display: 'grid', gap: 16 }}>
+        <ProfileList profiles={profilesFixture} />
+        <PermissionLayersView permissions={permissionsFixture} />
+        <ImportResultsView results={importOutcomeFixture.results} />
+        <ProjectAgentsList agents={projectAgentsFixture} />
+        <ProjectCommandsList commands={projectCommandsFixture} />
+      </div>
+    </section>
+  );
+}
+
+function DataFixture() {
+  const [notice, setNotice] = useState<string | null>(null);
+  const note = (message: string) => setNotice(message);
+  return (
+    <section aria-labelledby="data-fixture-heading" className={styles.section}>
+      <h2 className={styles.sectionHeading} id="data-fixture-heading">
+        Data fixtures
+      </h2>
+      {notice === null ? null : <p className={styles.note} role="status">{notice}</p>}
+      <div data-fixture="data-panels" style={{ display: 'grid', gap: 16 }}>
+        <p className={styles.note}>
+          Archives: {backupFilesFixture.map((backup) => backup.filename).join(', ')} · S3 configured:{' '}
+          {s3ConfiguredFixture.configured ? 'yes' : 'no'}
+        </p>
+        <InspectionView inspection={inspectionFixture} />
+        <RestoreHistory restores={restoresFixture} />
+        <S3TestReportView report={s3TestReportFixture} />
+        <CleanupResultView result={cleanupDryRunFixture} />
+        <AssetList
+          assets={assetsFixture}
+          pendingId={null}
+          onTogglePin={(asset) => note(`Fixture only: ${asset.filename} would be ${asset.pinned ? 'unpinned' : 'pinned'}.`)}
+          onDelete={(asset) => note(`Fixture only: deleting ${asset.filename} would ask for confirmation first.`)}
+        />
+        <DailyChart days={usageSummaryFixture.byDay} />
+        <BucketRows buckets={usageSummaryFixture.byModel} labelHeader="Model" />
+        <BucketRows buckets={exposureFixture.byClass} labelHeader="Destination" />
+        <PriceForm
+          initial={{ modelId: pricesFixture[0]!.modelId, providerId: '', inputPer1mUsd: '10', outputPer1mUsd: '30' }}
+          pending={false}
+          error={null}
+          onSubmit={() => note('Fixture only: the price would be saved.')}
+        />
+      </div>
+    </section>
+  );
+}
+
+function MemoryFixture() {
+  const [notice, setNotice] = useState<string | null>(null);
+  return (
+    <section aria-labelledby="memory-fixture-heading" className={styles.section}>
+      <h2 className={styles.sectionHeading} id="memory-fixture-heading">
+        Memory fixtures
+      </h2>
+      <p className={styles.note}>{MEMORY_NO_MERGE_LINE}</p>
+      {notice === null ? null : <p className={styles.note} role="status">{notice}</p>}
+      <div data-fixture="memory-panels" style={{ display: 'grid', gap: 16 }}>
+        <MemoryStatusPanel
+          status={memoryUnavailableFixture}
+          pending={false}
+          error={null}
+          onEnable={() => setNotice('Fixture only: the backend load would be retried.')}
+          onDisable={() => setNotice('Fixture only: memory would be switched off.')}
+        />
+        <MemoryStatusPanel
+          status={memoryAvailableFixture}
+          pending={false}
+          error={null}
+          onEnable={() => undefined}
+          onDisable={() => setNotice('Fixture only: memory would be switched off (stored memories kept).')}
+        />
+        <MemoryList
+          memories={memoryEntriesFixture}
+          onDeleteOne={(memory) => setNotice(`Fixture only: "${memory.id}" would be deleted.`)}
+        />
+        <AddMemoryForm onAdd={() => Promise.resolve(setNotice('Fixture only: the memory would be stored.'))} />
+        <ImportPanel
+          onImportText={() => Promise.resolve(memoryImportFixture)}
+          onImportFiles={() => Promise.resolve(memoryImportFixture)}
+        />
+      </div>
+    </section>
+  );
+}
+
 function DangerousCommandDialog() {
   const [open, setOpen] = useState(false);
   return (
@@ -231,6 +490,16 @@ export function Component() {
       <ProvenanceFixture />
 
       <CodeSurfaceFixture />
+
+      <ProvidersFixture />
+
+      <SafetyFixture />
+
+      <MemoryFixture />
+
+      <DataFixture />
+
+      <AgentsFixture />
 
       <section aria-labelledby="dialog-fixtures-heading" className={styles.section}>
         <h2 className={styles.sectionHeading} id="dialog-fixtures-heading">Dialog fixtures</h2>

@@ -99,3 +99,8 @@
   font-size: var(--text-xs);
   color: var(--text-muted);
 }
+
+.settingsLink {
+  color: var(--status-info);
+  font-size: var(--text-xs);
+}

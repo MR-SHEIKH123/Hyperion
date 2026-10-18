@@ -26,6 +26,7 @@ const model: ModelSelection = {
   preferred: null,
   setSelectedId: () => {},
   error: null,
+  noProvider: false,
 };
 
 const base = { model, phase: 'idle' as const, notice: null, onStop: () => {}, privacy };

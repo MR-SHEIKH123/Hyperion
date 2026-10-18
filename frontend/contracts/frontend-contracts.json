@@ -117,8 +117,8 @@
       "id": "providers.zdr",
       "method": "PUT",
       "expectedPath": "/api/providers/:id/zdr",
-      "status": "partial",
-      "reason": "Half of it is real and half is not: the frontend reads the ZDR status a provider is serving under (the privacy line, the provider wire types) and nothing anywhere sets the policy \u2014 no client posts to this route, and no settings surface exists to host one. That is a `partial`, not a `missing`: the read half is what a user sees."
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 1: the provider ZDR editor in the Settings surface posts to this route (`api/providers.ts` `setProviderZdr`), and the read half remains the privacy line. The route's tri-state requestFlag and confirmed semantics are modelled in the form, not flattened to a boolean."
     },
     {
       "id": "providers.cooldown",
@@ -129,23 +129,24 @@
     },
     {
       "id": "providers.egress-proxy",
-      "method": "PUT",
-      "expectedPath": "/api/providers/:id/proxy",
-      "status": "missing"
+      "method": "PATCH",
+      "expectedPath": "/api/providers/:id",
+      "status": "implemented",
+      "reason": "Corrected in Settings 2.5 slice 1 (code wins): there is no `PUT /api/providers/:id/proxy` route and there never was \u2014 the egress proxy is a body field on `POST /api/providers` (create) and `PATCH /api/providers/:id` (update), parsed by `parseEgressProxy`. The Settings form sets it through `api/providers.ts` `createProvider`/`updateProvider`, treats the field as a secret (a proxy URL can carry a password), and reads back only the redacted form the provider object serves."
     },
     {
       "id": "providers.puter",
       "method": "POST",
       "expectedPath": "/api/providers",
-      "status": "missing",
-      "reason": "The frontend has no provider-creation form: `POST /api/providers` is not called. `providerTypeSchema` accepts `puter` (1.38), so the type itself is no longer the gap \u2014 a settings screen is."
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 1: the Add-provider form posts `POST /api/providers` with type `puter` (`api/providers.ts` `createProvider`) and renders the advisory before a token is pasted."
     },
     {
       "id": "providers.puter-advisory",
       "method": "GET",
       "expectedPath": "/api/providers/puter/advisory",
-      "status": "missing",
-      "reason": "Nothing renders it yet. The route exists (1.38) and carries the credential kind, the catalogue URL, `requiresPaidPlan` and the note, so a settings form can warn before a token is pasted rather than after the first 402."
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 1: rendered by the Add-provider form from `api/providers.ts` `getPuterAdvisory` \u2014 credential kind, catalogue URL, requiresPaidPlan and the note \u2014 rather than hard-coded copy."
     },
     {
       "id": "projects.registry",
@@ -226,7 +227,7 @@
       "expectedPath": "/api/settings/limits",
       "status": "route-mismatch",
       "specifiedPath": "/api/settings/spending-cap",
-      "reason": "Spending cap is part of the implemented limits contract."
+      "reason": "Settings 2.5 slice 2: the cap is read and written as part of the limits route \u2014 the Safety and limits section renders `spend` beside the cap it belongs to and writes `dailySpendCapUsd` via `updateLimits`. The row stays route-mismatch because the specification asked for a dedicated `/api/settings/spending-cap` path that does not exist."
     },
     {
       "id": "settings.reload",
@@ -234,19 +235,56 @@
       "expectedPath": "/api/settings/reload-config",
       "status": "route-mismatch",
       "specifiedPath": "GET|PUT /api/settings/reload-config",
-      "reason": "The spec asked for `GET|PUT /api/settings/reload-config`; the implementation is a `POST`. A `PUT` would have to name what it replaces, and nothing is cached to replace \u2014 `db/settings.ts` keeps settings un-cached and project files are read per task \u2014 while the route itself only re-reads, validates and reports the on-disk configuration, which is why `docs/CONTRACTS.md` argues it adds no cache at all. The capability is present, so this row is a verb mismatch rather than a missing route: a client that followed the specification and sent a GET would get a 404."
+      "reason": "Settings 2.5 slice 2: the Safety and limits section calls this route as the POST it is (`api/settings.ts` `reloadConfig`) for its Reload Config check. The spec asked for `GET|PUT /api/settings/reload-config`; a `PUT` would have to name what it replaces, and nothing is cached to replace \u2014 `db/settings.ts` keeps settings un-cached and project files are read per task \u2014 so the row stays a verb mismatch rather than a missing route."
+    },
+    {
+      "id": "settings.network-egress",
+      "method": "PUT",
+      "expectedPath": "/api/settings/network-egress",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 2: the Safety and limits section reads and writes this route (`api/settings.ts` `getNetworkEgress`/`setNetworkEgress`) and renders stored vs effective separately, including the requiresCodeExecution dependency the GET states."
+    },
+    {
+      "id": "settings.redaction-check",
+      "method": "PUT",
+      "expectedPath": "/api/settings/redaction-check",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 2: the Safety and limits section toggles the outbound credential-pattern check through this route (`api/settings.ts` `getRedactionCheck`/`setRedactionCheck`) and states its pattern_match limits in the backend's own terms."
+    },
+    {
+      "id": "settings.zdr",
+      "method": "PUT",
+      "expectedPath": "/api/settings/zdr",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 2: the Safety and limits section sets the standing ZDR requirement (off/prefer/require) through this route (`api/settings.ts` `getZdrPolicy`/`setZdrRequirement`); enforcement stays provider selection, as the GET's `enforced` field states."
+    },
+    {
+      "id": "settings.tool-access-mode",
+      "method": "PUT",
+      "expectedPath": "/api/settings/tool-access-mode",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 2: the Safety and limits section sets the mode through this route (`api/settings.ts` `getToolAccessMode`/`setToolAccessMode`) and labels it advisory, because nothing in the backend enforces it."
+    },
+    {
+      "id": "settings.limits",
+      "method": "PUT",
+      "expectedPath": "/api/settings/limits",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 2: the Safety and limits section writes the spending cap and ceilings through this route (`api/settings.ts` `updateLimits`), sending only the fields the user changed; the GET half is `settings.spending-cap`'s read."
     },
     {
       "id": "backup.inspect",
       "method": "POST",
       "expectedPath": "/api/backup/inspect",
-      "status": "implemented"
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: reads an archive's manifest and per-table diff before any restore is offered (`api/backup.ts` `inspectArchive`)."
     },
     {
       "id": "backup.encrypted-destinations",
       "method": "GET",
       "expectedPath": "/api/backup/destinations",
-      "status": "missing"
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: the Data section reads the local mirror and the redacted S3 destination here (`api/backup.ts` `getBackupDestinations`); the secret is never returned, only `hasSecret`."
     },
     {
       "id": "cowork.pulse",
@@ -314,6 +352,223 @@
       "expectedPath": "/api/code/tasks/:taskId/preview",
       "status": "implemented",
       "reason": "Called by `api/canvas.ts` (`revokePreview`). The Stop control is on `tools/code/PreviewRow.tsx`; the `{revoked:false}` answer for a session that was already gone stays meaningful because polling does not mint."
+    },
+    {
+      "id": "memory.status",
+      "method": "GET",
+      "expectedPath": "/api/memory/status",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3a: the Memory section reads this to distinguish disabled, unavailable, and failed before rendering anything else (`api/memory.ts` `getMemoryStatus`)."
+    },
+    {
+      "id": "memory.list",
+      "method": "GET",
+      "expectedPath": "/api/memory",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3a: the stored list, rendered as text only (`api/memory.ts` `getMemories`)."
+    },
+    {
+      "id": "memory.add",
+      "method": "POST",
+      "expectedPath": "/api/memory",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3a: the add form posts one memory (`api/memory.ts` `addMemory`); its three refusals (disabled, invalid, backend unavailable) are shown in their own words."
+    },
+    {
+      "id": "memory.import",
+      "method": "POST",
+      "expectedPath": "/api/memory/import",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3a: paste and folder imports post here (`api/memory.ts` `importMemoryText`/`importMemoryFiles`), rendering the per-file imported/dropped/found/error rows."
+    },
+    {
+      "id": "memory.delete",
+      "method": "DELETE",
+      "expectedPath": "/api/memory/:id",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3a: delete-one (`api/memory.ts` `deleteMemory`)."
+    },
+    {
+      "id": "memory.clear",
+      "method": "DELETE",
+      "expectedPath": "/api/memory",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3a: delete-all, behind a confirmation naming the count (`api/memory.ts` `clearMemories`)."
+    },
+    {
+      "id": "backup.list",
+      "method": "GET",
+      "expectedPath": "/api/backup",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: archives on disk, so an earlier export can be downloaded again or restored by name (`api/backup.ts` `listBackups`)."
+    },
+    {
+      "id": "backup.export",
+      "method": "POST",
+      "expectedPath": "/api/backup/export",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: builds the archive and streams it as a download (`api/backup.ts` `exportBackupToDownload`); optional passphrase in the body and `uploadToS3` reporting its key in the `x-hyperion-s3-key` header. Streams binary, so no response schema \u2014 failures are read as the error envelope."
+    },
+    {
+      "id": "backup.s3-save",
+      "method": "PUT",
+      "expectedPath": "/api/backup/destinations/s3",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: partial update of the S3 destination (`api/backup.ts` `saveS3Config`); the secret access key is write-only."
+    },
+    {
+      "id": "backup.s3-test",
+      "method": "POST",
+      "expectedPath": "/api/backup/destinations/s3/test",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: the put/head/delete round-trip probe (`api/backup.ts` `testS3Destination`), rendered per step; a failed delete step is a warning, not a failure."
+    },
+    {
+      "id": "backup.import",
+      "method": "POST",
+      "expectedPath": "/api/backup/import",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: restore, gated on an inspect result and an explicit confirmation (`api/backup.ts` `restoreArchive`); a dry run answers what would change."
+    },
+    {
+      "id": "backup.restores",
+      "method": "GET",
+      "expectedPath": "/api/backup/restores",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: the restore audit trail, read under the restore controls (`api/backup.ts` `listRestores`)."
+    },
+    {
+      "id": "storage.stats",
+      "method": "GET",
+      "expectedPath": "/api/storage/stats",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: asset and chat totals for the storage panel (`api/storage.ts` `getStorageStats`)."
+    },
+    {
+      "id": "storage.cleanup-log",
+      "method": "GET",
+      "expectedPath": "/api/storage/cleanup/log",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: previous sweeps under the cleanup controls (`api/storage.ts` `getCleanupLog`)."
+    },
+    {
+      "id": "storage.cleanup",
+      "method": "POST",
+      "expectedPath": "/api/storage/cleanup",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: the retention sweep (`api/storage.ts` `runCleanup`); the UI previews with `dryRun` and only runs for real behind a confirmation."
+    },
+    {
+      "id": "storage.assets",
+      "method": "GET",
+      "expectedPath": "/api/storage/assets",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: the asset list with pin and delete (`api/storage.ts` `listAssets`)."
+    },
+    {
+      "id": "storage.asset-pin",
+      "method": "POST",
+      "expectedPath": "/api/storage/assets/:id/pin",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: pin/unpin (`api/storage.ts` `setAssetPinned`)."
+    },
+    {
+      "id": "storage.asset-delete",
+      "method": "DELETE",
+      "expectedPath": "/api/storage/assets/:id",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: delete one asset behind a confirmation naming the file (`api/storage.ts` `deleteAsset`)."
+    },
+    {
+      "id": "usage.summary",
+      "method": "GET",
+      "expectedPath": "/api/usage",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: totals and by-day/by-provider/by-model buckets (`api/usage.ts` `getUsageSummary`); nullable cache and duration measures stay null, never zero."
+    },
+    {
+      "id": "usage.exposure",
+      "method": "GET",
+      "expectedPath": "/api/usage/exposure-summary",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: spend by egress class and ZDR status (`api/usage.ts` `getExposureSummary`)."
+    },
+    {
+      "id": "usage.prices",
+      "method": "GET",
+      "expectedPath": "/api/usage/prices",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: the model price list (`api/usage.ts` `listPrices`)."
+    },
+    {
+      "id": "usage.price-save",
+      "method": "PUT",
+      "expectedPath": "/api/usage/prices",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: upsert a model price (`api/usage.ts` `savePrice`), validated as the route validates."
+    },
+    {
+      "id": "usage.price-delete",
+      "method": "DELETE",
+      "expectedPath": "/api/usage/prices",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 3b: remove a model price (`api/usage.ts` `deletePrice`)."
+    },
+    {
+      "id": "settings.agent-profiles",
+      "method": "GET",
+      "expectedPath": "/api/settings/agent-profiles",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 4: every selectable profile including hidden ones (`api/agents.ts` `getAgentProfiles`); the listing omits the profile body by design."
+    },
+    {
+      "id": "settings.agents",
+      "method": "GET",
+      "expectedPath": "/api/settings/agents",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 4: the stored default profile and what ask/plan/act actually resolve to (`api/agents.ts` `getAgentsSettings`)."
+    },
+    {
+      "id": "settings.agents-save",
+      "method": "PUT",
+      "expectedPath": "/api/settings/agents",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 4: set or clear the default profile (`api/agents.ts` `setDefaultAgentProfile`)."
+    },
+    {
+      "id": "code.agents-import",
+      "method": "POST",
+      "expectedPath": "/api/code/agents/import",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 4: file .md profiles into the active project's .hyperion/agents (`api/agents.ts` `importAgentProfiles`); overwrite sends confirm:true only after the UI names the files it replaces."
+    },
+    {
+      "id": "code.permissions",
+      "method": "GET",
+      "expectedPath": "/api/code/permissions",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 4: the layered permission rules in evaluation order, read-only (`api/agents.ts` `getPermissions`)."
+    },
+    {
+      "id": "code.rules",
+      "method": "GET",
+      "expectedPath": "/api/code/rules",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 4: the project's rule files and where they were found (`api/agents.ts` `getProjectRules`)."
+    },
+    {
+      "id": "code.agents",
+      "method": "GET",
+      "expectedPath": "/api/code/agents",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 4: sub-agent files declared for the project (`api/agents.ts` `getProjectAgents`)."
+    },
+    {
+      "id": "code.commands",
+      "method": "GET",
+      "expectedPath": "/api/code/commands",
+      "status": "implemented",
+      "reason": "Settings 2.5 slice 4: custom commands declared for the project (`api/agents.ts` `getProjectCommands`)."
     }
   ]
 }

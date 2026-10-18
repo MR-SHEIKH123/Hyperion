@@ -150,6 +150,49 @@ async function check(name, method, route, schemaName, { payload, expectStatus, r
 }
 
 /**
+ * The profile import is multipart, which `check` (JSON-only) cannot send.
+ * Same discipline: a real file through the real route, parsed against the
+ * exported schema, and non-empty results so the nested result schema is
+ * actually exercised. The check runs against the project the wire home
+ * opened above, so the import has a real destination.
+ */
+async function checkImport(name, files, fields, schemaName, { schemas } = {}) {
+  const schema = schemas[schemaName];
+  if (schema === undefined) {
+    results.push({ name, ok: false, detail: `the frontend exports no schema named ${schemaName}` });
+    return;
+  }
+  used.add(schemaName);
+  const form = new FormData();
+  for (const file of files) form.append('files', new Blob([file.content], { type: 'text/markdown' }), file.filename);
+  for (const [key, value] of Object.entries(fields)) form.append(key, value);
+  let status = 0;
+  let body;
+  try {
+    const response = await fetch(`${base}/api/code/agents/import`, { method: 'POST', body: form });
+    status = response.status;
+    body = await response.json();
+  } catch (error) {
+    results.push({ name, ok: false, detail: `request failed: ${String(error)}` });
+    return;
+  }
+  if (status >= 300) {
+    results.push({ name, ok: false, detail: `HTTP ${status}: ${JSON.stringify(body).slice(0, 300)}` });
+    return;
+  }
+  const parsed = schema.safeParse(body);
+  if (!parsed.success) {
+    results.push({ name, ok: false, detail: `schema rejected a real response: ${JSON.stringify(parsed.error.issues).slice(0, 1500)}`, schemaName });
+    return;
+  }
+  if (!Array.isArray(body?.results) || body.results.length === 0) {
+    results.push({ name, ok: false, detail: '`results` came back empty, so the nested schema was never exercised' });
+    return;
+  }
+  results.push({ name, ok: true, schemaName });
+}
+
+/**
  * Read a streamed response into frames, the way a client's SSE parser does.
  *
  * Split on the blank line that terminates a frame, keep the event name, and join
@@ -347,7 +390,7 @@ const NESTED = new Set([
   // inside the provenance responses
   'artifactVersionSchema', 'runKnowledgeSourceSchema',
   // inside the provider responses
-  'egressClassSchema', 'egressProxySchema', 'modelSchema', 'providerSchema', 'providerTypeSchema',
+  'egressClassSchema', 'egressProxySchema', 'modelSchema', 'providerSchema', 'providerTypeSchema', 'providerZdrSchema', 'zdrSupportSchema',
   'zdrRequirementSchema', 'zdrStatusSchema',
   // inside the Canvas tree — `canvasTreeSchema` is checked against a real
   // listing, and its `entries` are what exercise the entry schema
@@ -355,7 +398,19 @@ const NESTED = new Set([
   // inside the terminal session list — the list is checked against a real store
   // that holds one live and one ended session, which is what exercises both arms
   // of `endedAt`/`endedReason`
-  'terminalSessionSchema',
+  'terminalSessionSchema', 'reloadProfileSchema', 'memoryEntrySchema', 'memoryStatusSchema', 'memoryImportFileSchema',
+  // inside the agent and permissions responses
+  'publicProfileSchema', 'permissionRuleSchema', 'permissionActionSchema', 'agentModeSchema',
+  'profileImportResultSchema', 'projectRuleSchema', 'projectAgentSchema', 'projectCommandSchema',
+  'permissionLayerNameSchema',
+  // inside the backup responses — the list, destinations, inspection and audit
+  // envelopes are checked against a real export of the wire database
+  'backupFileSchema', 's3FieldSchema', 's3PublicConfigSchema', 'backupManifestSchema', 'tableDeltaSchema',
+  'archiveInspectionSchema', 'restoreAuditEntrySchema', 's3ProbeStepSchema',
+  // inside the storage responses
+  'cleanupLogEntrySchema', 'assetSchema',
+  // inside the usage responses — buckets are what every summary is made of
+  'usageBucketSchema', 'exposureBucketSchema', 'zdrBucketSchema', 'modelPriceSchema',
   // inside the task responses
   'orphanedWorktreeSchema', 'taskApprovalSchema', 'taskRunStateSchema', 'taskStateResponseSchema',
   'taskStepSchema', 'taskStepSummarySchema', 'taskToolSchema', 'taskUsageSchema',
@@ -371,6 +426,8 @@ const NESTED = new Set([
  */
 const NOT_EXERCISED = {
   approvalDecisionSchema: 'an input vocabulary `allow_once|allow_session|deny` — it validates what a client sends, and no response body carries it (the route it is sent to is checked through `approvalResultSchema`)',
+  memoryStoredResponseSchema: 'a memory can only be stored when the mem0 backend has loaded, which the wire database never does — the write route answers `capability_disabled`/`storage_error` envelopes instead (the refusal side is what the in-process backend can honestly produce)',
+  memoryImportResponseSchema: 'same reason: a successful import needs the live mem0 backend; with it absent the import route refuses with a `storage_error` envelope carrying the counts in `details`, which no success schema may claim',
 };
 
 async function main() {
@@ -507,6 +564,15 @@ async function main() {
     maxContextTokens: 5,
   });
   enableProvider(providerRow.id);
+  // Disposable, never enabled until the CRUD checks at the end: the provider
+  // write routes (create/patch/zdr/enable/disable/test/models) are exercised
+  // against it so the active fixture above is not mutated mid-run.
+  const disposableProvider = createProvider({
+    name: 'Wire disposable provider',
+    type: 'remote',
+    baseUrl: providerBase,
+    apiKey: 'wire-key',
+  });
 
   const chat = createChat({ tool: 'chat', title: 'Wire chat' });
   appendMessage({ chatId: chat.id, role: 'user', content: 'hello' });
@@ -635,6 +701,20 @@ async function main() {
   });
   finishSubagentRun(subagent.id, 'complete', { summary: 'done' });
 
+  // Data fixtures (Settings 2.5 slice 3b). A priced and an unpriced usage row:
+  // the summary's `costUsd` is a sum over priced rows only, and a check that
+  // only ever saw priced rows could not catch the null measures collapsing.
+  const { setPrice, recordUsage } = await import('../../src/db/usage.ts');
+  const { saveAsset } = await import('../../src/services/storage/gallery.ts');
+  const { exportBackup } = await import('../../src/services/backup/export.ts');
+  setPrice({ modelId: 'wire-model', providerId: null, inputPer1mUsd: 10, outputPer1mUsd: 30 });
+  recordUsage({ tool: 'chat', modelId: 'wire-model', providerId: providerRow.id, tokensIn: 1000, tokensOut: 500 });
+  recordUsage({ tool: 'chat', modelId: 'wire-unpriced', providerId: providerRow.id, tokensIn: 200, tokensOut: 100 });
+  const wireAsset = await saveAsset({ filename: 'wire.txt', buffer: Buffer.from('wire asset'), mimeType: 'text/plain', origin: 'uploaded' });
+  // A real archive of the wire database, so inspect and the dry-run restore read
+  // a manifest the export route itself wrote rather than a hand-built zip.
+  const wireBackup = await exportBackup({ includeKeys: false, includeAttachments: true });
+
   // --- checks ---------------------------------------------------------------
   // Reads that depend on `wire-run` still being parked come first; the decision
   // at the end finalises it, which is also why nothing below re-reads it.
@@ -646,11 +726,81 @@ async function main() {
   await r('settings.capabilities', 'GET', '/api/settings/capabilities', 'capabilitiesResponseSchema');
   await r('settings.preferences', 'GET', '/api/settings/preferences', 'preferencesResponseSchema');
   await r('settings.limits', 'GET', '/api/settings/limits', 'limitsResponseSchema');
+  // Safety and limits writes (Settings 2.5 slice 2). Each payload names the
+  // value the fixture already holds, so the checks leave the ephemeral wire
+  // database as they found it; limitsPut sends 0, which clears a cap that was
+  // never set.
+  await r('settings.networkEgress', 'GET', '/api/settings/network-egress', 'networkEgressResponseSchema');
+  await r('settings.networkEgressPut', 'PUT', '/api/settings/network-egress', 'networkEgressResponseSchema', { payload: { enabled: true } });
+  await r('settings.redactionCheck', 'GET', '/api/settings/redaction-check', 'redactionCheckResponseSchema');
+  await r('settings.redactionCheckPut', 'PUT', '/api/settings/redaction-check', 'redactionCheckResponseSchema', { payload: { enabled: false } });
+  await r('settings.zdrPolicy', 'GET', '/api/settings/zdr', 'zdrPolicyResponseSchema');
+  await r('settings.zdrPolicyPut', 'PUT', '/api/settings/zdr', 'zdrPolicyResponseSchema', { payload: { requirement: 'off' } });
+  await r('settings.toolAccessMode', 'GET', '/api/settings/tool-access-mode', 'toolAccessModeResponseSchema');
+  await r('settings.toolAccessModePut', 'PUT', '/api/settings/tool-access-mode', 'toolAccessModeResponseSchema', { payload: { mode: 'always_loaded' } });
+  await r('settings.limitsPut', 'PUT', '/api/settings/limits', 'limitsResponseSchema', { payload: { dailySpendCapUsd: 0 } });
+  await r('settings.reloadConfig', 'POST', '/api/settings/reload-config', 'reloadConfigResponseSchema', { payload: {} });
+  // Memory (Settings 2.5 slice 3a): the reads and the toggle round-trip are
+  // exercisable with the backend absent; the store paths are not (see
+  // NOT_EXERCISED). Deleting with no backend answers `{deleted:false}`, which
+  // is the honest shape and is checked as such.
+  await r('memory.status', 'GET', '/api/memory/status', 'memoryStatusResponseSchema');
+  await r('memory.list', 'GET', '/api/memory', 'memoryListResponseSchema');
+  await r('memory.enable', 'POST', '/api/memory/enable', 'memoryStatusResponseSchema', { payload: {} });
+  await r('memory.disable', 'POST', '/api/memory/disable', 'memoryStatusResponseSchema', { payload: {} });
+  await r('memory.deleteOne', 'DELETE', '/api/memory/wire-nonexistent', 'memoryDeletedResponseSchema');
+  await r('memory.clear', 'DELETE', '/api/memory', 'memoryClearedResponseSchema');
+  // Backup, storage and usage (Settings 2.5 slice 3b). The S3 test answers the
+  // not-configured report: no destination exists in the wire home, and that
+  // report is the honest shape the UI renders. The restore is a dry run — it
+  // writes an audit row and changes nothing else.
+  await r('backup.list', 'GET', '/api/backup', 'backupListResponseSchema', { requireNonEmpty: 'backups' });
+  await r('backup.destinations', 'GET', '/api/backup/destinations', 'backupDestinationsResponseSchema');
+  await r('backup.s3Put', 'PUT', '/api/backup/destinations/s3', 's3ConfigResponseSchema', { payload: { region: 'us-east-1' } });
+  await r('backup.s3Test', 'POST', '/api/backup/destinations/s3/test', 's3TestResponseSchema', { payload: {} });
+  await r('backup.inspect', 'POST', '/api/backup/inspect', 'inspectResponseSchema', { payload: { file: wireBackup.filename } });
+  await r('backup.restoreDryRun', 'POST', '/api/backup/import', 'restoreResultSchema', { payload: { file: wireBackup.filename, dryRun: true } });
+  await r('backup.restores', 'GET', '/api/backup/restores', 'restoreAuditResponseSchema', { requireNonEmpty: 'restores' });
+  await r('storage.stats', 'GET', '/api/storage/stats', 'storageStatsResponseSchema');
+  await r('storage.assets', 'GET', '/api/storage/assets', 'assetListingResponseSchema', { requireNonEmpty: 'assets' });
+  await r('storage.assetPin', 'POST', `/api/storage/assets/${wireAsset.id}/pin`, 'assetResponseSchema', { payload: { pinned: true } });
+  await r('storage.assetDelete', 'DELETE', `/api/storage/assets/${wireAsset.id}`, 'assetDeletedResponseSchema');
+  await r('storage.cleanupDryRun', 'POST', '/api/storage/cleanup', 'cleanupResultSchema', { payload: { dryRun: true } });
+  await r('storage.cleanupLog', 'GET', '/api/storage/cleanup/log', 'cleanupLogResponseSchema');
+  await r('usage.summary', 'GET', '/api/usage', 'usageSummaryResponseSchema', { requireNonEmpty: 'byDay' });
+  await r('usage.exposure', 'GET', '/api/usage/exposure-summary', 'exposureSummaryResponseSchema');
+  await r('usage.prices', 'GET', '/api/usage/prices', 'pricesResponseSchema', { requireNonEmpty: 'prices' });
+  await r('usage.pricePut', 'PUT', '/api/usage/prices', 'priceResponseSchema', { payload: { modelId: 'wire-priced', providerId: null, inputPer1mUsd: 1, outputPer1mUsd: 2 } });
+  await r('usage.priceDelete', 'DELETE', '/api/usage/prices', 'priceDeletedResponseSchema', { payload: { modelId: 'wire-priced', providerId: null } });
+  // Agents and permissions (Settings 2.5 slice 4). The default is set and then
+  // cleared again so the wire database is left as it was found. The import
+  // writes one real profile into the wire project's .hyperion/agents/.
+  await r('settings.agentProfiles', 'GET', '/api/settings/agent-profiles?includeHidden=true', 'agentProfilesResponseSchema', { requireNonEmpty: 'profiles' });
+  await r('settings.agentsSettings', 'GET', '/api/settings/agents', 'agentsSettingsResponseSchema', { requireNonEmpty: 'builtin' });
+  await r('settings.agentsSettingsPut', 'PUT', '/api/settings/agents', 'agentsSettingsPutResponseSchema', { payload: { defaultAgentProfile: 'act' } });
+  await r('settings.agentsSettingsClear', 'PUT', '/api/settings/agents', 'agentsSettingsPutResponseSchema', { payload: { defaultAgentProfile: '' } });
+  await r('code.permissions', 'GET', '/api/code/permissions', 'permissionsResponseSchema', { requireNonEmpty: 'layers' });
+  await r('code.rules', 'GET', '/api/code/rules', 'rulesResponseSchema');
+  await r('code.agentsList', 'GET', '/api/code/agents', 'projectAgentsResponseSchema');
+  await r('code.commands', 'GET', '/api/code/commands', 'projectCommandsResponseSchema');
+  await checkImport(
+    'code.agentsImport',
+    [{ filename: 'wire-helper.md', content: '# Wire helper\n\nA profile filed by the wire check.\n' }],
+    { onConflict: 'skip' },
+    'profileImportResponseSchema',
+    { schemas },
+  );
   await r('projects.registry', 'GET', '/api/projects', 'projectsResponseSchema', { requireNonEmpty: 'projects' });
   await r('projects.tasks', 'GET', `/api/projects/${project.id}/tasks`, 'projectTasksResponseSchema', { requireNonEmpty: 'tasks' });
   await r('providers.list', 'GET', '/api/providers', 'providersResponseSchema', { requireNonEmpty: 'providers' });
   await r('providers.active', 'GET', '/api/providers/active', 'activeProviderResponseSchema');
   await r('providers.activeModels', 'GET', '/api/providers/active/models', 'activeModelsResponseSchema', { requireNonEmpty: 'models' });
+  await r('providers.puterAdvisory', 'GET', '/api/providers/puter/advisory', 'puterAdvisorySchema');
+  await r('providers.colibriAdvisory', 'GET', '/api/providers/colibri/advisory', 'colibriAdvisorySchema');
+  await r('providers.colibriProbe', 'POST', '/api/providers/colibri/probe', 'colibriProbeSchema', { payload: { baseUrl: providerBase } });
+  await r('providers.detectLocal', 'POST', '/api/providers/detect-local', 'localDetectionSchema', { payload: { baseUrl: providerBase } });
+  await r('providers.models', 'GET', `/api/providers/${disposableProvider.id}/models`, 'providerModelsResponseSchema', { requireNonEmpty: 'models' });
+  await r('providers.test', 'POST', `/api/providers/${disposableProvider.id}/test`, 'connectionTestSchema', { payload: {} });
   await r('tasks.lane', 'GET', '/api/code/tasks', 'codeLaneSchema');
   // The Canvas (1.40): the tree, one file, the diff, and the preview's mint and
   // revoke. `entries` is required non-empty because a tree that parsed as an
@@ -718,7 +868,21 @@ async function main() {
   await r('attention.queue', 'GET', '/api/attention', 'attentionQueueSchema', { requireNonEmpty: 'items' });
   await r('projects.create', 'POST', '/api/projects', 'projectResponseSchema', { payload: { name: 'Wire project 2' }, expectStatus: 201 });
   await r('projects.open', 'POST', `/api/projects/${project.id}/open`, 'openedProjectResponseSchema', { payload: {} });
-  await r('providers.enable', 'POST', `/api/providers/${providerRow.id}/enable`, 'providerResponseSchema', { payload: {} });
+  await r('providers.enable', 'POST', `/api/providers/${providerRow.id}/enable`, 'providerEnabledResponseSchema', { payload: {} });
+  await r('providers.create', 'POST', '/api/providers', 'providerResponseSchema', {
+    payload: { name: 'Wire created provider', type: 'remote', baseUrl: providerBase, apiKey: 'wire-key' },
+    expectStatus: 201,
+  });
+  await r('providers.patch', 'PATCH', `/api/providers/${disposableProvider.id}`, 'providerResponseSchema', {
+    payload: { priority: 42 },
+  });
+  await r('providers.zdr', 'PUT', `/api/providers/${disposableProvider.id}/zdr`, 'providerResponseSchema', {
+    payload: { support: 'supported_default' },
+  });
+  await r('providers.enableDisposable', 'POST', `/api/providers/${disposableProvider.id}/enable`, 'providerEnabledResponseSchema', { payload: {} });
+  await r('providers.disableDisposable', 'POST', `/api/providers/${disposableProvider.id}/disable`, 'providerEnabledResponseSchema', { payload: {} });
+  // The disable above leaves nothing active; restore the fixture provider for the checks that follow.
+  await r('providers.enable', 'POST', `/api/providers/${providerRow.id}/enable`, 'providerEnabledResponseSchema', { payload: {} });
   await r('error.envelope(404)', 'GET', '/api/wire-check-does-not-exist', 'errorEnvelopeSchema', { expectStatus: 404 });
   await r('error.envelope(400)', 'GET', '/api/artifacts/versions', 'errorEnvelopeSchema', { expectStatus: 400 });
   await r('attention.decide', 'POST', '/api/cowork/tasks/wire-task/approve', 'approvalResultSchema', {

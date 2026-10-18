@@ -1,6 +1,6 @@
 import { describe,expect,it } from 'vitest';
 import { activeProviderResponseSchema, providerSchema, providerTypeSchema } from './providers';
-const provider={id:'p1',name:'Local',type:'local',baseUrl:'http://localhost:11434',hasKey:false,apiKeyHint:null,enabled:true,priority:1,healthStatus:'healthy',lastError:null,lastErrorAt:null,lastSuccessAt:1,modelCount:1,modelsFetchedAt:1,modelsError:null,maxContextTokens:null,cooldown:null,createdAt:1,updatedAt:1};
+const provider={id:'p1',name:'Local',type:'local',baseUrl:'http://localhost:11434',hasKey:false,apiKeyHint:null,enabled:true,priority:1,healthStatus:'healthy',lastError:null,lastErrorAt:null,lastSuccessAt:1,modelCount:1,modelsFetchedAt:1,modelsError:null,maxContextTokens:null,cooldown:null,egressProxy:null,zdr:{support:'unknown',requestFlag:null,confirmedAt:null,confirmedNote:null},createdAt:1,updatedAt:1};
 const active={provider,egress:'local',egressProxy:null,redactionCheckEnabled:true,zdr:{status:'local_no_egress',requirement:'prefer'}};
 describe('provider wire contract',()=>{
  it('accepts additive backend fields but never requires a credential',()=>{expect(providerSchema.parse({...provider,futureField:true})).toMatchObject({id:'p1'});expect(providerSchema.keyof().options).not.toContain('apiKey');});
@@ -54,7 +54,7 @@ it('requires the cooldown to be stated, null included, and refuses a class it ca
 it('accepts a declared context ceiling, and refuses one that could not be honoured',()=>{
   const base={id:'p1',name:'P',type:'remote',baseUrl:'https://example.test/v1',hasKey:true,apiKeyHint:'abcd',enabled:true,priority:100,
     healthStatus:'unknown',lastError:null,lastErrorAt:null,lastSuccessAt:null,modelCount:null,modelsFetchedAt:null,modelsError:null,
-    cooldown:null,createdAt:1,updatedAt:1};
+    cooldown:null,egressProxy:null,zdr:{support:'unknown',requestFlag:null,confirmedAt:null,confirmedNote:null},createdAt:1,updatedAt:1};
   // Carried as a contract rather than ignored: the backend serves it on every read,
   // and null means "declared nothing", which is not the same as zero.
   expect(providerSchema.parse({...base,maxContextTokens:200000}).maxContextTokens).toBe(200000);
