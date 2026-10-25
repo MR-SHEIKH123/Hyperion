@@ -70,7 +70,7 @@ export const SKIPPED_DIRS: ReadonlySet<string> = new Set([
 export interface CanvasEntry {
   path: string;
   name: string;
-  type: 'file' | 'directory';
+  type: 'file' | 'directory' | 'symlink';
   bytes: number | null;
   skipped?: boolean;
 }
@@ -241,16 +241,18 @@ export async function listCanvasTree(taskId: string, candidate = '.'): Promise<C
         break;
       }
 
-      // Symlinks are neither followed nor listed. Following one is how a
-      // listing escapes its boundary; listing one is how the viewer is handed a
-      // path whose read can land somewhere else entirely.
-      if (child.isSymbolicLink()) continue;
-
       // `.git` is omitted rather than listed: the viewer refuses it (see
       // `files.ts`), and a tree that lists an entry the next request will 403
-      // on is a tree offering a refusal. The comparison is the exported
-      // predicate, not a second string test.
+      // on is a tree offering a refusal. The check comes before the symlink
+      // branch too, so a `.git` symlink cannot be listed either.
       if (isGitPathSegment(child.name)) continue;
+
+      // Symlinks are named so the reader can see their existence, but they are
+      // never resolved, descended into or offered as readable files.
+      if (child.isSymbolicLink()) {
+        entries.push({ path: joinRelative(directory.relative, child.name), name: child.name, type: 'symlink', bytes: null });
+        continue;
+      }
 
       const relative = joinRelative(directory.relative, child.name);
 

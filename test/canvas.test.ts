@@ -307,7 +307,7 @@ describe('GET /api/code/tasks/:taskId/files', () => {
     assert.equal(tree.truncated, true);
   });
 
-  it('never follows or lists a symlink', async () => {
+  it('lists symlinks as symlinks and never follows them', async () => {
     const root = await workspace('link-task');
     const outside = path.join(testHome, 'outside-link-target');
     fs.mkdirSync(outside, { recursive: true });
@@ -317,12 +317,14 @@ describe('GET /api/code/tasks/:taskId/files', () => {
     fs.symlinkSync(path.join(outside, 'secret.txt'), path.join(root, 'linked-file.txt'));
     write(root, 'plain.txt', 'plain\n');
 
-    const tree = json<{ entries: { path: string }[] }>(
+    const tree = json<{ entries: { path: string; type: string; bytes: number | null }[] }>(
       await api('GET', '/api/code/tasks/link-task/files'),
     );
     const paths = tree.entries.map((entry) => entry.path);
 
-    assert.deepEqual(paths, ['plain.txt']);
+    assert.deepEqual(paths, ['linked-dir', 'linked-file.txt', 'plain.txt']);
+    assert.deepEqual(tree.entries.filter((entry) => entry.type === 'symlink').map((entry) => entry.bytes), [null, null]);
+    assert.equal(tree.entries.some((entry) => entry.path.includes('secret.txt')), false);
   });
 });
 

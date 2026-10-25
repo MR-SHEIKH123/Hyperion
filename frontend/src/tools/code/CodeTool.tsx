@@ -7,6 +7,8 @@ import { RecoveryPanel } from '../../components/RecoveryPanel/RecoveryPanel';
 import { ParkedTask } from './ParkedTask';
 import { ChangedFiles } from './ChangedFiles';
 import { PreviewRow } from './PreviewRow';
+import { CanvasTabs } from './CanvasTabs';
+import { useCanvasTab } from './useCanvasTab';
 import { Processes } from './Processes';
 import { StartTask } from './StartTask';
 import { RunProgress } from './RunProgress';
@@ -57,6 +59,14 @@ export default function CodeTool() {
   const [params, setParams] = useSearchParams();
   const taskId = params.get('task');
   const file = params.get('file');
+  const [canvasTab, setCanvasTab] = useCanvasTab(taskId ?? '');
+
+  const selectFile = (path: string, openDiff = false) => {
+    const next = new URLSearchParams(params);
+    next.set('file', path);
+    setParams(next, { replace: true });
+    if (openDiff) setCanvasTab('diff');
+  };
   // Presentation memory (1.39 A5): the panel widths and folds are remembered per
   // tool. The frame owns the translation; this surface only hands over what it
   // last left behind (see `useWorkspaceLayout`).
@@ -121,7 +131,8 @@ export default function CodeTool() {
         attention queue links here with the task already chosen.
       </p>
     ) : (
-      <>
+      <CanvasTabs taskId={taskId} file={file} activeTab={canvasTab} onTabChange={setCanvasTab}
+        onSelectFile={(path) => selectFile(path)}>
         {state?.kind === 'interrupted' ? (
           // The one state where a read is not enough: an interrupted run has a
           // decision attached to it, and the frame's main region is where the
@@ -149,7 +160,7 @@ export default function CodeTool() {
           />
         ) : null}
         <TaskSpend taskId={taskId} usage={task.data?.usage} isPending={task.isPending} isError={task.isError} />
-      </>
+      </CanvasTabs>
     ),
     // The progress region is where a run this surface started streams. A task started
     // elsewhere is shown by its persisted state in the main region, and this says so
@@ -212,14 +223,7 @@ export default function CodeTool() {
           <ChangedFiles
             taskId={taskId}
             selectedPath={file}
-            onSelect={(path) => {
-              const next = new URLSearchParams(params);
-              // Clicking the selected file clears it, so the list can be read
-              // without leaving a selection behind on every visit.
-              if (path === file) next.delete('file');
-              else next.set('file', path);
-              setParams(next, { replace: true });
-            }}
+            onSelect={(path) => selectFile(path, true)}
           />
         )}
         {/* The live preview, under the changes because that is the order a

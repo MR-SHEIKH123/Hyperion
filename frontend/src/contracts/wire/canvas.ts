@@ -23,7 +23,7 @@ export const canvasEntrySchema = z
     /** Workspace-relative POSIX path — never absolute, which is the seam's promise. */
     path: z.string(),
     name: z.string(),
-    type: z.enum(['file', 'directory']),
+    type: z.enum(['file', 'directory', 'symlink']),
     /**
      * `null` for a directory, and for a file whose size was not read.
      *
