@@ -1,0 +1,98 @@
+# The full gate, on every pull request and on every push to `main`.
+#
+# Two jobs because the repo is two npm packages with two lockfiles: the backend
+# (native TypeScript, no build step, `node --test`) and the frontend (Vite +
+# Vitest, with its own contract checks). A change in one should not report
+# green while the other is broken.
+#
+# Deliberate choices:
+#
+#   - `pull_request`, never `pull_request_target`: this workflow runs code from
+#     the branch under test, and `pull_request_target` would run it with the
+#     base repository's token and secrets. There are no secrets here at all.
+#   - Every action is pinned to a full commit SHA rather than a tag, because a
+#     tag can be moved under us. The readable version stays in the comment.
+#   - `contents: read` is the whole permission set: nothing here writes.
+#   - A run superseded by a newer push to the same ref is cancelled, since the
+#     older result can no longer be the one that matters.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (tsc + node --test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          # `engines` requires >=22.6.0, which is the floor that lets Node strip
+          # TypeScript types natively — there is no build step to compile them.
+          node-version: '22.x'
+          cache: npm
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm test
+
+  # The database adapter has no switch: it tries `require('better-sqlite3')` and
+  # falls back to `node:sqlite` only when that throws (src/db/adapter.ts). So
+  # this job forces the fallback the only way the code will accept — by making
+  # the optional native addon unresolvable. That is also the state a user on a
+  # Node major with no matching prebuilt binary actually runs in, which is the
+  # reason the job is here at all: the fallback is not a theoretical branch.
+  #
+  # `--omit=optional` removes `sharp` and `web-push` as well, so the seven
+  # tests that exercise those optional modules skip. Everything else runs.
+  backend-node-sqlite:
+    name: Backend on node:sqlite (no native addon)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22.x'
+          cache: npm
+      - run: npm ci --omit=optional
+      - run: npm test
+
+  frontend:
+    name: Frontend (contracts + tsc + lint + test + build + wire)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22.x'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      # Ordered cheapest-first so an obvious break reports in seconds rather
+      # than after the build. `contracts` and `wire` compare the frontend's
+      # schemas against the backend source in this same checkout.
+      - run: npm run contracts
+        working-directory: frontend
+      - run: npm run typecheck
+        working-directory: frontend
+      - run: npm run lint
+        working-directory: frontend
+      - run: npm run test
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+      - run: npm run wire
+        working-directory: frontend
