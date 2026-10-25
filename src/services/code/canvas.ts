@@ -49,6 +49,9 @@ export const MAX_DEPTH = 12;
  */
 export const MAX_VIEW_BYTES = 2 * 1024 * 1024;
 
+/** Upper bound on the patch text returned to a browser, in UTF-8 bytes. */
+export const MAX_CANVAS_DIFF_BYTES = 4 * 1024 * 1024;
+
 /**
  * Directories the walk does not descend into.
  *
@@ -96,6 +99,7 @@ export interface CanvasDiff {
   taskId: string;
   baseCommit: string;
   patch: string;
+  truncated: boolean;
 }
 
 /**
@@ -369,5 +373,8 @@ export async function canvasDiff(taskId: string): Promise<CanvasDiff> {
     // silently start emitting an empty string here.
     throw new AppError('internal_error', 'The task\u2019s diff has no base commit to name.');
   }
-  return { taskId: worktree.taskId, baseCommit: worktree.baseCommit, patch: exported.content };
+  const bytes = Buffer.from(exported.content, 'utf8');
+  const truncated = bytes.byteLength > MAX_CANVAS_DIFF_BYTES;
+  const patch = truncated ? bytes.subarray(0, MAX_CANVAS_DIFF_BYTES).toString('utf8') : exported.content;
+  return { taskId: worktree.taskId, baseCommit: worktree.baseCommit, patch, truncated };
 }

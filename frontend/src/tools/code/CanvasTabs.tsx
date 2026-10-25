@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQueries, useQuery } from '@tanstack/react-query';
 
-import { getTaskFile, getTaskFiles } from '../../api/canvas';
+import { getTaskDiff, getTaskFile, getTaskFiles } from '../../api/canvas';
+import { splitPatch, type PatchSummary } from './patch';
 import { ApiError } from '../../api/errors';
 import styles from './CanvasTabs.module.css';
 
@@ -74,7 +75,7 @@ export function CanvasTabs({
         {tab === 'overview' ? children : tab === 'files' ? (
           <FilesView taskId={taskId} selectedPath={file} onSelect={onSelectFile} />
         ) : tab === 'diff' ? (
-          <DiffView />
+          <DiffView taskId={taskId} selectedPath={file} onSelectFile={onSelectFile} />
         ) : tab === 'preview' ? (
           <PreviewView />
         ) : (
@@ -198,7 +199,30 @@ function FileViewer({ taskId, path, bytes }: { taskId: string; path: string | nu
   </div>;
 }
 
-function DiffView() { return <p className={styles.note}>Diff rendering is loading in the next Canvas slice.</p>; }
+function DiffView({ taskId, selectedPath, onSelectFile }: { taskId: string; selectedPath: string | null; onSelectFile: (path: string) => void }) {
+  const query = useQuery({ queryKey: ['canvas', 'diff', taskId], queryFn: ({ signal }) => getTaskDiff(taskId, signal), retry: false });
+  const summary: PatchSummary | null = useMemo(() => query.data ? splitPatch(query.data.patch) : null, [query.data]);
+  if (query.isPending) return <p role="status">Reading the task diff…</p>;
+  if (query.isError) {
+    if (query.error instanceof ApiError && query.error.details?.mode === 'direct') return <p className={styles.notice}>No base to compare against. Diff is unavailable in direct mode; Files and Preview remain available.</p>;
+    return <p role="alert">The task diff could not be read: {query.error.message}</p>;
+  }
+  if (summary === null) return <p role="status">Preparing the patch…</p>;
+  return <div className={styles.diff}>
+    <p>{summary.files.length === 0 ? 'No changes against the base commit.' : `${summary.files.length} file(s) · +${summary.additions} −${summary.deletions}`}</p>
+    {query.data.truncated ? <p className={styles.notice}>The patch was truncated by the server size limit; the displayed hunks may be incomplete.</p> : null}
+    {summary.files.map((file) => (
+      <article className={styles.diffFile} key={`${file.path}-${file.isDeleted ? 'deleted' : 'live'}`}>
+        <header><button type="button" className={styles.fileButton} aria-pressed={selectedPath === file.path} onClick={() => onSelectFile(file.path)}>{file.path}</button>
+          <span className={styles.badge}>{file.isNew ? 'added' : file.isDeleted ? 'deleted' : file.isRenamed ? 'renamed' : file.isBinary ? 'binary' : 'modified'}</span></header>
+        {file.isBinary ? <p>Binary file; no text patch is available.</p> : <pre className={styles.patch}>{file.hunks.map((hunk, index) => <span className={styles.patchHunk} key={index}>{hunk.map((line, lineIndex) => {
+          const sign = line.startsWith('+') ? '+' : line.startsWith('-') ? '−' : ' ';
+          return <span className={styles.patchLine} key={lineIndex}><b aria-label={sign === ' ' ? 'context' : sign}>{sign} </b>{line.startsWith('+') || line.startsWith('-') ? line.slice(1) : line}{'\n'}</span>;
+        })}</span>)}</pre>}
+      </article>
+    ))}
+  </div>;
+}
 
 function PreviewView() { return <p className={styles.note}>Preview controls load in the Preview tab.</p>; }
 function ConsoleView() { return <p className={styles.note}>The preview console becomes available when a preview is running.</p>; }

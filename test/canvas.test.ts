@@ -490,11 +490,29 @@ describe('GET /api/code/tasks/:taskId/diff', () => {
     const response = await api('GET', '/api/code/tasks/diff-task/diff');
     assert.equal(response.status, 200);
 
-    const diff = json<{ taskId: string; baseCommit: string; patch: string }>(response);
+    const diff = json<{ taskId: string; baseCommit: string; patch: string; truncated: boolean }>(response);
     assert.equal(diff.taskId, 'diff-task');
     assert.equal(diff.baseCommit, worktree.baseCommit);
+    assert.equal(diff.truncated, false);
     assert.match(diff.patch, /diff --git a\/README\.md b\/README\.md/);
     assert.match(diff.patch, /^\+changed by the agent$/m);
+  });
+
+  it('bounds a large patch and marks it truncated', gitOnly, async () => {
+    const repo = path.join(projectsRoot, 'large-diff-repo');
+    fs.mkdirSync(repo, { recursive: true });
+    git(['init', '-b', 'main'], repo);
+    fs.writeFileSync(path.join(repo, 'large.txt'), 'base\n');
+    git(['add', '-A'], repo);
+    git(['commit', '-m', 'initial'], repo);
+    const worktree = await worktrees.provisionWorktree('large-diff-task', repo);
+    fs.writeFileSync(path.join(worktree.dir, 'large.txt'), `${'x'.repeat(4 * 1024 * 1024)}\n`);
+
+    const response = await api('GET', '/api/code/tasks/large-diff-task/diff');
+    assert.equal(response.status, 200);
+    const diff = json<{ patch: string; truncated: boolean }>(response);
+    assert.equal(diff.truncated, true);
+    assert.ok(Buffer.byteLength(diff.patch, 'utf8') <= 4 * 1024 * 1024 + 4);
   });
 
   it('answers a direct-mode task with the exporter\u2019s reasoned 400', async () => {

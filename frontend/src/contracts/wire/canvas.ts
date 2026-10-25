@@ -72,6 +72,8 @@ export const canvasDiffSchema = z
     baseCommit: z.string(),
     /** One unified diff. Empty only when the tree really is unchanged. */
     patch: z.string(),
+    /** True when the server clipped a patch above its fixed response budget. */
+    truncated: z.boolean().optional(),
   })
   .passthrough();
 
