@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useQueries, useQuery } from '@tanstack/react-query';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { getTaskDiff, getTaskFile, getTaskFiles } from '../../api/canvas';
+import { getPreviewStatus, getTaskDiff, getTaskFile, getTaskFiles, mintPreview, revokePreview } from '../../api/canvas';
 import { splitPatch, type PatchSummary } from './patch';
 import { ApiError } from '../../api/errors';
 import styles from './CanvasTabs.module.css';
@@ -24,6 +24,8 @@ export function CanvasTabs({
   onSelectFile,
   activeTab,
   onTabChange,
+  writeRevision = 0,
+  onOpenFiles,
   children,
 }: {
   taskId: string;
@@ -31,6 +33,8 @@ export function CanvasTabs({
   onSelectFile: (path: string) => void;
   activeTab: CanvasTab;
   onTabChange: (tab: CanvasTab) => void;
+  writeRevision?: number;
+  onOpenFiles: () => void;
   children: React.ReactNode;
 }) {
   const tab = activeTab;
@@ -77,7 +81,7 @@ export function CanvasTabs({
         ) : tab === 'diff' ? (
           <DiffView taskId={taskId} selectedPath={file} onSelectFile={onSelectFile} />
         ) : tab === 'preview' ? (
-          <PreviewView />
+          <PreviewView taskId={taskId} writeRevision={writeRevision} onOpenFiles={onOpenFiles} />
         ) : (
           <ConsoleView />
         )}
@@ -224,5 +228,90 @@ function DiffView({ taskId, selectedPath, onSelectFile }: { taskId: string; sele
   </div>;
 }
 
-function PreviewView() { return <p className={styles.note}>Preview controls load in the Preview tab.</p>; }
+function PreviewView({ taskId, writeRevision, onOpenFiles }: { taskId: string; writeRevision: number; onOpenFiles: () => void }) {
+  const client = useQueryClient();
+  const status = useQuery({ queryKey: ['canvas', 'preview', taskId], queryFn: ({ signal }) => getPreviewStatus(taskId, signal), retry: false, refetchInterval: 10_000 });
+  const root = useQuery({ queryKey: ['canvas', 'files', taskId, '.'], queryFn: ({ signal }) => getTaskFiles(taskId, '.', signal), retry: false });
+  const [entry, setEntry] = useState('');
+  const [reload, setReload] = useState(0);
+  const [lastExpiry, setLastExpiry] = useState<number | null>(null);
+  const [renewed, setRenewed] = useState(false);
+  const [expired, setExpired] = useState(false);
+  const previousRevision = useRef(writeRevision);
+  const reloadTimer = useRef<number | null>(null);
+  const htmlFiles = (root.data?.entries ?? []).filter((item) => item.type === 'file' && !item.path.includes('/') && /\.html?$/i.test(item.name));
+  const preview = status.data?.preview ?? null;
+
+  useEffect(() => {
+    if (preview !== null) {
+      setLastExpiry(preview.expiresAt);
+      if (Date.now() < preview.expiresAt) setExpired(false);
+    } else if (lastExpiry !== null && Date.now() >= lastExpiry) setExpired(true);
+  }, [preview, lastExpiry]);
+
+  useEffect(() => {
+    if (previousRevision.current === writeRevision) return;
+    previousRevision.current = writeRevision;
+    if (reloadTimer.current !== null) window.clearTimeout(reloadTimer.current);
+    reloadTimer.current = window.setTimeout(() => { reloadTimer.current = null; setReload((value) => value + 1); }, 350);
+    return () => { if (reloadTimer.current !== null) window.clearTimeout(reloadTimer.current); };
+  }, [writeRevision]);
+
+  const refreshStatus = () => void client.invalidateQueries({ queryKey: ['canvas', 'preview', taskId] });
+  const start = useMutation({ mutationFn: () => mintPreview(taskId), onSuccess: () => { setRenewed(true); refreshStatus(); } });
+  const stop = useMutation({ mutationFn: () => revokePreview(taskId), onSuccess: refreshStatus });
+  const activeEntry = entry || htmlFiles[0]?.path || '';
+  const source = preview === null ? null : activeEntry === '' ? preview.url : entryUrl(preview.url, activeEntry);
+
+  if (root.isError && root.error instanceof ApiError && root.error.status === 404) return <p className={styles.notice}>This task’s worktree is gone, so it no longer has a preview.</p>;
+  if (status.isError && status.error instanceof ApiError && status.error.status === 404) return <p className={styles.notice}>This task’s worktree is gone, so it no longer has a preview.</p>;
+  if (status.isPending || root.isPending) return <p role="status">Checking the task’s preview…</p>;
+  if (root.isError) return <p role="alert">The task’s files could not be read: {root.error.message}</p>;
+  if (htmlFiles.length === 0) return <div className={styles.stateBlock}><p>No HTML entry file at the task root, so there is nothing to preview.</p><button type="button" onClick={onOpenFiles}>Open Files</button></div>;
+
+  const refusal = status.error ?? start.error;
+  if (refusal instanceof ApiError && refusal.code === 'capability_disabled') {
+    const setting = refusal.details?.setting;
+    return <p className={styles.notice}>Previews are disabled on this host{typeof setting === 'string' ? <> by <code>{setting}</code>.</> : '.'}</p>;
+  }
+  if (status.isError && status.error instanceof ApiError && status.error.code === 'network_error') return <p role="alert">The preview listener is unreachable. Check that the preview service is running.</p>;
+  if (refusal instanceof ApiError && refusal.status === 404) return <p className={styles.notice}>This task’s worktree is gone, so it no longer has a preview.</p>;
+  if (status.isError) return <p role="alert">Preview status could not be read: {status.error.message}</p>;
+
+  if (preview === null) return <div className={styles.stateBlock}>
+    <p>{expired ? 'The preview session expired.' : 'No preview session exists for this task.'}</p>
+    {start.error ? <p role="alert">Preview could not start: {start.error.message}</p> : null}
+    <button type="button" disabled={start.isPending || (expired && renewed)} onClick={() => start.mutate()}>{start.isPending ? 'Starting preview…' : expired ? (renewed ? 'Preview already renewed' : 'Renew preview') : 'Start preview'}</button>
+  </div>;
+
+  if (expired || Date.now() >= preview.expiresAt) return <div className={styles.stateBlock}><p>The preview session expired.</p><button type="button" disabled={renewed || start.isPending} onClick={() => start.mutate()}>{renewed ? 'Preview already renewed' : 'Renew preview'}</button></div>;
+
+  const origin = safeOrigin(preview.url);
+  return <div className={styles.preview}>
+    <div className={styles.toolbar}>
+      <button type="button" onClick={() => setReload((value) => value + 1)}>Reload</button>
+      <a href={source ?? preview.url} target="_blank" rel="noreferrer">Open in new tab</a>
+      <label>Entry file <select aria-label="Preview entry file" value={activeEntry} onChange={(event) => { setEntry(event.target.value); setReload((value) => value + 1); }}>
+        {htmlFiles.map((item) => <option key={item.path} value={item.path}>{item.name}</option>)}
+      </select></label>
+      <button type="button" disabled={stop.isPending} onClick={() => stop.mutate()}>{stop.isPending ? 'Stopping…' : 'Stop preview'}</button>
+      {origin ? <span className={styles.origin}>{origin}</span> : null}
+    </div>
+    {start.error || stop.error ? <p role="alert">{(start.error ?? stop.error)?.message}</p> : null}
+    <iframe key={reload} className={styles.iframe} src={source ?? preview.url} sandbox="allow-scripts allow-forms allow-pointer-lock" referrerPolicy="no-referrer" title={`Preview of task ${taskId}`} />
+    <p className={styles.note}>A frame that stays blank may mean this app’s origin is missing from <code>HYPERION_APP_ORIGINS</code>, which controls <code>frame-ancestors</code>. A browser cannot reliably report that refusal to Hyperion.</p>
+    <p className={styles.note}>Browser storage is unavailable inside this preview.</p>
+  </div>;
+}
+
+function entryUrl(base: string, path: string): string {
+  const url = new URL(base);
+  const suffix = path.split('/').map((segment) => encodeURIComponent(segment)).join('/');
+  url.pathname = `${url.pathname.replace(/\/$/, '')}/${suffix}`;
+  return url.toString();
+}
+
+function safeOrigin(value: string): string | null {
+  try { return new URL(value).origin; } catch { return null; }
+}
 function ConsoleView() { return <p className={styles.note}>The preview console becomes available when a preview is running.</p>; }

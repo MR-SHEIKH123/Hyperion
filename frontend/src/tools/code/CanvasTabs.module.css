@@ -24,3 +24,11 @@
 .patchLine { display:block; }
 @media (max-width: 760px) { .filesLayout { grid-template-columns:1fr; } }
 @media (prefers-reduced-motion: reduce) { .surface *, .surface *::before, .surface *::after { scroll-behavior:auto !important; transition:none !important; animation:none !important; } }
+.stateBlock { display:flex; flex-direction:column; align-items:flex-start; gap:var(--space-2); color:var(--text-secondary); }
+.toolbar { display:flex; flex-wrap:wrap; gap:var(--space-2); align-items:center; margin-bottom:var(--space-2); }
+.toolbar button,.toolbar a,.stateBlock button { border:1px solid var(--border-subtle); border-radius:var(--radius-sm); padding:var(--space-1) var(--space-2); color:var(--text-primary); background:var(--surface-raised); font:inherit; font-size:var(--text-xs); cursor:pointer; text-decoration:none; }
+.toolbar label { display:flex; align-items:center; gap:var(--space-1); font-size:var(--text-xs); }
+.toolbar select { max-width:16rem; }
+.origin { font:var(--text-xs) var(--font-code); color:var(--text-muted); }
+.preview { display:flex; flex-direction:column; min-height:24rem; height:100%; }
+.iframe { border:1px solid var(--border-subtle); border-radius:var(--radius-md); width:100%; min-height:22rem; flex:1; background:white; }

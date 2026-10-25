@@ -132,7 +132,8 @@ export default function CodeTool() {
       </p>
     ) : (
       <CanvasTabs taskId={taskId} file={file} activeTab={canvasTab} onTabChange={setCanvasTab}
-        onSelectFile={(path) => selectFile(path)}>
+        writeRevision={start.state.events.filter((event) => event.type === 'agent' && event.data.channel === 'artifact').length}
+        onOpenFiles={() => setCanvasTab('files')} onSelectFile={(path) => selectFile(path)}>
         {state?.kind === 'interrupted' ? (
           // The one state where a read is not enough: an interrupted run has a
           // decision attached to it, and the frame's main region is where the

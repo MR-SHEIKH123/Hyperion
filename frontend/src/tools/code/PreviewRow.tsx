@@ -108,13 +108,13 @@ export function PreviewRow({ taskId }: { taskId: string }) {
       ) : (
         <>
           <p className={styles.state}>
-            Serving <span className={styles.origin}>{preview.url}</span>
+            Serving <span className={styles.origin}>{previewOrigin(preview.url)}</span>
           </p>
           {describeRemaining(preview.expiresAt) !== null && (
             <p className={styles.meta}>{describeRemaining(preview.expiresAt)}</p>
           )}
           <div className={styles.actions}>
-            <a className={styles.action} href={preview.url} target="_blank" rel="noreferrer">
+            <a className={styles.action} href={preview.url} target="_blank" rel="noreferrer" aria-label="Open preview">
               Open
             </a>
             <button
@@ -138,4 +138,8 @@ export function PreviewRow({ taskId }: { taskId: string }) {
       )}
     </div>
   );
+}
+
+function previewOrigin(value: string): string {
+  try { return new URL(value).origin; } catch { return 'Preview origin unavailable'; }
 }
