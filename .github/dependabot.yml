@@ -1,0 +1,45 @@
+# Automated dependency updates.
+#
+# Two npm packages live in this repo — the backend at the root and the frontend
+# under `frontend/` — and each has its own lockfile, so each is its own entry.
+# GitHub Actions are tracked here as well: the workflow pins every action to a
+# commit SHA, which is the safe default but also the thing that goes stale
+# silently, so Dependabot is what keeps those pins moving.
+version: 2
+
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      backend-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      frontend-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      actions-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch

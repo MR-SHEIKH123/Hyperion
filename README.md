@@ -21,62 +21,24 @@ is active at a time, with standby failover to alternates.
 - **Agentic layer: complete.** Code (multi-file editing loop),
   Cowork (knowledge-first research loop), Design (iterative HTML/CSS + SVG
   loop) and the MCP process lifecycle, all on one shared agent loop.
-- **Frontend: in progress.** The foundation (checked API contracts, Zod wire
-  validation, SSE parsing and reconnection, safe local persistence,
-  task-state reconciliation, the shared agent-workspace frame, design-system
-  primitives, development state harness) now carries the operational shell —
-  eight-tool sidebar, backend health indicator, per-tool routes — and the
-  **Chat tool wired end-to-end**: conversation list, transcript, streaming
-  with pause/resume, busy handling, and the model picker against the active
-  provider. The **Code tool is the frame's first real occupant**: a composer
-  that starts a run (task id, ask/plan/act mode, instruction, model) and
-  streams its frames as they arrive, settling on the persisted run rather
-  than on the socket when the stream ends; the lane rail — running slots,
-  queue depth, capacity, and the parked worktrees that hold disk rather than
-  a slot — beside the selected task's state and recorded spend; the session
-  panel in the inspector — a changed-file list splitting per-file additions
-  and deletions from the task's diff against its base commit, a live preview
-  row that shows whether a preview is running and offers to start, open or
-  stop it, the processes list of live terminal sessions, and the selected
-  file's version timeline beside the run's steps; the parked-task panel,
-  where a held call's arguments are shown before it is allowed once, allowed
-  for the session, or denied, and the run continues from that answer; and the
-  recovery panel for a run a restart
-  interrupted, which reports what it got as far as doing, discards the
-  leftover checkout on request, and resumes by filling the composer with the
-  task id whose checkout the re-run adopts. The **Settings tool has all four
-  of its sections**: Providers — every provider with its health, cooldown,
-  zero-data-retention state and redacted egress proxy on the row; add and edit
-  forms per provider type that render the Puter and Colibrì advisories from
-  the backend rather than a copy of them; enable with a confirmation naming
-  the provider it demotes; the Colibrì slow-inference acknowledgement,
-  unticked until it is read; a connection test that explains a 402 in the
-  provider's own words; per-provider models with the context length the
-  provider reported and no figure where it reported none; delete behind a
-  confirmation; and the ZDR editor, on the backend's support, request-flag
-  and confirmation fields rather than a toggle it does not have — and Safety
-  and limits: network egress shown as stored and as effective, which are not
-  the same switch; the outbound credential-pattern check, off by default and
-  refusing a send rather than rewriting it; the standing ZDR policy, where
-  `require` fails closed on a provider whose support is unknown; the daily
-  spending cap and the runaway ceilings beside today's spend and the requests
-  it could not price; the tool-access mode, labelled advisory because nothing
-  enforces it; and Reload Config, which validates the on-disk configuration
-  because there is no cache for it to clear — Memory and data: memory opt-in
-  with the disabled, unavailable, and empty states kept distinct; the stored
-  list rendered as text only; add, paste and folder import with per-file
-  results; delete-all behind a confirmation naming the count; and the Data
-  panels: export with an optional passphrase and S3 upload, restore gated on
-  an inspection whose diff the confirmation names, the S3 destination whose
-  secret is write-only and whose failed probe step reads as a warning,
-  storage with a dry-run-gated cleanup, and usage that reports "not recorded"
-  rather than zero beside every unpriced count — and Agents and permissions:
-  the stored default profile with Ask and Plan shown resolving to their own
-  built-ins regardless, the profile list including hidden profiles, .md
-  import whose overwrite asks first and names the files it replaces, and the
-  permission layers in evaluation order, read-only because the rules live in
-  project files. Cowork, Design, Playground, Plugins, and Skills still
-  resolve to a placeholder that says so.
+- **Frontend: in progress.** The foundation — checked API contracts, Zod wire
+  validation, SSE parsing and reconnection, safe local persistence, task-state
+  reconciliation, the shared agent-workspace frame, design-system primitives
+  and a development state harness — carries the operational shell: eight-tool
+  sidebar, backend health indicator, per-tool routes. Three of the eight tools
+  are real; the Attention queue is an additional surface beside them.
+
+| Surface | What works today | Still missing |
+| --- | --- | --- |
+| **Chat** | Conversation list and transcript, streaming with pause/resume, busy handling, the model picker against the active provider. | A dedicated chat-state read: runs and paused runs are the only chat-state routes. |
+| **Code** | A composer that starts a run (task id, ask/plan/act, instruction, model) and streams its frames, settling on the persisted run; the lane rail; a session panel with changed files, preview, processes and file timeline; parked approvals; interrupted-run recovery. | The file tree, file contents and patch text (six canvas routes called, two rendered), and a switch warning for another project's running tasks. |
+| **Settings** | All four sections — Providers, Safety and limits, Memory and data, Agents and permissions — rendering what the backend actually reports rather than a copy of it, so a control it cannot support says so. | Nothing recorded as missing; two routes are reached by a different shape than the spec named. |
+| **Attention** | Approvals, paused and blocked runs, plans awaiting review, interrupted and failed runs, backup failures, the spend cap and MCP disconnects, each with the call that resolves it. | Nothing recorded. |
+| **Cowork, Design, Playground, Plugins, Skills** | Nothing yet: each resolves to a placeholder that says so. | The surfaces themselves. Cowork, Design, Plugins and Skills have routes waiting; Playground has neither. |
+
+For depth rather than a summary: `docs/API.md` lists every endpoint,
+`docs/CONTRACTS.md` the invariants behind them, and
+`frontend/contracts/gaps.md` the open frontend gaps one by one.
 
 The **Code Canvas backend** (1.40) has a client and screens: a read-only file
 listing, file read and task diff for a Code task's workspace, plus a sandboxed
