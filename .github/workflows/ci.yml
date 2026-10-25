@@ -78,7 +78,16 @@ jobs:
         with:
           node-version: '22.x'
           cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
+      # `contracts` and `wire` read the backend source, and `wire` goes further:
+      # it boots the real Express app and the real migrations, so it needs the
+      # backend's own dependencies resolved (`src/db/adapter.ts` requires the
+      # SQLite driver). Installing the root package here as well as the
+      # frontend is what makes that job able to run at all — it failed on its
+      # first run without this.
+      - run: npm ci
       - run: npm ci
         working-directory: frontend
       # Ordered cheapest-first so an obvious break reports in seconds rather
