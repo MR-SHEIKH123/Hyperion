@@ -32,3 +32,8 @@
 .origin { font:var(--text-xs) var(--font-code); color:var(--text-muted); }
 .preview { display:flex; flex-direction:column; min-height:24rem; height:100%; }
 .iframe { border:1px solid var(--border-subtle); border-radius:var(--radius-md); width:100%; min-height:22rem; flex:1; background:white; }
+.console { display:flex; flex-direction:column; gap:var(--space-2); }
+.consoleEntries { list-style:none; display:flex; flex-direction:column; gap:var(--space-2); padding:0; margin:0; }
+.consoleEntries li { display:grid; grid-template-columns:5rem minmax(0,1fr); gap:var(--space-2); border-bottom:1px solid var(--border-subtle); padding:var(--space-2) 0; }
+.consoleEntries strong { font-size:var(--text-xs); color:var(--text-secondary); }
+.consoleEntries pre { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; font:var(--text-sm)/1.5 var(--font-code); }

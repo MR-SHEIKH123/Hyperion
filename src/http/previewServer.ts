@@ -448,6 +448,38 @@ function contentTypeFor(file: string): string | null {
 }
 
 /**
+ * The injected preview console wire contract. Payloads are exactly
+ * `{source: "hyperion-preview-console-v1", kind: "log"|"info"|"warn"|"error", args: string[]}`.
+ * Each argument is a text snapshot capped at 4 KiB and a message is sent only
+ * when its JSON encoding is at most 16 KiB. The app still validates source,
+ * kind, size and iframe identity; this tag is a protocol discriminator, not an
+ * authorization boundary.
+ */
+export const PREVIEW_CONSOLE_SHIM = `(()=>{const source="hyperion-preview-console-v1";const cap=4096;const max=16384;const kinds=["log","info","warn","error"];const text=(value)=>{try{if(typeof value==="string")return value.slice(0,cap);if(value instanceof Error)return (value.name+": "+value.message+(value.stack?"\n"+value.stack:" ")).slice(0,cap);const encoded=JSON.stringify(value);return (encoded===undefined?String(value):encoded).slice(0,cap)}catch{return "[unserializable]"}};for(const kind of kinds){const original=console[kind];if(typeof original!=="function")continue;console[kind]=function(...args){try{const message={source,kind,args:args.map(text)};if(new TextEncoder().encode(JSON.stringify(message)).byteLength<=max)window.parent.postMessage(message,"*")}catch{}return original.apply(this,args)}}})();`;
+
+/** Add the console bridge to HTML only, without changing the task's files. */
+function injectPreviewConsoleShim(bytes: Buffer): Buffer {
+  let html: string;
+  try {
+    html = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    return bytes;
+  }
+  const tag = `<script>${PREVIEW_CONSOLE_SHIM}</script>`;
+  const head = /<head\b[^>]*>/i.exec(html);
+  if (head !== null && head.index !== undefined) {
+    const offset = head.index + head[0].length;
+    return Buffer.from(`${html.slice(0, offset)}${tag}${html.slice(offset)}`, 'utf8');
+  }
+  const doctype = /<!doctype[^>]*>/i.exec(html);
+  if (doctype !== null && doctype.index !== undefined) {
+    const offset = doctype.index + doctype[0].length;
+    return Buffer.from(`${html.slice(0, offset)}<head>${tag}</head>${html.slice(offset)}`, 'utf8');
+  }
+  return Buffer.from(`<head>${tag}</head>${html}`, 'utf8');
+}
+
+/**
  * Serve one file from the session's task workspace.
  *
  * The path goes through `files.ts` like every other reader — `resolveCodePath`
@@ -555,6 +587,10 @@ async function handle(request: http.IncomingMessage, response: http.ServerRespon
     sendText(response, 404, 'No such file in this task\u2019s workspace.');
     return;
   }
+
+  // The shim is injected into the response, not written into the task's
+  // workspace. It uses the listener's existing inline-script CSP allowance.
+  if (type === 'text/html; charset=utf-8') bytes = injectPreviewConsoleShim(bytes);
 
   response.writeHead(200, {
     ...baseHeaders(),

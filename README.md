@@ -31,7 +31,7 @@ is active at a time, with standby failover to alternates.
 | Surface | What works today | Still missing |
 | --- | --- | --- |
 | **Chat** | Conversation list and transcript, streaming with pause/resume, busy handling, the model picker against the active provider. | A dedicated chat-state read: runs and paused runs are the only chat-state routes. |
-| **Code** | A composer that starts a run (task id, ask/plan/act, instruction, model) and streams its frames, settling on the persisted run; the lane rail; a session panel with changed files, preview, processes and file timeline; parked approvals; interrupted-run recovery. | The file tree, file contents and patch text (six canvas routes called, two rendered), and a switch warning for another project's running tasks. |
+| **Code** | Composer and streamed runs; lane rail; session panel; approvals and recovery; Canvas tabs for Overview, lazy read-only Files and text viewer, parsed Diff, locked-down Preview, and a bounded Console that can prefill errors into the composer without submitting. | A switch warning for another project's running tasks. Preview is a static file server, not a dev server or hot-reload environment. |
 | **Settings** | All four sections — Providers, Safety and limits, Memory and data, Agents and permissions — rendering what the backend actually reports rather than a copy of it, so a control it cannot support says so. | Nothing recorded as missing; two routes are reached by a different shape than the spec named. |
 | **Attention** | Approvals, paused and blocked runs, plans awaiting review, interrupted and failed runs, backup failures, the spend cap and MCP disconnects, each with the call that resolves it. | Nothing recorded. |
 | **Cowork, Design, Playground, Plugins, Skills** | Nothing yet: each resolves to a placeholder that says so. | The surfaces themselves. Cowork, Design, Plugins and Skills have routes waiting; Playground has neither. |
@@ -40,15 +40,16 @@ For depth rather than a summary: `docs/API.md` lists every endpoint,
 `docs/CONTRACTS.md` the invariants behind them, and
 `frontend/contracts/gaps.md` the open frontend gaps one by one.
 
-The **Code Canvas backend** (1.40) has a client and screens: a read-only file
-listing, file read and task diff for a Code task's workspace, plus a sandboxed
-browser preview served by a **second HTTP server** on
-`HYPERION_PREVIEW_PORT` (default 4320; `0` disables). `frontend/src/api/canvas.ts`
-calls all six routes and the ledger records them as `implemented`: the
-changed-file list and the preview row above render the diff and the preview
-in the Code surface's inspector. What no screen renders yet is the file tree,
-the file contents and the patch text itself — the list is derived from it —
-as `frontend/contracts/gaps.md` records.
+The **Code Canvas** now surfaces the backend workspace routes in the Code task's
+Canvas: an accessible lazy-loaded file tree and read-only text viewer, a unified
+diff view, and a sandboxed static preview with honest disabled, expired,
+unreachable and missing-worktree states. The Preview's bounded Console uses a
+backend-injected HTML shim (no task files are rewritten) and can quote error
+messages into the composer without sending them. Preview is still a static file
+server: no build, bundler, websocket, or hot reload. Protocol and security
+invariants are recorded in `docs/CONTRACTS.md`; the route shapes remain in
+`docs/API.md` §27. The remaining Canvas-related gap is the project-switch warning
+for another project's active tasks, not a missing file or preview screen.
 
 ## The agent architecture
 

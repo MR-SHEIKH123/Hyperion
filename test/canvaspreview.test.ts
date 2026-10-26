@@ -463,20 +463,38 @@ describe('the preview listener', () => {
     assert.equal(shell.body.includes(testHome), false);
   });
 
+  it('injects a bounded, tagged console bridge into HTML responses only', async () => {
+    const root = await workspace('console-shim-task');
+    write(root, 'index.html', '<!doctype html><html><head><title>fixture</title></head><body></body></html>');
+    write(root, 'site.css', 'body { color: red; }');
+    const { token } = await mint('console-shim-task');
+
+    const html = await raw(`/p/${token}/`);
+    assert.equal(html.status, 200);
+    assert.match(html.body, /source:\"hyperion-preview-console-v1\"/);
+    assert.match(html.body, /kind,args:args\.map\(text\)/);
+    assert.match(html.body, /TextEncoder\(\)\.encode\(JSON\.stringify\(message\)\)\.byteLength<=max/);
+    assert.match(html.body, /window\.parent\.postMessage\(message,\"\*\"\)/);
+    assert.ok(html.body.length < 8192);
+
+    const css = await raw(`/p/${token}/site.css`);
+    assert.equal(css.body, 'body { color: red; }');
+  });
+
   it('serves index.html for a directory, with and without its trailing slash', async () => {
     const { token } = await mint('preview-alpha');
 
     const root = await raw(`/p/${token}/`);
     assert.equal(root.status, 200);
-    assert.equal(root.body, '<!doctype html>\n<p>alpha</p>\n');
+    assert.match(root.body, /<!doctype html>\n<head><script>.*hyperion-preview-console-v1.*<\/script><\/head>\n<p>alpha<\/p>/s);
 
     const sub = await raw(`/p/${token}/sub/`);
     assert.equal(sub.status, 200);
-    assert.equal(sub.body, '<p>sub</p>\n');
+    assert.match(sub.body, /<head><script>.*hyperion-preview-console-v1.*<\/script><\/head><p>sub<\/p>/s);
 
     const subWithoutSlash = await raw(`/p/${token}/sub`);
     assert.equal(subWithoutSlash.status, 200);
-    assert.equal(subWithoutSlash.body, '<p>sub</p>\n');
+    assert.match(subWithoutSlash.body, /<head><script>.*hyperion-preview-console-v1.*<\/script><\/head><p>sub<\/p>/s);
   });
 
   it('serves HEAD without a body', async () => {

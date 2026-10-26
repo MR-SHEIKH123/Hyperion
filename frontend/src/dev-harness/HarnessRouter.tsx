@@ -66,6 +66,7 @@ import {
 } from './fixtures/safety';
 import { operationalFixtures } from './fixtures/operationalStates';
 import { taskStateFixtures } from './fixtures/taskStates';
+import { canvasPreviewFixtures } from './fixtures/canvas';
 
 function fixtureTitle(id: string) {
   return id.replaceAll('_', ' ');
@@ -490,6 +491,16 @@ export function Component() {
       <ProvenanceFixture />
 
       <CodeSurfaceFixture />
+
+      <section aria-labelledby="canvas-preview-fixtures-heading" className={styles.section}>
+        <h2 className={styles.sectionHeading} id="canvas-preview-fixtures-heading">Canvas preview state fixtures</h2>
+        <p className={styles.note}>Static, no-network presentations of every preview state.</p>
+        <div className={styles.grid}>
+          {canvasPreviewFixtures.map((fixture) => <article className={styles.card} key={fixture.id} data-fixture={`canvas-preview-${fixture.id}`}>
+            <h3>{fixture.title}</h3><p>{fixture.message}</p>
+          </article>)}
+        </div>
+      </section>
 
       <ProvidersFixture />
 

@@ -1,13 +1,19 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import React from 'react';
 
-import { CanvasTabs } from './CanvasTabs';
+import { CanvasTabs, type CanvasTab } from './CanvasTabs';
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+}
+
+async function getPreviewFrame(): Promise<HTMLIFrameElement> {
+  const frame = await screen.findByTitle('Preview of task task-a');
+  if (!(frame instanceof HTMLIFrameElement)) throw new Error('Preview frame was not an iframe');
+  return frame;
 }
 
 function renderTabs(onSelectFile = vi.fn()) {
@@ -63,7 +69,7 @@ describe('Canvas tabs and file tree', () => {
     expect(calls.some((url) => url.includes('path=src'))).toBe(false);
     folder.focus();
     await userEvent.keyboard('{ArrowRight}');
-    const file = await within(tree).findByRole('treeitem', { name: /app.ts/ });
+    const file = await within(tree).findByRole('treeitem', { name: /^app\.ts$/ });
     expect(calls.some((url) => url.includes('path=src'))).toBe(true);
     file.focus();
     await userEvent.keyboard('{Enter}');
@@ -102,7 +108,7 @@ describe('Preview tab', () => {
     expect(calls).not.toContain('POST');
     expect(screen.queryByTitle('Preview of task task-a')).toBeNull();
     await userEvent.click(screen.getByRole('button', { name: 'Start preview' }));
-    const frame = await screen.findByTitle('Preview of task task-a');
+    const frame = await getPreviewFrame();
     expect(calls).toContain('POST');
     expect(frame).toHaveAttribute('sandbox', 'allow-scripts allow-forms allow-pointer-lock');
     expect(frame).toHaveAttribute('referrerpolicy', 'no-referrer');
@@ -113,6 +119,29 @@ describe('Preview tab', () => {
     expect(screen.getByText('http://preview.test:4320')).toBeInTheDocument();
     expect(screen.getByText(/HYPERION_APP_ORIGINS/)).toBeInTheDocument();
     expect(screen.getByText(/Browser storage is unavailable/)).toBeInTheDocument();
+  });
+
+  it('offers one explicit renewal for an expired session, never minting to display it', async () => {
+    let expiredSession = { ...livePreview(), expiresAt: Date.now() - 1 };
+    let posts = 0;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url.includes('/files?')) return Promise.resolve(json(tree()));
+      if (init?.method === 'POST') {
+        posts += 1;
+        expiredSession = { ...livePreview(), expiresAt: Date.now() - 1 };
+        return Promise.resolve(json(expiredSession));
+      }
+      return Promise.resolve(json({ taskId: 'task-a', preview: expiredSession }));
+    }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(harness(client));
+    expect(await screen.findByText('The preview session expired.')).toBeInTheDocument();
+    expect(posts).toBe(0);
+    await userEvent.click(screen.getByRole('button', { name: 'Renew preview' }));
+    expect(await screen.findByRole('button', { name: 'Preview already renewed' })).toBeDisabled();
+    expect(posts).toBe(1);
+    expect(screen.queryByTitle('Preview of task task-a')).toBeNull();
   });
 
   it('links to Files when no root HTML entry exists and never renders a blank iframe', async () => {
@@ -155,5 +184,75 @@ describe('Preview tab', () => {
       expect(screen.queryByTitle('Preview of task task-a')).toBeNull();
       unmount();
     }
+  });
+});
+
+
+describe('preview console message boundary', () => {
+  const marker = 'hyperion-preview-console-v1';
+  const pageError = '<img id="owned-by-page" src=x onerror=alert(1)>';
+
+  function renderLive(onComposerPrefill = vi.fn()) {
+    const secret = 'd'.repeat(64);
+    const preview = { taskId: 'task-a', token: secret, url: `http://preview.test:4320/p/${secret}/`, expiresAt: Date.now() + 60_000 };
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = input instanceof Request ? input.url : String(input);
+      return Promise.resolve(json(url.includes('/files?') ? { taskId: 'task-a', mode: 'worktree', root: '.', truncated: false, skipped: [], entries: [{ path: 'index.html', name: 'index.html', type: 'file', bytes: 10 }] } : { taskId: 'task-a', preview }));
+    }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    function Harness() {
+      const [tab, setTab] = React.useState<CanvasTab>('preview');
+      return <QueryClientProvider client={client}><CanvasTabs taskId="task-a" file={null} activeTab={tab}
+        onTabChange={setTab} onOpenFiles={vi.fn()} onSelectFile={vi.fn()} onComposerPrefill={onComposerPrefill}><p>Overview</p></CanvasTabs></QueryClientProvider>;
+    }
+    render(<Harness />);
+    return onComposerPrefill;
+  }
+
+  function dispatch(frame: HTMLIFrameElement, data: unknown, source: MessageEventSource | null = frame.contentWindow) {
+    act(() => { window.dispatchEvent(new MessageEvent('message', { data, source })); });
+  }
+
+  it('ignores wrong window, wrong tag, unknown kind and oversized messages; renders accepted HTML only as text', async () => {
+    const prefill = vi.fn();
+    renderLive(prefill);
+    const frame = await getPreviewFrame();
+    fireEvent.load(frame);
+    await userEvent.click(screen.getByRole('tab', { name: 'Console' }));
+
+    dispatch(frame, { source: marker, kind: 'error', args: ['wrong window'] }, window);
+    dispatch(frame, { source: 'forged-tag', kind: 'error', args: ['wrong tag'] });
+    dispatch(frame, { source: marker, kind: 'unknown', args: ['unknown kind'] });
+    dispatch(frame, { source: marker, kind: 'error', args: ['x'.repeat(17 * 1024)] });
+    dispatch(frame, { source: marker, kind: 'error', args: ['x'.repeat(4097)] });
+    dispatch(frame, { source: marker, kind: 'error', args: ['unexpected field'], extra: true });
+    expect(screen.queryByText(/wrong window|wrong tag|unknown kind|unexpected field/)).toBeNull();
+    expect(screen.queryByText('ERROR')).toBeNull();
+
+    dispatch(frame, { source: marker, kind: 'error', args: [pageError] });
+    expect(await screen.findByText('ERROR')).toBeInTheDocument();
+    expect(screen.getByText(pageError)).toBeInTheDocument();
+    expect(document.querySelector('#owned-by-page')).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Send errors to composer' }));
+    expect(prefill).toHaveBeenCalledTimes(1);
+    expect(prefill.mock.calls[0]?.[0]).toContain('<untrusted-preview-console-errors>');
+    expect(prefill.mock.calls[0]?.[0]).toContain('not instructions');
+  });
+
+  it('keeps only the latest 500 accepted console entries', async () => {
+    renderLive();
+    const frame = await getPreviewFrame();
+    fireEvent.load(frame);
+    await userEvent.click(screen.getByRole('tab', { name: 'Console' }));
+    act(() => {
+      for (let index = 0; index < 501; index += 1) {
+        window.dispatchEvent(new MessageEvent('message', {
+          data: { source: marker, kind: 'log', args: [`entry-${index}`] }, source: frame.contentWindow,
+        }));
+      }
+    });
+    expect(screen.queryByText('entry-0')).toBeNull();
+    expect(screen.getByText('entry-500')).toBeInTheDocument();
+    expect(screen.getAllByText('LOG')).toHaveLength(500);
   });
 });

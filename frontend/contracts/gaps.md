@@ -167,48 +167,36 @@ behavior in the browser.
   the row has to get right, both pinned by its test: the list also returns the last 50
   *ended* sessions for the audit trail, so `count` is not the number of live processes
   (`endedAt === null` is), and a run that has ended is history rather than a process.
-- **The Canvas has a client, and two of its rows are on screen (1.40 backend, client built
-  2026-10-04).** The file tree, the file read, the task diff and the sandboxed preview are real
-  routes (`GET /api/code/tasks/:taskId/files|file|diff`,
-  `POST|GET|DELETE /api/code/tasks/:taskId/preview`, `docs/API.md` §27),
-  `frontend/src/api/canvas.ts` calls all six and `wire/canvas.ts` pins their shapes — all six
-  are checked against the real backend by `check-wire.mjs`, and the ledger rows are
-  `implemented` on the same standard as `providers.registry` (a client calls the route; a
-  screen is not required). **Two screens exist, both in the Code surface's `inspector` region
-  — the changed-file list and the live preview row.** The list splits per-file additions and
-  deletions out of the patch (`tools/code/patch.ts`), names the base commit and renders a
-  direct-mode refusal as a refusal. The preview row (`tools/code/PreviewRow.tsx`) shows the
-  live origin as a URL a user can open, starts one, stops one, and names
-  `HYPERION_PREVIEW_PORT` when the listener is off instead of rendering "nothing is running"
-  for a feature that is switched off. It reads rather than mints, and that is the reason the
-  route exists at all: **minting replaces the session, so a row that minted to display would
-  revoke the URL the user already has open** — the read is what lets the row be polled. Not
-  yet surfaced: the **file tree** and the **file read** (`getTaskFiles`/`getTaskFile` are
-  called by nothing) and the **patch text itself** — the list is derived from it, no view
-  renders it. What the Canvas still does not
-  offer, and what a UI must not pretend it does:
-  - **Read-only.** No write, rename, delete or create route; the preview serves files, it
-    does not accept them.
-  - **Not a dev server.** The preview is a static read: no build step, no bundler, no hot
-    reload, no websocket, no directory listing — a page whose `fetch` or module graph needs
-    a toolchain will not run. Files are served as they are on disk at request time.
-  - **A preview only exists for a task that still holds a worktree.** Parking, releasing or
-    forgetting a task takes its token with it (released tasks answer as unknown), and there is
-    exactly **one** session per task: minting again revokes the previous URL. A screen cannot
-    show two previews of one task side by side.
-  - **The diff is text, not a hunk model.** `patch` is the unified diff the exporter already
-    produced; there are no per-hunk objects, no line ranges, no "apply this hunk" affordance,
-    and a direct-mode task gets the exporter's 400 rather than an empty patch. A rendering
-    surface parses the text itself. **In `direct` mode the Diff tab must show that honest
-    empty state** — "no base to compare against", from the refusal's `details.mode`/`reason`,
-    never a blank panel and never a rendered empty diff — while **the file tree, the file read
-    and the preview keep working**, because a task that shares the project directory still has
-    a workspace. Only the diff needs a base commit.
-  - **A per-project history of code tasks is still absent**, and so is walkthrough
-    retrieval. (`GET /api/code/tasks` reports the live lane — running slots and held
-    worktrees — which is what a task rail needs for *active* work, and the Code surface
-    (`src/tools/code/`) still says that a finished task leaves no row here rather than
-    caching rows the server never sent.)
+- ~~**The Code Canvas file tree, file reader and rendered diff were missing.**~~
+  **Closed 2026-10-26 (Canvas Tabs tranche).** The Code Canvas now has Overview,
+  Files, Diff, Preview and Console tabs. Files lazily loads directories, uses a nested
+  ARIA tree with keyboard navigation, identifies but does not follow symlinks, and
+  renders file contents as text with explicit binary, missing and too-large states.
+  Diff renders the existing unified patch and preserves the direct-mode refusal as an
+  honest no-base state. Preview continues to read status without minting, requires an
+  explicit Start/Renew, uses the exact sandbox and no-referrer policy, and states
+  disabled, expired, unreachable and gone-worktree outcomes rather than showing a
+  blank frame. Static no-network preview-state fixtures are available in the dev
+  harness. The Console bridge is injected only into served HTML by the backend; its
+  bounded message contract is documented in `docs/CONTRACTS.md` and
+  `src/http/previewServer.ts`. Console entries are text-only, capped, clearable, and
+  errors can be prefixed into the composer without auto-submission.
+
+  The underlying constraints remain:
+  - **Read-only.** No write, rename, delete or create route; the preview serves files,
+    it does not accept them.
+  - **Not a dev server.** No build step, bundler, hot reload, websocket or directory
+    listing; pages requiring a toolchain will not run. Files are served as they are
+    on disk at request time.
+  - **Task/worktree scoped.** A preview exists only while its task holds a worktree;
+    parking, releasing or forgetting a task takes its token with it. There is one
+    session per task, and minting again revokes the previous URL.
+  - **Text diff, not a hunk model.** There are no per-hunk objects, line ranges or
+    apply-this-hunk affordance. Direct mode has no base commit; Diff says so while
+    Files, file reads and Preview remain available.
+  - **Project task switch warning remains open.** `GET /api/code/tasks` reports the
+    live lane, but switching projects still lacks a warning about another project's
+    active tasks. Finished-task history and walkthrough retrieval remain absent too.
 - **The version stack and the step list cannot be joined, and a UI must not imply it
   (1.40, 2026-10-03).** `artifact_versions` rows are **pre-images** — version 1 is the state
   *before* the first edit, which is what makes the first change undoable — and they carry

@@ -131,9 +131,10 @@ export default function CodeTool() {
         attention queue links here with the task already chosen.
       </p>
     ) : (
-      <CanvasTabs taskId={taskId} file={file} activeTab={canvasTab} onTabChange={setCanvasTab}
+      <CanvasTabs key={taskId} taskId={taskId} file={file} activeTab={canvasTab} onTabChange={setCanvasTab}
         writeRevision={start.state.events.filter((event) => event.type === 'agent' && event.data.channel === 'artifact').length}
-        onOpenFiles={() => setCanvasTab('files')} onSelectFile={(path) => selectFile(path)}>
+        onOpenFiles={() => setCanvasTab('files')} onSelectFile={(path) => selectFile(path)}
+        onComposerPrefill={(prompt) => { start.setPrompt(prompt); frame.current?.focusPanel('composer'); }}>
         {state?.kind === 'interrupted' ? (
           // The one state where a read is not enough: an interrupted run has a
           // decision attached to it, and the frame's main region is where the
