@@ -23,7 +23,7 @@ export const canvasEntrySchema = z
     /** Workspace-relative POSIX path — never absolute, which is the seam's promise. */
     path: z.string(),
     name: z.string(),
-    type: z.enum(['file', 'directory']),
+    type: z.enum(['file', 'directory', 'symlink']),
     /**
      * `null` for a directory, and for a file whose size was not read.
      *
@@ -72,6 +72,8 @@ export const canvasDiffSchema = z
     baseCommit: z.string(),
     /** One unified diff. Empty only when the tree really is unchanged. */
     patch: z.string(),
+    /** True when the server clipped a patch above its fixed response budget. */
+    truncated: z.boolean().optional(),
   })
   .passthrough();
 

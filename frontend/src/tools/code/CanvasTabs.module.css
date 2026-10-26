@@ -1,0 +1,39 @@
+.surface { display:flex; flex-direction:column; min-width:0; min-height:0; height:100%; gap:var(--space-3); }
+.tabs { display:flex; align-items:center; gap:var(--space-1); overflow-x:auto; border-bottom:1px solid var(--border-subtle); }
+.tab { flex:0 0 auto; border:0; border-bottom:2px solid transparent; padding:var(--space-2) var(--space-3); background:transparent; color:var(--text-secondary); font:inherit; cursor:pointer; }
+.tab[aria-selected="true"] { color:var(--text-primary); border-bottom-color:var(--accent-primary); }
+.tab:focus-visible,.tree [role="treeitem"]:focus-visible,.panel:focus-visible { outline:2px solid var(--accent-primary); outline-offset:2px; }
+.panel { min-height:0; overflow:auto; padding:var(--space-2); }
+.filesLayout { display:grid; grid-template-columns:minmax(12rem, 1fr) minmax(0, 2fr); gap:var(--space-4); min-height:18rem; }
+.tree { list-style:none; margin:0; padding:0; }
+.tree [role="treeitem"] { padding-block:var(--space-1); color:var(--text-secondary); font:var(--text-sm) var(--font-code); cursor:default; overflow-wrap:anywhere; }
+.tree [aria-selected="true"] { color:var(--text-primary); background:var(--surface-raised); }
+.note,.notice { margin:0 0 var(--space-2); color:var(--text-secondary); font-size:var(--text-sm); }
+.notice { border-inline-start:3px solid var(--accent-warning, #d29922); padding-inline-start:var(--space-2); }
+.viewer { min-width:0; }
+.filePath { margin:0 0 var(--space-2); font:var(--text-xs) var(--font-code); color:var(--text-muted); overflow-wrap:anywhere; }
+.code,.patch { overflow:auto; margin:0; padding:var(--space-3); background:var(--surface-raised); border:1px solid var(--border-subtle); border-radius:var(--radius-md); color:var(--text-primary); font:var(--text-sm)/1.5 var(--font-code); white-space:pre; }
+.line { display:block; min-height:1.5em; }
+.lineNumber { display:inline-block; width:3.5em; margin-right:var(--space-3); color:var(--text-muted); text-align:right; user-select:none; }
+.diff { display:flex; flex-direction:column; gap:var(--space-3); }
+.diffFile { border:1px solid var(--border-subtle); border-radius:var(--radius-md); overflow:hidden; }
+.diffFile header { display:flex; justify-content:space-between; align-items:center; padding:var(--space-2) var(--space-3); background:var(--surface-raised); }
+.fileButton { font:var(--text-sm) var(--font-code); color:var(--accent-primary); background:transparent; border:0; cursor:pointer; overflow-wrap:anywhere; }
+.badge { font-size:var(--text-xs); text-transform:uppercase; color:var(--text-muted); }
+.patch { border:0; border-radius:0; }
+.patchLine { display:block; }
+@media (max-width: 760px) { .filesLayout { grid-template-columns:1fr; } }
+@media (prefers-reduced-motion: reduce) { .surface *, .surface *::before, .surface *::after { scroll-behavior:auto !important; transition:none !important; animation:none !important; } }
+.stateBlock { display:flex; flex-direction:column; align-items:flex-start; gap:var(--space-2); color:var(--text-secondary); }
+.toolbar { display:flex; flex-wrap:wrap; gap:var(--space-2); align-items:center; margin-bottom:var(--space-2); }
+.toolbar button,.toolbar a,.stateBlock button { border:1px solid var(--border-subtle); border-radius:var(--radius-sm); padding:var(--space-1) var(--space-2); color:var(--text-primary); background:var(--surface-raised); font:inherit; font-size:var(--text-xs); cursor:pointer; text-decoration:none; }
+.toolbar label { display:flex; align-items:center; gap:var(--space-1); font-size:var(--text-xs); }
+.toolbar select { max-width:16rem; }
+.origin { font:var(--text-xs) var(--font-code); color:var(--text-muted); }
+.preview { display:flex; flex-direction:column; min-height:24rem; height:100%; }
+.iframe { border:1px solid var(--border-subtle); border-radius:var(--radius-md); width:100%; min-height:22rem; flex:1; background:white; }
+.console { display:flex; flex-direction:column; gap:var(--space-2); }
+.consoleEntries { list-style:none; display:flex; flex-direction:column; gap:var(--space-2); padding:0; margin:0; }
+.consoleEntries li { display:grid; grid-template-columns:5rem minmax(0,1fr); gap:var(--space-2); border-bottom:1px solid var(--border-subtle); padding:var(--space-2) 0; }
+.consoleEntries strong { font-size:var(--text-xs); color:var(--text-secondary); }
+.consoleEntries pre { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; font:var(--text-sm)/1.5 var(--font-code); }

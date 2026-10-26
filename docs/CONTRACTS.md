@@ -6445,6 +6445,34 @@ files rather than a subsystem.
 - **The preview port still never joins `HYPERION_APP_ORIGINS`.** The row links to the preview
   listener from the API's origin; nothing here widens the API's own allow-list.
 
+### Canvas Console is a bounded text bridge (2026-10-26)
+
+The Console is deliberately a bridge from a static preview page, not a privileged
+browser console or a new backend route.
+
+- **The protocol is backend-defined.** `src/http/previewServer.ts` injects
+  `PREVIEW_CONSOLE_SHIM` into served `text/html` only; it does not rewrite task
+  files or alter other response bodies. The discriminator is
+  `hyperion-preview-console-v1`, and each message has exactly
+  `{source, kind, args}` where `kind` is `log`, `info`, `warn` or `error` and
+  `args` is an array of string snapshots. Each string is capped at 4096
+  characters; the serialized JSON message is capped at 16 KiB measured in UTF-8
+  bytes. The shim wraps those four console methods, posts to its parent, then
+  calls the original method.
+- **The parent validates before rendering.** `CanvasTabs` accepts messages only
+  from the current iframe's `contentWindow`, checks the discriminator, kind,
+  UTF-8 serialized size, and string-only arguments, and caps the retained list at
+  500 entries. Entries are rendered as text; page data is never interpreted as
+  HTML. The tag distinguishes the protocol but is not an authorization boundary.
+- **Error handoff is explicit and non-submitting.** The Console can prefill the
+  latest errors into the composer as quoted, untrusted page data. It does not
+  start or submit a run. The Preview stays mounted after first visit so its
+  messages continue to arrive while the Console tab is selected; reload, stop,
+  session expiry and loss of a usable entry clear the active frame association.
+- **This remains a static preview.** The shim runs only for served HTML. It adds
+  no network endpoint, does not enable storage or same-origin access, and does
+  not make builds, module tooling or hot reload available.
+
 ### Processes, and the run's steps beside its versions (2026-10-04)
 
 - **`Processes` reads `GET /api/terminal/sessions` and closes nothing, because the list

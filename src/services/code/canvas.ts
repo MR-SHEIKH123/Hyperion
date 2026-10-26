@@ -49,6 +49,9 @@ export const MAX_DEPTH = 12;
  */
 export const MAX_VIEW_BYTES = 2 * 1024 * 1024;
 
+/** Upper bound on the patch text returned to a browser, in UTF-8 bytes. */
+export const MAX_CANVAS_DIFF_BYTES = 4 * 1024 * 1024;
+
 /**
  * Directories the walk does not descend into.
  *
@@ -70,7 +73,7 @@ export const SKIPPED_DIRS: ReadonlySet<string> = new Set([
 export interface CanvasEntry {
   path: string;
   name: string;
-  type: 'file' | 'directory';
+  type: 'file' | 'directory' | 'symlink';
   bytes: number | null;
   skipped?: boolean;
 }
@@ -96,6 +99,7 @@ export interface CanvasDiff {
   taskId: string;
   baseCommit: string;
   patch: string;
+  truncated: boolean;
 }
 
 /**
@@ -241,16 +245,18 @@ export async function listCanvasTree(taskId: string, candidate = '.'): Promise<C
         break;
       }
 
-      // Symlinks are neither followed nor listed. Following one is how a
-      // listing escapes its boundary; listing one is how the viewer is handed a
-      // path whose read can land somewhere else entirely.
-      if (child.isSymbolicLink()) continue;
-
       // `.git` is omitted rather than listed: the viewer refuses it (see
       // `files.ts`), and a tree that lists an entry the next request will 403
-      // on is a tree offering a refusal. The comparison is the exported
-      // predicate, not a second string test.
+      // on is a tree offering a refusal. The check comes before the symlink
+      // branch too, so a `.git` symlink cannot be listed either.
       if (isGitPathSegment(child.name)) continue;
+
+      // Symlinks are named so the reader can see their existence, but they are
+      // never resolved, descended into or offered as readable files.
+      if (child.isSymbolicLink()) {
+        entries.push({ path: joinRelative(directory.relative, child.name), name: child.name, type: 'symlink', bytes: null });
+        continue;
+      }
 
       const relative = joinRelative(directory.relative, child.name);
 
@@ -367,5 +373,8 @@ export async function canvasDiff(taskId: string): Promise<CanvasDiff> {
     // silently start emitting an empty string here.
     throw new AppError('internal_error', 'The task\u2019s diff has no base commit to name.');
   }
-  return { taskId: worktree.taskId, baseCommit: worktree.baseCommit, patch: exported.content };
+  const bytes = Buffer.from(exported.content, 'utf8');
+  const truncated = bytes.byteLength > MAX_CANVAS_DIFF_BYTES;
+  const patch = truncated ? bytes.subarray(0, MAX_CANVAS_DIFF_BYTES).toString('utf8') : exported.content;
+  return { taskId: worktree.taskId, baseCommit: worktree.baseCommit, patch, truncated };
 }

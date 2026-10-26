@@ -317,14 +317,14 @@
       "method": "GET",
       "expectedPath": "/api/code/tasks/:taskId/files",
       "status": "implemented",
-      "reason": "Called by `api/canvas.ts` (`getTaskFiles`). No screen renders a tree yet \u2014 the Code surface's inspector shows the changed-file list, and the tree and file reads are the 2.4 frontend pass."
+      "reason": "Called by `api/canvas.ts` and rendered by the Canvas Files tab as a lazy nested tree. Directories load on expansion; symlinks are identified and not followed."
     },
     {
       "id": "canvas.file",
       "method": "GET",
       "expectedPath": "/api/code/tasks/:taskId/file",
       "status": "implemented",
-      "reason": "Called by `api/canvas.ts` (`getTaskFile`). No screen shows file contents yet: the inspector lists changed paths rather than rendering them, which is the 2.4 frontend pass."
+      "reason": "Called by `api/canvas.ts` and rendered by the Canvas file viewer as text, with explicit binary, missing and too-large states."
     },
     {
       "id": "canvas.diff",
@@ -337,21 +337,21 @@
       "method": "GET",
       "expectedPath": "/api/code/tasks/:taskId/preview",
       "status": "implemented",
-      "reason": "Called by `api/canvas.ts` (`getPreviewStatus`). The read that makes the row a status rather than a rotation: `PreviewRow` renders from this and only mints on request."
+      "reason": "Called by `api/canvas.ts`; Canvas Preview reads status without minting and offers explicit Start/Renew actions."
     },
     {
       "id": "canvas.preview",
       "method": "POST",
       "expectedPath": "/api/code/tasks/:taskId/preview",
       "status": "implemented",
-      "reason": "Called by `api/canvas.ts` (`mintPreview`), and by `getPreviewStatus` for the read. Rendered by `tools/code/PreviewRow.tsx`: the row shows the live origin, opens it, and offers start and stop. `capability_disabled` answers while the listener is off, and the row says so rather than showing an idle task."
+      "reason": "Called by `api/canvas.ts`; Canvas Preview embeds the live static preview with a locked-down sandbox, explicit Start/Renew/Stop controls, and honest disabled, expired, unreachable and missing-worktree states."
     },
     {
       "id": "canvas.preview-revoke",
       "method": "DELETE",
       "expectedPath": "/api/code/tasks/:taskId/preview",
       "status": "implemented",
-      "reason": "Called by `api/canvas.ts` (`revokePreview`). The Stop control is on `tools/code/PreviewRow.tsx`; the `{revoked:false}` answer for a session that was already gone stays meaningful because polling does not mint."
+      "reason": "Called by `api/canvas.ts`; the Canvas Preview Stop control revokes the task preview, preserving the meaningful `{revoked:false}` response if it was already gone."
     },
     {
       "id": "memory.status",

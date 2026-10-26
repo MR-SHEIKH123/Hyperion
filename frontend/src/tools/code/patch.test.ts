@@ -36,11 +36,20 @@ describe('splitPatch', () => {
         deletions: 1,
         isNew: false,
         isDeleted: false,
+        isRenamed: false,
         isBinary: false,
+        hunks: [['@@ -1,3 +1,4 @@', ' const a = 1;', '-const b = 2;', '+const b = 3;', '+const c = 4;', ' export { a, b };', '']],
       },
     ]);
     expect(summary.additions).toBe(2);
     expect(summary.deletions).toBe(1);
+  });
+
+  it('keeps hunk headers and lines grouped by file for the text view', () => {
+    const summary = splitPatch(MODIFIED);
+    expect(summary.files[0]?.hunks[0]).toEqual([
+      '@@ -1,3 +1,4 @@', ' const a = 1;', '-const b = 2;', '+const b = 3;', '+const c = 4;', ' export { a, b };', '',
+    ]);
   });
 
   it('splits several files and totals them', () => {
@@ -225,7 +234,9 @@ describe('splitPatch', () => {
         deletions: 0,
         isNew: false,
         isDeleted: false,
+        isRenamed: false,
         isBinary: false,
+        hunks: [],
       },
     ]);
   });

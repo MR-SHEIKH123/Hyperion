@@ -84,9 +84,10 @@ describe('the preview row', () => {
 
     // The origin is rendered as the URL, and as something openable — the row's
     // whole job is to answer "where is it being served".
-    const link = await screen.findByRole('link', { name: 'Open' });
+    const link = await screen.findByRole('link', { name: 'Open preview' });
     expect(link.getAttribute('href')).toBe(target.url);
-    expect(screen.getByText(target.url)).toBeDefined();
+    expect(screen.getByText(new URL(target.url).origin)).toBeDefined();
+    expect(screen.queryByText(target.url)).toBeNull();
 
     // Nothing minted: the render issues a read and only a read.
     expect(calls.map((call) => call.method)).toEqual(['GET']);
@@ -104,10 +105,11 @@ describe('the preview row', () => {
     expect(await screen.findByText('No preview is running for this task.')).toBeDefined();
     await userEvent.click(screen.getByRole('button', { name: 'Start preview' }));
 
-    expect(await screen.findByText(target.url)).toBeDefined();
+    expect(await screen.findByText(new URL(target.url).origin)).toBeDefined();
+    expect(screen.queryByText(target.url)).toBeNull();
     expect(calls.some((call) => call.method === 'POST')).toBe(true);
     // The URL shown after starting is the one the *mint* reported, not a guess.
-    expect(screen.getByRole('link', { name: 'Open' }).getAttribute('href')).toBe(target.url);
+    expect(screen.getByRole('link', { name: 'Open preview' }).getAttribute('href')).toBe(target.url);
   });
 
   it('says the host has previews off instead of pretending nothing is running', async () => {

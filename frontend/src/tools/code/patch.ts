@@ -42,7 +42,10 @@ export interface PatchFile {
   deletions: number;
   isNew: boolean;
   isDeleted: boolean;
+  isRenamed: boolean;
   isBinary: boolean;
+  /** Hunk headers and content lines grouped per file for text rendering. */
+  hunks: string[][];
 }
 
 export interface PatchSummary {
@@ -89,7 +92,7 @@ function pathFromHeader(line: string): string {
 }
 
 function blankFile(path: string): PatchFile {
-  return { path, additions: 0, deletions: 0, isNew: false, isDeleted: false, isBinary: false };
+  return { path, additions: 0, deletions: 0, isNew: false, isDeleted: false, isRenamed: false, isBinary: false, hunks: [] };
 }
 
 /**
@@ -142,8 +145,10 @@ export function splitPatch(patch: string): PatchSummary {
 
     if (line.startsWith('@@')) {
       inHunk = true;
+      current.hunks.push([line]);
       continue;
     }
+    if (inHunk) current.hunks.at(-1)?.push(line);
     if (!inHunk && line.startsWith('--- ')) {
       const value = line.slice(4).trim();
       if (value !== '/dev/null') oldPath = stripSide(unquote(value));
@@ -162,6 +167,7 @@ export function splitPatch(patch: string): PatchSummary {
       current.isDeleted = true;
       continue;
     }
+    if (line.startsWith('rename from ')) current.isRenamed = true;
     if (line.startsWith('rename from ') || line.startsWith('copy from ')) {
       oldPath = stripSide(unquote(line.slice(line.indexOf(' from ') + 6).trim()));
       continue;
