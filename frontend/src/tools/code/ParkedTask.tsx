@@ -6,6 +6,7 @@ import { decideApproval } from '../../api/attention';
 import { Button } from '../../design-system/components/Button/Button';
 import { ErrorNotice } from '../../components/ErrorNotice/ErrorNotice';
 import { relativeTime } from '../../attention/links';
+import { useNow } from '../../state/useNow';
 import { endSentence, logEntries } from './agentFrames';
 import { messageFor, useTaskContinuation } from './useTaskContinuation';
 import styles from './ParkedTask.module.css';
@@ -266,12 +267,15 @@ function ApprovalItem({
   onDeny: () => void;
   disabled: boolean;
 }) {
+  // The held/answerable clocks are state rather than `Date.now()` in JSX —
+  // see `useNow`.
+  const now = useNow();
   return (
     <li className={styles.approval}>
       <div className={styles.approvalHead}>
         <span className={styles.toolName}>{approval.toolName}</span>
         <span className={styles.meta}>
-          held {relativeTime(approval.createdAt, Date.now())} · answerable {relativeTime(approval.expiresAt, Date.now())}
+          held {relativeTime(approval.createdAt, now)} · answerable {relativeTime(approval.expiresAt, now)}
         </span>
       </div>
       {approval.reason !== null ? <p className={styles.meta}>{approval.reason}</p> : null}

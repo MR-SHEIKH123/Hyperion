@@ -61,7 +61,13 @@ export function AttentionList({ queue, now, onDecide, decidingId = null, banner 
     if (typeof document !== 'undefined' && document.activeElement !== document.body) return;
     const successor = queue.items[Math.min(focused.index, queue.items.length - 1)];
     if (successor !== undefined) links.current.get(successor.id)?.focus();
-    setFocused(null);
+    // The focus above is the side effect this effect exists for; the clear is
+    // bookkeeping about it. Doing it synchronously here is the cascading-render
+    // case `react-hooks/set-state-in-effect` flags, so it is deferred one
+    // microtask — after the focus has already happened and before anything can
+    // paint. The final state is the same `null` the synchronous version left
+    // behind; only the intermediate re-render moves out of the commit.
+    queueMicrotask(() => setFocused(null));
   }, [queue.items, focused]);
 
   const move = useCallback(

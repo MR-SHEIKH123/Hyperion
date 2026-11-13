@@ -5,11 +5,13 @@ import { useSearchParams } from 'react-router-dom';
 import { getCodeLane, getTaskRecovery, getTaskState } from '../../api/tasks';
 import { RecoveryPanel } from '../../components/RecoveryPanel/RecoveryPanel';
 import { ParkedTask } from './ParkedTask';
+import { CanvasTabs } from './CanvasTabs';
 import { ChangedFiles } from './ChangedFiles';
 import { PreviewRow } from './PreviewRow';
 import { Processes } from './Processes';
 import { StartTask } from './StartTask';
 import { RunProgress } from './RunProgress';
+import { useCanvasTab } from './useCanvasTab';
 import { useTaskStart } from './useTaskStart';
 import { CodeLaneRail, TaskSpend } from './CodeSurface';
 import { getArtifactVersions } from '../../api/provenance';
@@ -65,6 +67,19 @@ export default function CodeTool() {
   // progress region renders the frames of the run those controls started. One hook
   // instance is what makes them provably the same run.
   const start = useTaskStart();
+  // Which tab of the main surface this task was left on — presentation memory,
+  // stored per task so switching tasks in the lane does not carry the previous
+  // task's view across (see `useCanvasTab` for the storage contract).
+  const [canvasTab, setCanvasTab] = useCanvasTab(taskId ?? '');
+  // Selecting a file in the tree: `?file=` only, no toggle. The tree is
+  // navigation — clicking the row you are already reading keeps the reader on
+  // it, which is the opposite of the inspector's list, where a second click
+  // clears the selection so the list can be read unadorned.
+  const selectFileInTree = (path: string): void => {
+    const next = new URLSearchParams(params);
+    next.set('file', path);
+    setParams(next, { replace: true });
+  };
   // The frame's own handle, for one thing: the recovery panel's resume gesture fills
   // the composer with the interrupted task's id, and a handoff the user cannot see is
   // not a handoff. `focusPanel` expands the region if it was folded away, which is
@@ -106,6 +121,22 @@ export default function CodeTool() {
     return run === undefined ? null : fromBackendRun(run);
   }, [task.data?.run]);
 
+  // How many `artifact` frames this task's run has produced on the stream
+  // this surface holds. A save or edit emits one (agentContext.ts on
+  // saveArtifactVersion), so the count moving is the signal the Preview tab
+  // reloads on — debounced there, and only counted for the task being
+  // shown: the surface may be streaming a run whose artifacts belong
+  // elsewhere. A run started outside this client produces no frames here at
+  // all, which is what the Preview tab's manual Reload is for.
+  const writeRevision = useMemo(() => {
+    if (start.taskId !== taskId) return 0;
+    return start.state.events.reduce(
+      (total, event) =>
+        total + (event.type === 'agent' && event.data.channel === 'artifact' ? 1 : 0),
+      0,
+    );
+  }, [start.state.events, start.taskId, taskId]);
+
   const definition: AgentWorkspaceDefinition = {
     tool: 'code',
     statusBanner:
@@ -121,7 +152,30 @@ export default function CodeTool() {
         attention queue links here with the task already chosen.
       </p>
     ) : (
-      <>
+      // The tab strip is how this one surface shows several views (Addendum
+      // 2.4): Overview keeps the region below exactly as it was, and the other
+      // tabs are the Canvas's own screens. The frame's `mainSurface` region
+      // still holds them all — a tool is its surface, so no new region is
+      // registered for the strip to live in.
+      // Keyed by task: every panel's state — the tree's expansion, the
+      // console's entries, the preview's remembered expiry — belongs to one
+      // task, and switching tasks in the lane must not carry another
+      // task's view across.
+      <CanvasTabs
+        key={taskId}
+        taskId={taskId}
+        file={file}
+        activeTab={canvasTab}
+        onTabChange={setCanvasTab}
+        onSelectFile={selectFileInTree}
+        writeRevision={writeRevision}
+        onSendErrors={(text) => {
+          // Fill and focus only. The report is data from the frame; sending
+          // it is the user's decision, made with their own click.
+          start.setPrompt(text);
+          frame.current?.focusPanel('composer');
+        }}
+      >
         {state?.kind === 'interrupted' ? (
           // The one state where a read is not enough: an interrupted run has a
           // decision attached to it, and the frame's main region is where the
@@ -149,7 +203,7 @@ export default function CodeTool() {
           />
         ) : null}
         <TaskSpend taskId={taskId} usage={task.data?.usage} isPending={task.isPending} isError={task.isError} />
-      </>
+      </CanvasTabs>
     ),
     // The progress region is where a run this surface started streams. A task started
     // elsewhere is shown by its persisted state in the main region, and this says so
@@ -215,9 +269,16 @@ export default function CodeTool() {
             onSelect={(path) => {
               const next = new URLSearchParams(params);
               // Clicking the selected file clears it, so the list can be read
-              // without leaving a selection behind on every visit.
-              if (path === file) next.delete('file');
-              else next.set('file', path);
+              // without leaving a selection behind on every visit. Clearing
+              // stays where you are — there is nothing new to look at — while
+              // naming a file opens the Diff tab at that file: the list is a
+              // summary of the patch, and the tab is where the patch is read.
+              if (path === file) {
+                next.delete('file');
+              } else {
+                next.set('file', path);
+                setCanvasTab('diff');
+              }
               setParams(next, { replace: true });
             }}
           />

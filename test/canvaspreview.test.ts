@@ -193,6 +193,7 @@ before(async () => {
   write(alpha, 'pixel.png', PNG);
   write(alpha, 'notes.sh', '#!/bin/sh\necho hi\n');
   write(alpha, 'sub/index.html', '<p>sub</p>\n');
+  write(alpha, 'page.html', '<!doctype html>\n<head>\n<title>alpha</title>\n</head>\n<p>page</p>\n');
   write(alpha, '.git/config', '[core]\n');
   write(alpha, '.gitignore', 'node_modules\n');
 
@@ -463,20 +464,72 @@ describe('the preview listener', () => {
     assert.equal(shell.body.includes(testHome), false);
   });
 
+  it('injects the console bridge into HTML, after an existing head tag', async () => {
+    const { token } = await mint('preview-alpha');
+    const page = await raw(`/p/${token}/page.html`);
+    assert.equal(page.status, 200);
+    assert.ok(
+      page.body.startsWith('<!doctype html>\n<head><script>'),
+      page.body.slice(0, 90),
+    );
+    assert.ok(page.body.includes('hyperion-preview-console-v1'));
+    assert.ok(page.body.includes('<title>alpha</title>'), 'the page keeps its own head');
+    assert.ok(page.body.endsWith('</head>\n<p>page</p>\n'), page.body.slice(-40));
+  });
+
+  it('leaves non-HTML responses byte-identical', async () => {
+    const { token } = await mint('preview-alpha');
+    const script = await raw(`/p/${token}/script.js`);
+    assert.equal(script.status, 200);
+    assert.equal(script.body, 'window.__external = "ran";\n');
+    const json = await raw(`/p/${token}/data.json`);
+    assert.equal(json.body, '{"ok":true}\n');
+  });
+
+  it('ships a bridge that parses as JavaScript and posts the documented envelope', () => {
+    // The mutation check the old PR's tests missed: a template-literal slip
+    // turns the whole injected script into a SyntaxError, and the page simply
+    // never gets a console. Assert on real output, not on a pattern.
+    const shim = previewServer.PREVIEW_CONSOLE_SHIM;
+    const posted: Array<{ source: string; kind: string; args: unknown }> = [];
+    const fakeConsole = { log() {}, info() {}, warn() {}, error() {} };
+    const run = new Function(
+      'console',
+      'window',
+      `${shim}; return console;`,
+    ) as (c: object, w: object) => { log: (...a: unknown[]) => void };
+    const bridged = run(fakeConsole, {
+      parent: { postMessage: (message: unknown) => posted.push(message as typeof posted[number]) },
+    });
+    bridged.log('hello', { a: 1 });
+    assert.equal(posted.length, 1);
+    assert.equal(posted[0]?.source, 'hyperion-preview-console-v1');
+    assert.equal(posted[0]?.kind, 'log');
+    assert.deepEqual(posted[0]?.args, ['hello', '{"a":1}']);
+    // The four kinds are wrapped; an unlisted one is not.
+    assert.ok(shim.includes('"log"') && shim.includes('"error"'));
+    assert.ok(!shim.includes('"debug"'));
+  });
+
   it('serves index.html for a directory, with and without its trailing slash', async () => {
     const { token } = await mint('preview-alpha');
 
+    // The console bridge rides along in the served HTML; the page's own
+    // content still follows it byte for byte.
     const root = await raw(`/p/${token}/`);
     assert.equal(root.status, 200);
-    assert.equal(root.body, '<!doctype html>\n<p>alpha</p>\n');
+    assert.ok(root.body.startsWith('<!doctype html><head><script>'), root.body.slice(0, 80));
+    assert.ok(root.body.includes('hyperion-preview-console-v1'));
+    assert.ok(root.body.endsWith('</head>\n<p>alpha</p>\n'), root.body.slice(-40));
 
     const sub = await raw(`/p/${token}/sub/`);
     assert.equal(sub.status, 200);
-    assert.equal(sub.body, '<p>sub</p>\n');
+    assert.ok(sub.body.startsWith('<head><script>'), sub.body.slice(0, 40));
+    assert.ok(sub.body.endsWith('</head><p>sub</p>\n'), sub.body.slice(-30));
 
     const subWithoutSlash = await raw(`/p/${token}/sub`);
     assert.equal(subWithoutSlash.status, 200);
-    assert.equal(subWithoutSlash.body, '<p>sub</p>\n');
+    assert.equal(subWithoutSlash.body, sub.body);
   });
 
   it('serves HEAD without a body', async () => {

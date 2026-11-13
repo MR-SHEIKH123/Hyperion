@@ -296,6 +296,23 @@ describe('the Code surface', () => {
     expect(fetch).not.toHaveBeenCalledWith('/api/code/run-task', expect.anything());
   });
 
+  it('opens the Console tab in the surface, with nothing to send and nothing sent', async () => {
+    stubFetch();
+    renderTool(['/code?task=task-1']);
+    await screen.findByRole('list', { name: 'Running code tasks' });
+
+    // The fifth tab renders inside the real surface: the empty state says no
+    // frame is open, and with no errors the send action is disabled — so the
+    // composer cannot be filled, and nothing can be started, by opening a tab.
+    await userEvent.click(screen.getByRole('tab', { name: 'Console' }));
+    expect(screen.getByTestId('console-empty')).toBeInTheDocument();
+    expect(screen.getByTestId('console-empty').textContent).toContain('No preview frame is open');
+    // An empty console has nothing to send, so the affordance is not rendered
+    // at all — there is no path from opening a tab to the composer.
+    expect(screen.queryByTestId('console-send-errors')).toBeNull();
+    expect(fetch).not.toHaveBeenCalledWith('/api/code/run-task', expect.anything());
+  });
+
   it('records the visit, so the shell can reopen here instead of at Chat', async () => {
     stubFetch();
     const { store } = renderTool(['/code']);

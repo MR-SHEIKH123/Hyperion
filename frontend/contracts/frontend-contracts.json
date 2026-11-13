@@ -317,41 +317,42 @@
       "method": "GET",
       "expectedPath": "/api/code/tasks/:taskId/files",
       "status": "implemented",
-      "reason": "Called by `api/canvas.ts` (`getTaskFiles`). No screen renders a tree yet \u2014 the Code surface's inspector shows the changed-file list, and the tree and file reads are the 2.4 frontend pass."
+      "reason": "Called by `api/canvas.ts` (`getTaskFiles`) and rendered by the Canvas Files tab: a lazy ARIA tree \u2014 the root listing once, a subtree read only when a truncated walk left a directory's children unknown. Symlinks are listed as symlinks and never opened; `.git` is never shown."
     },
     {
       "id": "canvas.file",
       "method": "GET",
       "expectedPath": "/api/code/tasks/:taskId/file",
       "status": "implemented",
-      "reason": "Called by `api/canvas.ts` (`getTaskFile`). No screen shows file contents yet: the inspector lists changed paths rather than rendering them, which is the 2.4 frontend pass."
+      "reason": "Called by `api/canvas.ts` (`getTaskFile`) and rendered by the Canvas file viewer: plain text with line numbers, and explicit binary, too-large and since-deleted states \u2014 a refusal is rendered as the sentence the backend wrote."
     },
     {
       "id": "canvas.diff",
       "method": "GET",
       "expectedPath": "/api/code/tasks/:taskId/diff",
-      "status": "implemented"
+      "status": "implemented",
+      "reason": "Called by `api/canvas.ts` (`getTaskDiff`) and rendered twice on purpose: the session panel's compact changed-file list, and the main surface's Diff tab \u2014 which names the base commit, marks the selected file, and shows that file's patch as text. A direct-mode refusal renders as \"no base to compare against\" with the backend's own sentence; a patch over 4 MiB renders with `truncated` stated (docs/API.md \u00a727.3)."
     },
     {
       "id": "canvas.preview-status",
       "method": "GET",
       "expectedPath": "/api/code/tasks/:taskId/preview",
       "status": "implemented",
-      "reason": "Called by `api/canvas.ts` (`getPreviewStatus`). The read that makes the row a status rather than a rotation: `PreviewRow` renders from this and only mints on request."
+      "reason": "Called by `api/canvas.ts` (`getPreviewStatus`) and polled by the Preview tab and `PreviewRow`: the read that makes a status a status rather than a rotation \u2014 minting replaces the session, so only Start ever POSTs. The tab renders every refusal the read can carry: capability_disabled with details.setting named, a released workspace's 404, a network failure, the flip to null read as an expiry against the last session it saw, and the root's missing index.html as \"Open Files\" instead of a dead frame."
     },
     {
       "id": "canvas.preview",
       "method": "POST",
       "expectedPath": "/api/code/tasks/:taskId/preview",
       "status": "implemented",
-      "reason": "Called by `api/canvas.ts` (`mintPreview`), and by `getPreviewStatus` for the read. Rendered by `tools/code/PreviewRow.tsx`: the row shows the live origin, opens it, and offers start and stop. `capability_disabled` answers while the listener is off, and the row says so rather than showing an idle task."
+      "reason": "Called by `api/canvas.ts` (`mintPreview`) from the Preview tab's Start and Renew buttons and `PreviewRow`'s Start \u2014 explicit gestures only; a render or a poll never mints, because a mint replaces the live session and would revoke the URL the user already has open."
     },
     {
       "id": "canvas.preview-revoke",
       "method": "DELETE",
       "expectedPath": "/api/code/tasks/:taskId/preview",
       "status": "implemented",
-      "reason": "Called by `api/canvas.ts` (`revokePreview`). The Stop control is on `tools/code/PreviewRow.tsx`; the `{revoked:false}` answer for a session that was already gone stays meaningful because polling does not mint."
+      "reason": "Called by `api/canvas.ts` (`revokePreview`) from the Stop controls on the Preview tab and `PreviewRow`; the `{revoked:false}` answer is rendered as nothing to stop rather than as a failure."
     },
     {
       "id": "memory.status",

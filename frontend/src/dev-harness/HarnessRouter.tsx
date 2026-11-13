@@ -65,7 +65,10 @@ import {
   zdrPolicyFixture,
 } from './fixtures/safety';
 import { operationalFixtures } from './fixtures/operationalStates';
+import { previewStateFixtures, consoleStateFixtures } from './fixtures/canvas';
+import { ConsoleView } from '../tools/code/ConsoleView';
 import { taskStateFixtures } from './fixtures/taskStates';
+import { PreviewView } from '../tools/code/PreviewView';
 
 function fixtureTitle(id: string) {
   return id.replaceAll('_', ' ');
@@ -398,6 +401,81 @@ function ProvenanceFixture() {
  * that wires them into the shared frame is covered by its own tests against a fetch
  * stub, because only a request can prove the failure states.
  */
+/**
+ * The Preview tab's states, rendered by the production view.
+ *
+ * One card per state the brief enumerates — the same `PreviewVm` the tab
+ * derives, fed straight in, so the harness needs no listener, no expired
+ * session and no released worktree to show them.
+ */
+function PreviewFixture() {
+  const noop = () => undefined;
+  return (
+    <section aria-labelledby="preview-fixture-heading" className={styles.section}>
+      <h2 className={styles.sectionHeading} id="preview-fixture-heading">
+        Preview tab fixtures
+      </h2>
+      <p className={styles.note}>
+        Every honest state of the preview region, as the production component renders it — no
+        listener, no mint, no network behind these cards.
+      </p>
+      <div className={styles.grid}>
+        {previewStateFixtures.map((fixture) => (
+          <article className={styles.card} key={fixture.id} data-fixture={fixture.id}>
+            <h3>{fixture.title}</h3>
+            <p className={styles.note}>{fixture.detail}</p>
+            <PreviewView
+              taskId="task-7f2a"
+              vm={fixture.vm}
+              onStart={noop}
+              onStop={noop}
+              onReload={noop}
+              onOpenFiles={noop}
+            />
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * The Console tab's states, rendered by the production panel.
+ *
+ * The gate is exercised with real `message` events in `ConsoleTab.test`;
+ * these cards show the panel itself for each honest state — two kinds of
+ * empty, a live log, an armed error report, an over-cap log, and hostile
+ * text displayed as text.
+ */
+function ConsoleFixture() {
+  const noop = () => undefined;
+  return (
+    <section aria-labelledby="console-fixture-heading" className={styles.section}>
+      <h2 className={styles.sectionHeading} id="console-fixture-heading">
+        Console tab fixtures
+      </h2>
+      <p className={styles.note}>
+        The panel as the production component renders it — validated entries in, text out; no
+        frame and no network behind these cards.
+      </p>
+      <div className={styles.grid}>
+        {consoleStateFixtures.map((fixture) => (
+          <article className={styles.card} key={fixture.id} data-fixture={fixture.id}>
+            <h3>{fixture.title}</h3>
+            <p className={styles.note}>{fixture.detail}</p>
+            <ConsoleView
+              entries={fixture.entries}
+              frameOpen={fixture.frameOpen}
+              onClear={noop}
+              onSendErrors={noop}
+            />
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function CodeSurfaceFixture() {
   return (
     <section aria-labelledby="code-fixture-heading" className={styles.section}>
@@ -490,6 +568,10 @@ export function Component() {
       <ProvenanceFixture />
 
       <CodeSurfaceFixture />
+
+      <PreviewFixture />
+
+      <ConsoleFixture />
 
       <ProvidersFixture />
 

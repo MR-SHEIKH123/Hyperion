@@ -65,7 +65,14 @@ export function useChatStream(
   const batcherRef = useRef<ReturnType<typeof createTokenBatcher> | null>(null);
   const reconciliationRef = useRef<ChatReconciliation | null>(null);
   const settledRef = useRef(onSettled);
-  settledRef.current = onSettled;
+  // Written in an effect, not during render: the ref must track the latest
+  // callback, but a ref write in render is the `react-hooks/refs` violation —
+  // render must not mutate anything it does not own. Every render refreshes it
+  // (no dependency array), and the value is only read from stream callbacks
+  // that run after commit, so being one commit behind is unobservable.
+  useEffect(() => {
+    settledRef.current = onSettled;
+  });
 
   const appendLive = useCallback((text: string) => {
     liveTextRef.current += text;
@@ -88,14 +95,28 @@ export function useChatStream(
     setStatus(IDLE);
   }, [disposeBatcher]);
 
-  // Leaving the chat must not leak the previous conversation's stream.
+  // Leaving the chat must not leak the previous conversation's stream. The
+  // visible half — the old chat's status — resets during render: the status is
+  // derived from `chatId` the moment they disagree, which is the pattern
+  // `react-hooks/set-state-in-render` accepts and the one an effect-body reset
+  // (`set-state-in-effect`) exists to forbid, because the effect version
+  // cascades a second render through the commit. The side effects — aborting
+  // the old stream, disposing its batcher, dropping its buffered text — cannot
+  // happen during render, so they live in the cleanup, which runs for a chat
+  // change and for unmount alike.
+  const [statusChatId, setStatusChatId] = useState<string | null>(chatId);
+  if (statusChatId !== chatId) {
+    setStatusChatId(chatId);
+    setStatus(IDLE);
+  }
+
   useEffect(() => {
-    reset();
     return () => {
       abortRef.current?.abort();
       disposeBatcher();
+      liveTextRef.current = '';
     };
-  }, [chatId, reset, disposeBatcher]);
+  }, [chatId, disposeBatcher]);
 
   const runSession = useCallback(
     async (

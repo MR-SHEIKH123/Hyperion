@@ -329,7 +329,11 @@ export function saveS3Config(patch: Record<string, unknown>): S3PublicConfig {
 // SigV4 signing (no SDK; `node:crypto` only)
 // ---------------------------------------------------------------------------
 
-function sha256Hex(data: crypto.BinaryLike): string {
+// Typed as what `update` accepts rather than `crypto.BinaryLike`: since
+// `@types/node` 26 `BinaryLike` also admits a bare `ArrayBuffer`, which the
+// `string | NodeJS.ArrayBufferView` parameter no longer accepts — the union was
+// wider than the function ever needed (every caller passes a string or a Buffer).
+function sha256Hex(data: string | NodeJS.ArrayBufferView): string {
   return crypto.createHash('sha256').update(data).digest('hex');
 }
 

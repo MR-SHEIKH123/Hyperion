@@ -1,0 +1,356 @@
+/*
+ * The Code main surface's tab strip and the Files tab's two panes.
+ *
+ * **No transition and no animation anywhere in this file.** Tabs switch and
+ * the tree opens instantly; `CanvasTabs.motion.test.tsx` fails the day one is
+ * added without the `prefers-reduced-motion` guard the design system's
+ * `motion.css` carries for everything that does move.
+ */
+
+.surface {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+
+.strip {
+  display: flex;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3) 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.tab,
+.tabActive {
+  appearance: none;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-sm);
+  padding: var(--space-1) var(--space-3);
+  cursor: pointer;
+}
+
+.tab:hover {
+  color: var(--text-primary);
+}
+
+.tabActive {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent-primary);
+  font-weight: 600;
+}
+
+.tab:focus-visible,
+.tabActive:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.panel {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.panel[hidden] {
+  display: none;
+}
+
+/* The tree and the viewer share the panel as two columns on wide surfaces,
+   and stack when the surface is narrow — the frame's own column regions do
+   the same thing for their panels. */
+.filesLayout {
+  display: grid;
+  grid-template-columns: minmax(12rem, 18rem) 1fr;
+  height: 100%;
+  min-height: 0;
+}
+
+@media (max-width: 900px) {
+  .filesLayout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.treePane {
+  border-inline-end: 1px solid var(--border-subtle);
+  overflow: auto;
+  padding: var(--space-2);
+  min-height: 0;
+}
+
+.tree {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-family: var(--font-code);
+  font-size: var(--text-xs);
+}
+
+.treeRow,
+.treeRowSelected {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  padding-block: 2px;
+  padding-inline-end: var(--space-2);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.treeRow:hover {
+  background: var(--surface-interactive);
+}
+
+.treeRow:focus-visible,
+.treeRowSelected:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.treeRowSelected {
+  background: var(--accent-primary-soft);
+}
+
+.treeGlyph {
+  color: var(--text-muted);
+}
+
+.treeName {
+  color: var(--text-primary);
+}
+
+.treeNote {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+.viewer {
+  overflow: auto;
+  padding: var(--space-3);
+  min-height: 0;
+}
+
+.note {
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  margin: 0 0 var(--space-2);
+}
+
+.notice {
+  color: var(--status-warning);
+  font-size: var(--text-xs);
+  margin: var(--space-2) 0 0;
+}
+
+.code {
+  margin: 0;
+  font-family: var(--font-code);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  white-space: pre;
+}
+
+.line {
+  display: block;
+}
+
+.lineNumber {
+  display: inline-block;
+  min-width: 3ch;
+  margin-inline-end: var(--space-3);
+  color: var(--text-muted);
+  text-align: end;
+  user-select: none;
+}
+
+/* The Diff tab: the embedded list on one side, the selected file's patch
+   below it (or beside it, when the surface is wide enough for both). */
+.diffLayout {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  min-height: 0;
+}
+
+.diffPatch {
+  min-height: 0;
+  overflow: auto;
+}
+
+.diffState {
+  padding: var(--space-3);
+}
+
+.diffState p {
+  margin: 0 0 var(--space-2);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+}
+
+.retry {
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  padding: var(--space-1) var(--space-2);
+  cursor: pointer;
+}
+
+.retry:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+.previewActions {
+  display: flex;
+  gap: var(--space-2);
+  margin: var(--space-2) 0;
+  align-items: center;
+}
+
+.previewActions a,
+.previewActions button {
+  appearance: none;
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-sm);
+  padding: var(--space-1) var(--space-3);
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.previewActions a:hover,
+.previewActions button:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+.previewActions button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* The preview itself: untrusted, sandboxed, and sized to the panel. */
+.previewFrame {
+  display: block;
+  width: 100%;
+  min-height: 24rem;
+  flex: 1;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+}
+
+/* The Console panel: a bounded, text-only log of the frame's own output. */
+.console {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-height: 0;
+}
+
+.consoleBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.consoleCount {
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+
+.consoleActions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.consoleButton {
+  appearance: none;
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-sm);
+  padding: var(--space-1) var(--space-3);
+  cursor: pointer;
+}
+
+.consoleButton:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+.consoleButton:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.consoleHint {
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  margin: 0;
+}
+
+.consoleList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+  min-height: 0;
+  flex: 1;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-sm);
+}
+
+.consoleLine {
+  display: flex;
+  gap: var(--space-2);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  align-items: baseline;
+}
+
+.consoleLine[data-kind='warn'] {
+  background: color-mix(in srgb, var(--warning, #b45309) 12%, transparent);
+}
+
+.consoleLine[data-kind='error'] {
+  background: color-mix(in srgb, var(--danger, #b91c1c) 14%, transparent);
+}
+
+.consoleKind {
+  flex: 0 0 auto;
+  color: var(--text-secondary);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  min-width: 3.2em;
+}
+
+.consoleText {
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-primary);
+}

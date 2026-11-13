@@ -307,7 +307,7 @@ describe('GET /api/code/tasks/:taskId/files', () => {
     assert.equal(tree.truncated, true);
   });
 
-  it('never follows or lists a symlink', async () => {
+  it('lists symlinks as symlinks and never follows them', async () => {
     const root = await workspace('link-task');
     const outside = path.join(testHome, 'outside-link-target');
     fs.mkdirSync(outside, { recursive: true });
@@ -315,14 +315,28 @@ describe('GET /api/code/tasks/:taskId/files', () => {
 
     fs.symlinkSync(outside, path.join(root, 'linked-dir'));
     fs.symlinkSync(path.join(outside, 'secret.txt'), path.join(root, 'linked-file.txt'));
+    // A symlink whose *name* is `.git`: the git predicate has to run before the
+    // symlink branch, or this entry would be listed and the viewer would 403
+    // on it — a tree offering a refusal.
+    write(root, 'sub/keep.txt', 'kept\n');
+    fs.symlinkSync(outside, path.join(root, 'sub/.git'));
     write(root, 'plain.txt', 'plain\n');
 
-    const tree = json<{ entries: { path: string }[] }>(
+    const tree = json<{ entries: { path: string; type: string; bytes: number | null }[] }>(
       await api('GET', '/api/code/tasks/link-task/files'),
     );
     const paths = tree.entries.map((entry) => entry.path);
 
-    assert.deepEqual(paths, ['plain.txt']);
+    // Both links are visible as entries — a workspace that hid them would be
+    // lying about what is on disk — but as `symlink`, with no size, and the
+    // target's contents (`secret.txt`) never appear: the walk did not follow.
+    assert.deepEqual(paths, ['linked-dir', 'linked-file.txt', 'plain.txt', 'sub', 'sub/keep.txt']);
+    assert.deepEqual(
+      tree.entries.filter((entry) => entry.type === 'symlink').map((entry) => entry.bytes),
+      [null, null],
+    );
+    assert.equal(paths.some((entry) => entry.includes('secret.txt')), false);
+    assert.equal(paths.includes('sub/.git'), false);
   });
 });
 
@@ -488,11 +502,49 @@ describe('GET /api/code/tasks/:taskId/diff', () => {
     const response = await api('GET', '/api/code/tasks/diff-task/diff');
     assert.equal(response.status, 200);
 
-    const diff = json<{ taskId: string; baseCommit: string; patch: string }>(response);
+    const diff = json<{ taskId: string; baseCommit: string; patch: string; truncated: boolean }>(
+      response,
+    );
     assert.equal(diff.taskId, 'diff-task');
     assert.equal(diff.baseCommit, worktree.baseCommit);
     assert.match(diff.patch, /diff --git a\/README\.md b\/README\.md/);
     assert.match(diff.patch, /^\+changed by the agent$/m);
+    // A small change is the whole patch: `truncated` is the flag a caller
+    // renders, so it has to be `false` here and not merely absent.
+    assert.equal(diff.truncated, false);
+  });
+
+  it('truncates a patch over the bound at a line boundary, and reports it', gitOnly, async () => {
+    const { MAX_CANVAS_DIFF_BYTES } = await import('../src/services/code/canvas.ts');
+    const repo = path.join(projectsRoot, 'big-diff-repo');
+    fs.mkdirSync(repo, { recursive: true });
+    git(['init', '-b', 'main'], repo);
+    fs.writeFileSync(path.join(repo, 'big.txt'), 'seed\n');
+    git(['add', '-A'], repo);
+    git(['commit', '-m', 'initial'], repo);
+
+    const worktree = await worktrees.provisionWorktree('big-diff-task', repo);
+    // A change larger than the bound. The diff route must cut the text and say
+    // it cut, not refuse: an oversized *file* has a name the reader can open
+    // instead, and a diff does not.
+    const line = `${'x'.repeat(63)}\n`;
+    fs.writeFileSync(
+      path.join(worktree.dir, 'big.txt'),
+      line.repeat(Math.ceil((MAX_CANVAS_DIFF_BYTES + 64 * 1024) / line.length)),
+    );
+
+    const response = await api('GET', '/api/code/tasks/big-diff-task/diff');
+    assert.equal(response.status, 200);
+    const diff = json<{ patch: string; truncated: boolean }>(response);
+    assert.equal(diff.truncated, true);
+    assert.ok(
+      Buffer.byteLength(diff.patch, 'utf8') <= MAX_CANVAS_DIFF_BYTES,
+      'the cut respects the byte bound',
+    );
+    // A line boundary, not a mid-line or mid-character slice: a patch that
+    // ends in half a line reads as corruption rather than as a cut.
+    assert.ok(diff.patch.endsWith('\n'), 'the patch ends at a newline');
+    assert.ok(diff.patch.includes('diff --git a/big.txt b/big.txt'), 'the headers survive');
   });
 
   it('answers a direct-mode task with the exporter\u2019s reasoned 400', async () => {

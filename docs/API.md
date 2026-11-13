@@ -3801,8 +3801,12 @@ The walk is breadth-first and bounded, because a workspace is not a curated set:
 | `SKIPPED_DIRS` | `node_modules`, `.next`, `dist`, `build`, `.venv`, `__pycache__` | not listed and not descended; the name is in `skipped` |
 
 `truncated: true` means the tree is incomplete, and `skipped` lists the directory
-names left out — a partial tree never reads as the whole truth. Symlinks are
-neither followed nor listed. `.git` is omitted entirely (see 27.5).
+names left out — a partial tree never reads as the whole truth. Each entry's
+`type` is `file`, `directory` or `symlink`: a symlink is **listed so the reader
+can see it exists, and never followed** — not resolved, not descended into, not
+offered as a readable file (the file route refuses a path that crosses one,
+27.5) — and it carries `bytes: null` because measuring it would mean a stat
+through the link. `.git` is omitted entirely, symlink or not (see 27.5).
 
 `?path=` naming a file is **400 `bad_request`** (`details.path`); naming
 something that does not exist is **404 `not_found`**.
@@ -3825,11 +3829,18 @@ Refusals, all with the path in `details.path`:
 
 ### 27.3 `GET /api/code/tasks/:taskId/diff`
 
-`{ taskId, baseCommit, patch }`, where `patch` is the same unified diff
+`{ taskId, baseCommit, patch, truncated }`, where `patch` is the same unified diff
 `GET /api/code/tasks/:taskId/export` (§19) returns as a download. It is produced
 by that exporter — one git call site, with the hardening in
 `services/code/gitHardening.ts`, and one place that decides what "no git
 isolation" means.
+
+A patch larger than **4 MiB** is cut at a line boundary and `truncated` is
+`true` (the bound is `MAX_CANVAS_DIFF_BYTES` in `services/code/canvas.ts`).
+The route truncates rather than refuses because a diff has no alternative view
+the way an oversized file does — it is the only view of what the task did — and
+a caller that rendered the cut text without the flag would be showing a partial
+truth as the whole one.
 
 That last part is why a `direct`-mode task is the exporter's own **400
 `bad_request`** with `details.mode` and `details.reason`, and not an empty patch:
@@ -3953,6 +3964,17 @@ Request handling, in order:
    `cache-control: no-store`, `cross-origin-resource-policy: cross-origin` and
    `access-control-allow-origin: *`. That last one is **correct on this listener
    only**; the API emits no CORS header and must not start.
+6. **HTML responses carry the console bridge.** Immediately before the headers
+   go out, a response whose type is `text/html; charset=utf-8` has
+   `PREVIEW_CONSOLE_SHIM` (`src/http/previewServer.ts`) injected as a
+   `<script>` after the page's own `<head>` — or after the doctype, wrapped in
+   a synthesized one, when there is none. The shim wraps four `console`
+   levels and posts `{source, kind, args}` to the parent frame; scripts,
+   styles, images and JSON are served byte-for-byte, non-UTF-8 bytes pass
+   through unchanged, and the task's workspace is never written. `content-length`
+   is computed after the injection. The receiving end — the Console tab's
+   validation gate — is specified in `docs/CONTRACTS.md` and drift-tested
+   against this file.
 
 The CSP is a **header**, so it binds in a tab as well as inside an iframe:
 

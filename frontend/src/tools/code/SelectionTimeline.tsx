@@ -1,6 +1,7 @@
 import { ErrorNotice } from '../../components/ErrorNotice/ErrorNotice';
 import { VersionTimeline } from '../../components/Provenance/ProvenancePanel';
 import { relativeTime } from '../../attention/links';
+import { useNow } from '../../state/useNow';
 import styles from './SelectionTimeline.module.css';
 
 import type { ArtifactVersion } from '../../contracts/wire/provenance';
@@ -38,6 +39,8 @@ interface QueryView<T> {
 }
 
 export function StepList({ report }: { report: RecoveryReport }) {
+  // Each step's age is state rather than `Date.now()` in JSX — see `useNow`.
+  const now = useNow();
   const { steps, summary, omitted } = report.partial;
   if (steps.length === 0) {
     return <p className={styles.empty}>No steps are recorded for this run.</p>;
@@ -61,7 +64,7 @@ export function StepList({ report }: { report: RecoveryReport }) {
                 {step.ok === null ? '' : step.ok ? ' · ok' : ' · failed'}
               </span>
               <span className={styles.stepMeta}>
-                {relativeTime(step.createdAt, Date.now())}
+                {relativeTime(step.createdAt, now)}
                 {step.detail === null ? '' : ` · ${step.detail}`}
               </span>
             </span>

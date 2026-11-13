@@ -108,7 +108,10 @@ export function PreviewRow({ taskId }: { taskId: string }) {
       ) : (
         <>
           <p className={styles.state}>
-            Serving <span className={styles.origin}>{preview.url}</span>
+            {/* The origin is what the reader can act on; the full URL (with
+                its token) stays in the link's href, where a token belongs —
+                never in text that gets copied into a chat or a screenshot. */}
+            Serving <span className={styles.origin}>{new URL(preview.url).origin}</span>
           </p>
           {describeRemaining(preview.expiresAt) !== null && (
             <p className={styles.meta}>{describeRemaining(preview.expiresAt)}</p>

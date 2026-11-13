@@ -6371,6 +6371,74 @@ feature rather than failing boot), and the separate port **is** the isolation.
   not wait on it: it holds no database handle and no child process, so nothing is
   lost, and a browser parked on a preview must not hold shutdown open.
 
+### The Console shim is one contract with two enforceable ends (2026-11-13)
+
+The Console tab shows what a preview frame printed. There is no log route, no
+storage and no server-side history: the listener injects a bridge into the HTML
+it was asked to serve, the bridge posts to the app, and the app decides what a
+user gets to see. Because the contract spans a process boundary in both
+directions, both ends are enforced in code and each end's test checks it
+against the other.
+
+**The sending end — `PREVIEW_CONSOLE_SHIM` in `src/http/previewServer.ts`:**
+
+- Injected only into responses typed `text/html; charset=utf-8`, after the
+  page's own `<head>` or — when there is none — a synthesized `<head>` right
+  after the doctype (prepended when not even that exists). Scripts, styles,
+  images and JSON are served byte-for-byte; non-UTF-8 bytes pass through
+  unchanged; the task's workspace is never written. `content-length` is
+  computed after the injection, so the header matches the bytes on the wire.
+- Wraps exactly four levels: `log`, `info`, `warn`, `error`. Each argument is
+  snapshotted to text — a string sliced at 4 KiB, an `Error` as
+  name + message + stack, anything else `JSON.stringify` with a `String`
+  fallback — and the original console method always runs.
+- Posts `{source: "hyperion-preview-console-v1", kind, args: string[]}` to
+  `window.parent` only when the JSON encoding of the whole message fits
+  16 KiB. `args` is an **array of strings**, one snapshot per argument; that
+  shape is the contract, not a `text` field.
+- The shim rides the listener's existing `script-src … 'unsafe-inline'`
+  allowance; no CSP rule is added for it, and the tag is a protocol
+  discriminator rather than an authorization boundary — anything in the frame
+  could send the same object, which is precisely why the receiving end
+  validates every field.
+
+**The receiving end — `frontend/src/tools/code/consoleShim.ts` and
+`ConsoleTab.tsx`:**
+
+1. `event.source` must be the preview frame's own `contentWindow`. The tab
+   holds that handle (the Preview view reports it on load and reports `null`
+   when no frame is on screen), so a message from any other window — or one
+   that arrives before the frame exists — is dropped without inspection.
+2. `source` must equal `hyperion-preview-console-v1`.
+3. `kind` must be one of the four the shim wraps. An unknown kind is
+   **rejected**, never coerced to `log`.
+4. `args` must be an array of at most 64 **strings**. The check is on types,
+   not coercibility: an object is not evidence of text, and `String(object)`
+   would invent `[object Object]` lines.
+5. The entry's text is `args.join(' ').slice(0, 4096)`, and the list holds at
+   most 500 entries — the oldest fall off the front. A chatty frame cannot
+   grow the tab without bound.
+6. Entries render as **text nodes** only. There is no HTML path: a logged
+   `<img onerror>` is displayed, never parsed.
+
+**Why the drift test exists:** `frontend/src/tools/code/consoleShim.test.ts`
+reads `src/http/previewServer.ts` and fails if the tag, either bound or the
+kind list changes on one side only — a backend re-tag would otherwise empty
+the tab silently, and a frontend tightening would reject everything. The
+precedent is `src/contracts/wire/common.test.ts`, which parses
+`src/util/errors.ts` for the API error envelope. The backend test asserts the
+shim **parses as JavaScript** and posts the documented envelope when run: a
+template-literal slip puts a raw newline inside the shim's own string literal
+and the entire injected script becomes a SyntaxError — the page loads, the
+console bridge simply never exists, and pattern-matching tests sail past it.
+
+**Send-to-composer** takes the `error` entries only, wraps them in
+`<untrusted-preview-console-errors>` under a sentence that says they are
+untrusted output rather than instructions, and hands the text to
+`start.setPrompt` + `focusPanel('composer')`: the composer is filled and
+focused, and **nothing is submitted** — sending is always the user's own
+click.
+
 ### The Canvas diff is the exporter
 
 `canvasDiff` delegates to `exportCodeTask` — no new git call site, no re-derived

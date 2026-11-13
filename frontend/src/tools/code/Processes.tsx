@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 
 import { getTerminalSessions } from '../../api/terminal';
 import { relativeTime } from '../../attention/links';
+import { useNow } from '../../state/useNow';
 import styles from './Processes.module.css';
 
 /**
@@ -35,6 +36,9 @@ export function Processes({ taskId }: { taskId: string | null }) {
     // report a deadline that has already passed.
     refetchInterval: 10_000,
   });
+  // The "opened N ago" clock is state rather than `Date.now()` in JSX — see
+  // `useNow`. (The idle deadline beside it is wall-clock text, not a duration.)
+  const now = useNow();
 
   if (query.isPending) {
     return (
@@ -84,7 +88,7 @@ export function Processes({ taskId }: { taskId: string | null }) {
                   : session.taskId === taskId
                     ? 'this task'
                     : `task ${session.taskId}`}{' '}
-                · opened {relativeTime(session.openedAt, Date.now())} · idle closes{' '}
+                · opened {relativeTime(session.openedAt, now)} · idle closes{' '}
                 {new Date(session.expiresAt).toLocaleTimeString()}
               </span>
             </li>

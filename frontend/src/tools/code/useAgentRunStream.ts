@@ -81,9 +81,16 @@ export function useAgentRunStream<Input, Act extends string>(options: RunStreamO
     act: null,
   });
 
-  useEffect(() => {
-    client.current?.abort();
-    client.current = null;
+  // Reset when the watched subject changes, during render: the previous
+  // subject's frames must not paint under the new one, and doing this inside
+  // an effect body is the cascading-render case `react-hooks/set-state-in-effect`
+  // names — React docs' own pattern for state derived from a changed prop is
+  // to adjust it in render. Aborting the old stream is a side effect and stays
+  // in the cleanup, which runs for a subject change and for unmount alike
+  // (replacing the separate unmount effect this used to keep).
+  const [stateSubject, setStateSubject] = useState(subject);
+  if (stateSubject !== subject) {
+    setStateSubject(subject);
     setState({
       phase: 'idle',
       events: [],
@@ -93,13 +100,14 @@ export function useAgentRunStream<Input, Act extends string>(options: RunStreamO
       error: null,
       act: null,
     });
-  }, [subject]);
+  }
 
   useEffect(
     () => () => {
       client.current?.abort();
+      client.current = null;
     },
-    [],
+    [subject],
   );
 
   const start = useCallback(

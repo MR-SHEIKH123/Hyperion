@@ -85,7 +85,10 @@ async function post(path: string, payload: unknown): Promise<{ status: number; b
 
 async function postFiles(
   path: string,
-  files: { name: string; content: string | Uint8Array }[],
+  // `Uint8Array<ArrayBuffer>`, not the default `Uint8Array<ArrayBufferLike>`:
+  // `Blob`'s `BlobPart` admits `Uint8Array<ArrayBuffer>` only, so the wider
+  // element type (which admits `SharedArrayBuffer` backing) does not construct.
+  files: { name: string; content: string | Uint8Array<ArrayBuffer> }[],
   fields: Record<string, string> = {},
 ): Promise<{ status: number; body: Envelope }> {
   const form = new FormData();

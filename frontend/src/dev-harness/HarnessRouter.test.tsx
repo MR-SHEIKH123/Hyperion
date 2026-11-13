@@ -23,4 +23,45 @@ describe('development state harness',()=>{
   expect(within(document.querySelector('[data-fixture="code-spend-unrecorded"]') as HTMLElement).getByText(/nothing was recorded/)).toBeInTheDocument();
   expect(within(document.querySelector('[data-fixture="code-spend-floor"]') as HTMLElement).getByText(/a floor: some requests are unpriced/)).toBeInTheDocument();});
  it('says which states the backend contract does not expose, instead of rendering them as real',()=>{renderHarness();for(const id of['design-preview-failure'])expect(document.querySelector(`[data-fixture="${id}"]`)?.textContent).toMatch(/Not exposed/);});
+ it('renders every Preview tab state from the production view, with no network',()=>{const fetch=vi.spyOn(globalThis,'fetch');renderHarness();expect(screen.getByRole('heading',{name:'Preview tab fixtures'})).toBeInTheDocument();
+  for(const id of['preview-reading','preview-minting','preview-no-session','preview-disabled','preview-network-error','preview-gone','preview-expired','preview-no-root-html','preview-live'])expect(document.querySelector(`[data-fixture="${id}"]`)).not.toBeNull();
+  // The live card carries the exact sandbox, and its text carries no token —
+  // the token lives only in the src the frame loads.
+  const live=document.querySelector('[data-fixture="preview-live"]') as HTMLElement;
+  expect(live.querySelector('iframe')?.getAttribute('sandbox')).toBe('allow-scripts allow-forms allow-pointer-lock');
+  expect(live.querySelector('iframe')?.getAttribute('referrerpolicy')).toBe('no-referrer');
+  expect(live.textContent).not.toContain('a'.repeat(64));
+  // Disabled names the setting; expired offers a renewal; the missing root
+  // index.html offers the Files tab and mounts no dead frame.
+  expect(document.querySelector('[data-fixture="preview-disabled"]')?.textContent).toContain('HYPERION_PREVIEW_PORT');
+  expect(document.querySelector('[data-fixture="preview-expired"]')?.textContent).toContain('Renew preview');
+  const noRoot=document.querySelector('[data-fixture="preview-no-root-html"]') as HTMLElement;
+  expect(noRoot.querySelector('iframe')).toBeNull();
+  expect(noRoot.textContent).toContain('Open Files');
+  expect(fetch).not.toHaveBeenCalled();fetch.mockRestore();});
+  it('renders the Console tab states — bounded, text-only, and honest about an empty frame', () => {
+    const fetch = vi.spyOn(globalThis, 'fetch');
+    renderHarness();
+    expect(screen.getByRole('heading', { name: 'Console tab fixtures' })).toBeInTheDocument();
+    for (const id of [
+      'console-empty-no-frame',
+      'console-empty-silent',
+      'console-log',
+      'console-errors',
+      'console-overflow',
+      'console-hostile',
+    ]) {
+      expect(document.querySelector(`[data-fixture="${id}"]`)).not.toBeNull();
+    }
+    const hostile = document.querySelector('[data-fixture="console-hostile"]') as HTMLElement;
+    expect(hostile.textContent).toContain('<img src=x onerror="alert(1)">');
+    expect(hostile.querySelector('img')).toBeNull();
+    const overflow = document.querySelector('[data-fixture="console-overflow"]') as HTMLElement;
+    expect(overflow.querySelectorAll('li').length).toBeLessThanOrEqual(100);
+    const errors = document.querySelector('[data-fixture="console-errors"]') as HTMLElement;
+    expect(errors.querySelector('[data-testid="console-send-errors"]')).not.toBeNull();
+    expect(fetch).not.toHaveBeenCalled();
+    fetch.mockRestore();
+  });
 });
+

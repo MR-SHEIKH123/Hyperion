@@ -23,7 +23,12 @@ export const canvasEntrySchema = z
     /** Workspace-relative POSIX path — never absolute, which is the seam's promise. */
     path: z.string(),
     name: z.string(),
-    type: z.enum(['file', 'directory']),
+    /**
+     * `symlink` entries exist so the tree can show a link is there; the client
+     * never opens one (docs/API.md §27.1 — listed, never followed), so the
+     * third variant is a fact to render, not a path to resolve.
+     */
+    type: z.enum(['file', 'directory', 'symlink']),
     /**
      * `null` for a directory, and for a file whose size was not read.
      *
@@ -70,8 +75,21 @@ export const canvasDiffSchema = z
     taskId: z.string(),
     /** The commit the task's worktree was cut from, as a SHA. */
     baseCommit: z.string(),
-    /** One unified diff. Empty only when the tree really is unchanged. */
+    /**
+     * One unified diff. Empty only when the tree really is unchanged.
+     *
+     * Not the whole truth when `truncated` is true — see below — so the Diff
+     * tab renders the flag as a notice rather than letting a cut patch read
+     * as everything the task did.
+     */
     patch: z.string(),
+    /**
+     * `true` when the backend cut the patch at its 4 MiB line boundary
+     * (docs/API.md §27.3). Required, not defaulted: a backend that stopped
+     * sending it would fail the wire check instead of silently reading as
+     * "not truncated".
+     */
+    truncated: z.boolean(),
   })
   .passthrough();
 

@@ -37,6 +37,9 @@ describe('splitPatch', () => {
         isNew: false,
         isDeleted: false,
         isBinary: false,
+        // The file's own section, verbatim: the Diff tab renders this as the
+        // text of the selected file, so the boundary is part of the contract.
+        patch: `${MODIFIED}\n`,
       },
     ]);
     expect(summary.additions).toBe(2);
@@ -58,6 +61,11 @@ describe('splitPatch', () => {
     const summary = splitPatch(patch);
     expect(summary.files.map((file) => file.path)).toEqual(['src/index.ts', 'README.md']);
     expect(summary.additions).toBe(3);
+    // Each section stops at the next file's header — the boundary the Diff
+    // tab relies on when it renders one file's patch as text.
+    expect(summary.files[0]?.patch).toContain('export { a, b };');
+    expect(summary.files[0]?.patch).not.toContain('README.md');
+    expect(summary.files[1]?.patch).toContain('diff --git a/README.md b/README.md');
     expect(summary.deletions).toBe(2);
   });
 
@@ -226,6 +234,9 @@ describe('splitPatch', () => {
         isNew: false,
         isDeleted: false,
         isBinary: false,
+        // A mode-only change still carries its section: the reader is shown
+        // the git output that says the mode moved, not a empty box.
+        patch: `${patch}\n`,
       },
     ]);
   });

@@ -6,6 +6,7 @@ import { discardWorktree } from '../../api/worktrees';
 import { Button } from '../../design-system/components/Button/Button';
 import { ErrorNotice } from '../ErrorNotice/ErrorNotice';
 import { relativeTime } from '../../attention/links';
+import { useNow } from '../../state/useNow';
 import styles from './RecoveryPanel.module.css';
 
 import type { taskToolSchema } from '../../contracts/wire/tasks';
@@ -63,6 +64,9 @@ export function RecoveryPanel({
 }) {
   const client = useQueryClient();
   const [confirming, setConfirming] = useState(false);
+  // The two "last written / ended" clocks below are state, not `Date.now()` in
+  // JSX — see `useNow`.
+  const now = useNow();
 
   const query = useQuery({
     queryKey: ['recovery', tool, taskId],
@@ -132,7 +136,7 @@ export function RecoveryPanel({
           <>
             {stopCaused} —{' '}
             <span title={report.stop?.at == null ? '' : new Date(report.stop.at).toLocaleString()}>
-              {report.stop?.at == null ? 'time not recorded' : relativeTime(report.stop.at, Date.now())}
+              {report.stop?.at == null ? 'time not recorded' : relativeTime(report.stop.at, now)}
             </span>
           </>
         )}
@@ -185,7 +189,7 @@ export function RecoveryPanel({
         <p className={styles.plain}>
           <code className={styles.stepTool}>{worktree.name}</code> is still on disk, last written{' '}
           <span title={new Date(worktree.lastModified).toLocaleString()}>
-            {relativeTime(worktree.lastModified, Date.now())}
+            {relativeTime(worktree.lastModified, now)}
           </span>
           .{' '}
           {worktree.checked
