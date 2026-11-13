@@ -85,8 +85,13 @@ describe('the preview row', () => {
     // The origin is rendered as the URL, and as something openable — the row's
     // whole job is to answer "where is it being served".
     const link = await screen.findByRole('link', { name: 'Open' });
+    // The href is the URL (that is what opening it means)...
     expect(link.getAttribute('href')).toBe(target.url);
-    expect(screen.getByText(target.url)).toBeDefined();
+    // ...but the visible text is the origin only: the token is authorization,
+    // and text is what gets copied, screenshotted and shoulder-surfed.
+    const origin = new URL(target.url).origin;
+    expect(screen.getByText(origin)).toBeDefined();
+    expect(screen.queryByText(target.url)).toBeNull();
 
     // Nothing minted: the render issues a read and only a read.
     expect(calls.map((call) => call.method)).toEqual(['GET']);
@@ -104,10 +109,14 @@ describe('the preview row', () => {
     expect(await screen.findByText('No preview is running for this task.')).toBeDefined();
     await userEvent.click(screen.getByRole('button', { name: 'Start preview' }));
 
-    expect(await screen.findByText(target.url)).toBeDefined();
+    const origin = new URL(target.url).origin;
+    expect(await screen.findByText(origin)).toBeDefined();
     expect(calls.some((call) => call.method === 'POST')).toBe(true);
-    // The URL shown after starting is the one the *mint* reported, not a guess.
+    // The URL the frame/links use is the one the *mint* reported, not a guess.
     expect(screen.getByRole('link', { name: 'Open' }).getAttribute('href')).toBe(target.url);
+    // And the token never lands in the document's text or in storage.
+    expect(document.body.textContent).not.toContain(target.token);
+    expect(JSON.stringify(localStorage)).not.toContain(target.token);
   });
 
   it('says the host has previews off instead of pretending nothing is running', async () => {

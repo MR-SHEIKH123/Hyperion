@@ -194,7 +194,15 @@ behavior in the browser.
   set of states), the selected file's own section of the patch as text, the base commit
   and the `truncated` flag stated — and a direct-mode task gets §27.3's honest empty
   state ("no base to compare against", with the backend's `mode`/`reason`), never a blank
-  panel. What the Canvas still does not
+  panel. **The Preview tab embeds the sandboxed frame**: mint only on the explicit
+  Start/Renew (a read to display, never a rotation), the token in the frame's `src` and
+  the link's `href` but never in readable text, storage or the app's URL, `sandbox` of
+  exactly `allow-scripts allow-forms allow-pointer-lock` with `no-referrer` and a title,
+  a debounced reload on `artifact` frames (with a manual Reload for edits that make no
+  frame — the backend has no watcher, by design), and every refusal as its own state:
+  listener off with `details.setting` named, released workspace, network failure,
+  expiry read against the last session the tab saw, and a missing root `index.html`
+  rendered as "Open Files" rather than a dead frame. What the Canvas still does not
   offer, and what a UI must not pretend it does:
   - **Read-only.** No write, rename, delete or create route; the preview serves files, it
     does not accept them.

@@ -121,6 +121,22 @@ export default function CodeTool() {
     return run === undefined ? null : fromBackendRun(run);
   }, [task.data?.run]);
 
+  // How many `artifact` frames this task's run has produced on the stream
+  // this surface holds. A save or edit emits one (agentContext.ts on
+  // saveArtifactVersion), so the count moving is the signal the Preview tab
+  // reloads on — debounced there, and only counted for the task being
+  // shown: the surface may be streaming a run whose artifacts belong
+  // elsewhere. A run started outside this client produces no frames here at
+  // all, which is what the Preview tab's manual Reload is for.
+  const writeRevision = useMemo(() => {
+    if (start.taskId !== taskId) return 0;
+    return start.state.events.reduce(
+      (total, event) =>
+        total + (event.type === 'agent' && event.data.channel === 'artifact' ? 1 : 0),
+      0,
+    );
+  }, [start.state.events, start.taskId, taskId]);
+
   const definition: AgentWorkspaceDefinition = {
     tool: 'code',
     statusBanner:
@@ -141,12 +157,18 @@ export default function CodeTool() {
       // tabs are the Canvas's own screens. The frame's `mainSurface` region
       // still holds them all — a tool is its surface, so no new region is
       // registered for the strip to live in.
+      // Keyed by task: every panel's state — the tree's expansion, the
+      // console's entries, the preview's remembered expiry — belongs to one
+      // task, and switching tasks in the lane must not carry another
+      // task's view across.
       <CanvasTabs
+        key={taskId}
         taskId={taskId}
         file={file}
         activeTab={canvasTab}
         onTabChange={setCanvasTab}
         onSelectFile={selectFileInTree}
+        writeRevision={writeRevision}
       >
         {state?.kind === 'interrupted' ? (
           // The one state where a read is not enough: an interrupted run has a

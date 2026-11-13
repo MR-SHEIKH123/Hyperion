@@ -36,6 +36,7 @@ import { useRef, useState } from 'react';
 import { DiffTab } from './DiffTab';
 import { FileTree } from './FileTree';
 import { FileViewer } from './FileViewer';
+import { PreviewTab } from './PreviewTab';
 import { CANVAS_TABS, TAB_LABELS, type CanvasTab } from './useCanvasTab';
 import styles from './CanvasTabs.module.css';
 
@@ -47,6 +48,12 @@ export interface CanvasTabsProps {
   onTabChange: (tab: CanvasTab) => void;
   /** Sets `?file=` in the surface (tree selection and the session panel share it). */
   onSelectFile: (path: string) => void;
+  /**
+   * The run stream's `artifact`-frame counter for this task — the Preview
+   * tab reloads (debounced) when it moves, because a save is what an
+   * artifact frame is.
+   */
+  writeRevision?: number;
   /** Overview's content — today's recovery/parked/spend region, unchanged. */
   children: React.ReactNode;
 }
@@ -57,6 +64,7 @@ export function CanvasTabs({
   activeTab,
   onTabChange,
   onSelectFile,
+  writeRevision = 0,
   children,
 }: CanvasTabsProps) {
   const tabRefs = useRef(new Map<CanvasTab, HTMLButtonElement>());
@@ -146,8 +154,14 @@ export function CanvasTabs({
               children
             ) : id === 'files' ? (
               <FilesTab taskId={taskId} file={file} onSelectFile={onSelectFile} />
-            ) : (
+            ) : id === 'diff' ? (
               <DiffTab taskId={taskId} file={file} onSelectFile={onSelectFile} />
+            ) : (
+              <PreviewTab
+                taskId={taskId}
+                writeRevision={writeRevision}
+                onOpenFiles={() => activate('files')}
+              />
             )
           ) : null}
         </div>
