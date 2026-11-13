@@ -96,6 +96,7 @@ path on 4317. The preview port must **not** be added to `HYPERION_APP_ORIGINS`.
 ```bash
 npm run typecheck  # tsc --noEmit, must be clean
 npm test           # full suite: real servers, no stubs
+npm run eval:live -- --plan   # live-eval harness plan (spends nothing; docs/EVALS.md)
 ```
 
 The frontend remains a separate development package for now. Start the

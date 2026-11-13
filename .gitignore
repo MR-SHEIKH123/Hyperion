@@ -52,3 +52,8 @@ secret.key
 .DS_Store
 Thumbs.db
 
+# Live-eval output: local, time-bound result sets (docs/EVALS.md). Never
+# committed — they describe one run against one endpoint at one moment, and
+# they may carry transcripts that only exist because --include-transcripts
+# was asked for.
+/eval-results/
