@@ -5,6 +5,7 @@ import { Button } from '../design-system/components/Button/Button';
 import { ErrorNotice } from '../components/ErrorNotice/ErrorNotice';
 import { AttentionList } from './AttentionList';
 import { useAttention } from './useAttention';
+import { useNow } from '../state/useNow';
 import styles from './AttentionCenter.module.css';
 
 import type { AttentionItem } from '../contracts/wire/attention';
@@ -31,6 +32,9 @@ export default function AttentionCenter() {
   const queryClient = useQueryClient();
   const [decidingId, setDecidingId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // The queue's "updated N ago" clock. Rendered as state rather than
+  // `Date.now()` in the JSX below: see `useNow`.
+  const now = useNow();
 
   const decide = useMutation({
     mutationFn: ({ item, decision }: { item: AttentionItem; decision: ApprovalDecision }) => {
@@ -99,7 +103,7 @@ export default function AttentionCenter() {
   return (
     <AttentionList
       queue={query.data}
-      now={Date.now()}
+      now={now}
       onDecide={(item, decision) => { decide.mutate({ item, decision }); }}
       decidingId={decidingId}
       banner={

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { getActiveModels, getActiveProvider } from '../../api/providers';
 import type { ProviderPrivacy } from '../../components/PrivacyIndicator/PrivacyIndicator';
@@ -65,23 +65,19 @@ export function useModelSelection(preferred: string | null): ModelSelection {
   );
 
   const [override, setOverride] = useState<string | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  // Follow the preference until the user picks something else; when the model
-  // list changes (provider switch), fall back to the first offered model.
-  useEffect(() => {
-    if (override !== null) return;
-    const preferredOk = preferred !== null && models.some((m) => m.id === preferred);
-    if (preferredOk) {
-      setSelectedId(preferred);
-    } else {
-      setSelectedId(models[0]?.id ?? null);
-    }
-  }, [preferred, models, override]);
+  // The selection is derived, not synced: follow the persisted preference
+  // until the user picks something else, and when the model list changes
+  // (provider switch) fall back to the first offered model. This is the same
+  // computation the effect it replaces performed — an effect that called
+  // `setSelectedId` whenever `preferred`/`models` changed is exactly the
+  // derive-in-effect pattern `react-hooks/set-state-in-effect` flags; as a
+  // value computed during render it cannot drift from its inputs at all.
+  const selectedId =
+    override ?? (preferred !== null && models.some((m) => m.id === preferred) ? preferred : (models[0]?.id ?? null));
 
   const choose = (id: string) => {
     setOverride(id);
-    setSelectedId(id);
   };
 
   return {
