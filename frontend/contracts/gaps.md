@@ -167,25 +167,31 @@ behavior in the browser.
   the row has to get right, both pinned by its test: the list also returns the last 50
   *ended* sessions for the audit trail, so `count` is not the number of live processes
   (`endedAt === null` is), and a run that has ended is history rather than a process.
-- **The Canvas has a client, and two of its rows are on screen (1.40 backend, client built
-  2026-10-04).** The file tree, the file read, the task diff and the sandboxed preview are real
+- **The Canvas has a client, and its screens are landing as the main surface's tabs (1.40
+  backend, client built 2026-10-04; tabs from 2026-11-13).** The file tree, the file read,
+  the task diff and the sandboxed preview are real
   routes (`GET /api/code/tasks/:taskId/files|file|diff`,
   `POST|GET|DELETE /api/code/tasks/:taskId/preview`, `docs/API.md` §27),
   `frontend/src/api/canvas.ts` calls all six and `wire/canvas.ts` pins their shapes — all six
   are checked against the real backend by `check-wire.mjs`, and the ledger rows are
   `implemented` on the same standard as `providers.registry` (a client calls the route; a
-  screen is not required). **Two screens exist, both in the Code surface's `inspector` region
-  — the changed-file list and the live preview row.** The list splits per-file additions and
+  screen is not required). **The session panel's two rows stay — the changed-file list and
+  the live preview row — and the Code surface's main region now carries a tab strip.**
+  The list splits per-file additions and
   deletions out of the patch (`tools/code/patch.ts`), names the base commit and renders a
   direct-mode refusal as a refusal. The preview row (`tools/code/PreviewRow.tsx`) shows the
   live origin as a URL a user can open, starts one, stops one, and names
   `HYPERION_PREVIEW_PORT` when the listener is off instead of rendering "nothing is running"
   for a feature that is switched off. It reads rather than mints, and that is the reason the
   route exists at all: **minting replaces the session, so a row that minted to display would
-  revoke the URL the user already has open** — the read is what lets the row be polled. Not
-  yet surfaced: the **file tree** and the **file read** (`getTaskFiles`/`getTaskFile` are
-  called by nothing) and the **patch text itself** — the list is derived from it, no view
-  renders it. What the Canvas still does not
+  revoke the URL the user already has open** — the read is what lets the row be polled.
+  **The Files tab now renders the file tree and the file read** (`getTaskFiles`/
+  `getTaskFile`): a lazy ARIA tree over the root listing (a subtree read only when a
+  truncated walk left its children unknown), symlinks labelled and never opened, `.git`
+  never shown, and a viewer with line numbers whose binary, too-large and since-deleted
+  states are the backend's own refusals rendered as sentences. Not yet surfaced: the
+  **patch text itself** — the list is derived from it, no view renders it. What the Canvas
+  still does not
   offer, and what a UI must not pretend it does:
   - **Read-only.** No write, rename, delete or create route; the preview serves files, it
     does not accept them.

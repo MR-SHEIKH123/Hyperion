@@ -3801,8 +3801,12 @@ The walk is breadth-first and bounded, because a workspace is not a curated set:
 | `SKIPPED_DIRS` | `node_modules`, `.next`, `dist`, `build`, `.venv`, `__pycache__` | not listed and not descended; the name is in `skipped` |
 
 `truncated: true` means the tree is incomplete, and `skipped` lists the directory
-names left out — a partial tree never reads as the whole truth. Symlinks are
-neither followed nor listed. `.git` is omitted entirely (see 27.5).
+names left out — a partial tree never reads as the whole truth. Each entry's
+`type` is `file`, `directory` or `symlink`: a symlink is **listed so the reader
+can see it exists, and never followed** — not resolved, not descended into, not
+offered as a readable file (the file route refuses a path that crosses one,
+27.5) — and it carries `bytes: null` because measuring it would mean a stat
+through the link. `.git` is omitted entirely, symlink or not (see 27.5).
 
 `?path=` naming a file is **400 `bad_request`** (`details.path`); naming
 something that does not exist is **404 `not_found`**.

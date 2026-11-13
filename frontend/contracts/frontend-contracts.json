@@ -317,14 +317,14 @@
       "method": "GET",
       "expectedPath": "/api/code/tasks/:taskId/files",
       "status": "implemented",
-      "reason": "Called by `api/canvas.ts` (`getTaskFiles`). No screen renders a tree yet \u2014 the Code surface's inspector shows the changed-file list, and the tree and file reads are the 2.4 frontend pass."
+      "reason": "Called by `api/canvas.ts` (`getTaskFiles`) and rendered by the Canvas Files tab: a lazy ARIA tree \u2014 the root listing once, a subtree read only when a truncated walk left a directory's children unknown. Symlinks are listed as symlinks and never opened; `.git` is never shown."
     },
     {
       "id": "canvas.file",
       "method": "GET",
       "expectedPath": "/api/code/tasks/:taskId/file",
       "status": "implemented",
-      "reason": "Called by `api/canvas.ts` (`getTaskFile`). No screen shows file contents yet: the inspector lists changed paths rather than rendering them, which is the 2.4 frontend pass."
+      "reason": "Called by `api/canvas.ts` (`getTaskFile`) and rendered by the Canvas file viewer: plain text with line numbers, and explicit binary, too-large and since-deleted states \u2014 a refusal is rendered as the sentence the backend wrote."
     },
     {
       "id": "canvas.diff",

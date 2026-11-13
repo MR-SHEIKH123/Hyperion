@@ -307,7 +307,7 @@ describe('GET /api/code/tasks/:taskId/files', () => {
     assert.equal(tree.truncated, true);
   });
 
-  it('never follows or lists a symlink', async () => {
+  it('lists symlinks as symlinks and never follows them', async () => {
     const root = await workspace('link-task');
     const outside = path.join(testHome, 'outside-link-target');
     fs.mkdirSync(outside, { recursive: true });
@@ -315,14 +315,28 @@ describe('GET /api/code/tasks/:taskId/files', () => {
 
     fs.symlinkSync(outside, path.join(root, 'linked-dir'));
     fs.symlinkSync(path.join(outside, 'secret.txt'), path.join(root, 'linked-file.txt'));
+    // A symlink whose *name* is `.git`: the git predicate has to run before the
+    // symlink branch, or this entry would be listed and the viewer would 403
+    // on it — a tree offering a refusal.
+    write(root, 'sub/keep.txt', 'kept\n');
+    fs.symlinkSync(outside, path.join(root, 'sub/.git'));
     write(root, 'plain.txt', 'plain\n');
 
-    const tree = json<{ entries: { path: string }[] }>(
+    const tree = json<{ entries: { path: string; type: string; bytes: number | null }[] }>(
       await api('GET', '/api/code/tasks/link-task/files'),
     );
     const paths = tree.entries.map((entry) => entry.path);
 
-    assert.deepEqual(paths, ['plain.txt']);
+    // Both links are visible as entries — a workspace that hid them would be
+    // lying about what is on disk — but as `symlink`, with no size, and the
+    // target's contents (`secret.txt`) never appear: the walk did not follow.
+    assert.deepEqual(paths, ['linked-dir', 'linked-file.txt', 'plain.txt', 'sub', 'sub/keep.txt']);
+    assert.deepEqual(
+      tree.entries.filter((entry) => entry.type === 'symlink').map((entry) => entry.bytes),
+      [null, null],
+    );
+    assert.equal(paths.some((entry) => entry.includes('secret.txt')), false);
+    assert.equal(paths.includes('sub/.git'), false);
   });
 });
 

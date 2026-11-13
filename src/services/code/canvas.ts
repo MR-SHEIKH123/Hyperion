@@ -70,7 +70,14 @@ export const SKIPPED_DIRS: ReadonlySet<string> = new Set([
 export interface CanvasEntry {
   path: string;
   name: string;
-  type: 'file' | 'directory';
+  /**
+   * `symlink` entries are named so a reader can see they exist, and nothing
+   * else: they are never resolved, descended into or offered as readable
+   * files — `files.ts` refuses a path that crosses one, and the tree refuses
+   * to open one, so the label is a fact about the workspace rather than a
+   * promise of content behind it.
+   */
+  type: 'file' | 'directory' | 'symlink';
   bytes: number | null;
   skipped?: boolean;
 }
@@ -241,18 +248,25 @@ export async function listCanvasTree(taskId: string, candidate = '.'): Promise<C
         break;
       }
 
-      // Symlinks are neither followed nor listed. Following one is how a
-      // listing escapes its boundary; listing one is how the viewer is handed a
-      // path whose read can land somewhere else entirely.
-      if (child.isSymbolicLink()) continue;
-
       // `.git` is omitted rather than listed: the viewer refuses it (see
       // `files.ts`), and a tree that lists an entry the next request will 403
       // on is a tree offering a refusal. The comparison is the exported
-      // predicate, not a second string test.
+      // predicate, not a second string test. It comes before the symlink
+      // branch too, so a `.git` symlink cannot be listed either.
       if (isGitPathSegment(child.name)) continue;
 
       const relative = joinRelative(directory.relative, child.name);
+
+      // Symlinks are named so the reader can see their existence, but they are
+      // never resolved, descended into or offered as readable files.
+      // Following one is how a listing escapes its boundary; silently omitting
+      // one is how a workspace hides a fact the reader can see on disk. So the
+      // entry is pushed — with no size, because measuring it would mean a stat
+      // through the link — and the queue never receives it.
+      if (child.isSymbolicLink()) {
+        entries.push({ path: relative, name: child.name, type: 'symlink', bytes: null });
+        continue;
+      }
 
       if (child.isDirectory()) {
         if (SKIPPED_DIRS.has(child.name)) {

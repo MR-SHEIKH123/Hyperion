@@ -23,7 +23,12 @@ export const canvasEntrySchema = z
     /** Workspace-relative POSIX path — never absolute, which is the seam's promise. */
     path: z.string(),
     name: z.string(),
-    type: z.enum(['file', 'directory']),
+    /**
+     * `symlink` entries exist so the tree can show a link is there; the client
+     * never opens one (docs/API.md §27.1 — listed, never followed), so the
+     * third variant is a fact to render, not a path to resolve.
+     */
+    type: z.enum(['file', 'directory', 'symlink']),
     /**
      * `null` for a directory, and for a file whose size was not read.
      *
