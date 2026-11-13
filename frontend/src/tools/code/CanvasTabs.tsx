@@ -33,6 +33,7 @@
  */
 import { useRef, useState } from 'react';
 
+import { DiffTab } from './DiffTab';
 import { FileTree } from './FileTree';
 import { FileViewer } from './FileViewer';
 import { CANVAS_TABS, TAB_LABELS, type CanvasTab } from './useCanvasTab';
@@ -143,8 +144,10 @@ export function CanvasTabs({
           {visited.has(id) ? (
             id === 'overview' ? (
               children
-            ) : (
+            ) : id === 'files' ? (
               <FilesTab taskId={taskId} file={file} onSelectFile={onSelectFile} />
+            ) : (
+              <DiffTab taskId={taskId} file={file} onSelectFile={onSelectFile} />
             )
           ) : null}
         </div>

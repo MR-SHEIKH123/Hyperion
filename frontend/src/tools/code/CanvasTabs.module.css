@@ -172,3 +172,43 @@
   text-align: end;
   user-select: none;
 }
+
+/* The Diff tab: the embedded list on one side, the selected file's patch
+   below it (or beside it, when the surface is wide enough for both). */
+.diffLayout {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  min-height: 0;
+}
+
+.diffPatch {
+  min-height: 0;
+  overflow: auto;
+}
+
+.diffState {
+  padding: var(--space-3);
+}
+
+.diffState p {
+  margin: 0 0 var(--space-2);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+}
+
+.retry {
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  padding: var(--space-1) var(--space-2);
+  cursor: pointer;
+}
+
+.retry:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}

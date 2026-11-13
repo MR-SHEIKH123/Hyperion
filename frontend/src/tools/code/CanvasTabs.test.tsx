@@ -81,7 +81,7 @@ describe('the tab strip', () => {
     renderTabs();
     const list = screen.getByRole('tablist', { name: 'Task workspace views' });
     const tabs = within(list).getAllByRole('tab');
-    expect(tabs.map((tab) => tab.textContent)).toEqual(['Overview', 'Files']);
+    expect(tabs.map((tab) => tab.textContent)).toEqual(['Overview', 'Files', 'Diff']);
 
     const overview = screen.getByRole('tab', { name: 'Overview' });
     const files = screen.getByRole('tab', { name: 'Files' });
@@ -103,17 +103,26 @@ describe('the tab strip', () => {
     const overview = screen.getByRole('tab', { name: 'Overview' });
     const files = screen.getByRole('tab', { name: 'Files' });
 
+    const diff = screen.getByRole('tab', { name: 'Diff' });
+
     overview.focus();
     await user.keyboard('{ArrowRight}');
     expect(onTabChange).toHaveBeenLastCalledWith('files');
     expect(document.activeElement).toBe(files);
     await user.keyboard('{ArrowRight}');
+    expect(onTabChange).toHaveBeenLastCalledWith('diff');
+    expect(document.activeElement).toBe(diff);
+    // Past the end, back to the start.
+    await user.keyboard('{ArrowRight}');
     expect(onTabChange).toHaveBeenLastCalledWith('overview');
     expect(document.activeElement).toBe(overview);
     await user.keyboard('{End}');
-    expect(onTabChange).toHaveBeenLastCalledWith('files');
+    expect(onTabChange).toHaveBeenLastCalledWith('diff');
     await user.keyboard('{Home}');
     expect(onTabChange).toHaveBeenLastCalledWith('overview');
+    // And backwards from the start wraps to the end.
+    await user.keyboard('{ArrowLeft}');
+    expect(onTabChange).toHaveBeenLastCalledWith('diff');
   });
 
   it("keeps Overview's content as the panel's content — the region was wrapped, not replaced", () => {
@@ -149,7 +158,7 @@ describe('the tab strip', () => {
     // clicks has to do what CodeTool does and actually move the state.
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     function Host() {
-      const [tab, setTab] = useState<'overview' | 'files'>('overview');
+      const [tab, setTab] = useState<'overview' | 'files' | 'diff'>('overview');
       return (
         <QueryClientProvider client={client}>
           <CanvasTabs

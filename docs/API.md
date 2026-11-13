@@ -3829,11 +3829,18 @@ Refusals, all with the path in `details.path`:
 
 ### 27.3 `GET /api/code/tasks/:taskId/diff`
 
-`{ taskId, baseCommit, patch }`, where `patch` is the same unified diff
+`{ taskId, baseCommit, patch, truncated }`, where `patch` is the same unified diff
 `GET /api/code/tasks/:taskId/export` (§19) returns as a download. It is produced
 by that exporter — one git call site, with the hardening in
 `services/code/gitHardening.ts`, and one place that decides what "no git
 isolation" means.
+
+A patch larger than **4 MiB** is cut at a line boundary and `truncated` is
+`true` (the bound is `MAX_CANVAS_DIFF_BYTES` in `services/code/canvas.ts`).
+The route truncates rather than refuses because a diff has no alternative view
+the way an oversized file does — it is the only view of what the task did — and
+a caller that rendered the cut text without the flag would be showing a partial
+truth as the whole one.
 
 That last part is why a `direct`-mode task is the exporter's own **400
 `bad_request`** with `details.mode` and `details.reason`, and not an empty patch:

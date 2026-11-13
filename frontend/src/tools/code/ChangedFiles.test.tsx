@@ -25,6 +25,7 @@ const diffBody = (patch: string, baseCommit = 'abcdef1234567890') => ({
   taskId: 'task-1',
   baseCommit,
   patch,
+  truncated: false,
 });
 
 const MODIFIED_PATCH = [
@@ -104,7 +105,10 @@ describe('the changed-file list', () => {
     renderPanel();
 
     // Wait for the failure to land — the point is what shows *instead* of a list.
-    expect(await screen.findByRole('alert')).toBeDefined();
+    const alert = await screen.findByRole('alert');
+    // The backend's own sentence, not the generic section-failure shrug: for a
+    // direct-mode task this line is the whole answer to "where are my changes".
+    expect(alert.textContent).toContain('no base commit to diff against');
     // The distinction the panel exists to keep: nothing here may read as "no changes".
     expect(screen.queryByText(/No changes against/)).toBeNull();
     expect(screen.queryByRole('list')).toBeNull();

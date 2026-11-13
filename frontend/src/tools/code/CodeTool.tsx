@@ -243,12 +243,13 @@ export default function CodeTool() {
               // Clicking the selected file clears it, so the list can be read
               // without leaving a selection behind on every visit. Clearing
               // stays where you are — there is nothing new to look at — while
-              // naming a file opens the tab that can show it.
+              // naming a file opens the Diff tab at that file: the list is a
+              // summary of the patch, and the tab is where the patch is read.
               if (path === file) {
                 next.delete('file');
               } else {
                 next.set('file', path);
-                setCanvasTab('files');
+                setCanvasTab('diff');
               }
               setParams(next, { replace: true });
             }}

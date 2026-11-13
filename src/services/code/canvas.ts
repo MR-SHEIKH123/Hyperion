@@ -50,6 +50,19 @@ export const MAX_DEPTH = 12;
 export const MAX_VIEW_BYTES = 2 * 1024 * 1024;
 
 /**
+ * Largest patch string one diff response carries, before it truncates.
+ *
+ * The file viewer refuses an oversized *file* because a file has a name the
+ * reader can go look at instead; a diff has no such alternative — it is the
+ * only view of what the task did — so this bound cuts the text at a line
+ * boundary and reports `truncated` rather than answering 400. Four MiB of
+ * unified diff is far past what any of the tab's views render as a whole: the
+ * reader is meant to open one file's section, which is where the interesting
+ * part of a giant generated-file change never is.
+ */
+export const MAX_CANVAS_DIFF_BYTES = 4 * 1024 * 1024;
+
+/**
  * Directories the walk does not descend into.
  *
  * Not a security boundary — they are ordinary directories inside the task's own
@@ -103,6 +116,15 @@ export interface CanvasDiff {
   taskId: string;
   baseCommit: string;
   patch: string;
+  /**
+   * `true` when the patch was cut at `MAX_CANVAS_DIFF_BYTES`. A diff is the
+   * one read here whose size is the change's own — a task may legitimately
+   * rewrite a generated file into megabytes — so the bound truncates (at a
+   * line boundary, so the text stays a patch) rather than refuses, and says
+   * that it did. A caller that rendered the cut patch without this flag would
+   * be showing a partial truth as the whole one.
+   */
+  truncated: boolean;
 }
 
 /**
@@ -381,5 +403,22 @@ export async function canvasDiff(taskId: string): Promise<CanvasDiff> {
     // silently start emitting an empty string here.
     throw new AppError('internal_error', 'The task\u2019s diff has no base commit to name.');
   }
-  return { taskId: worktree.taskId, baseCommit: worktree.baseCommit, patch: exported.content };
+  const patch = exported.content;
+  if (Buffer.byteLength(patch, 'utf8') <= MAX_CANVAS_DIFF_BYTES) {
+    return { taskId: worktree.taskId, baseCommit: worktree.baseCommit, patch, truncated: false };
+  }
+
+  // Cut at a line boundary inside the bound: a byte slice would land mid-line
+  // (or mid-character, which decodes to U+FFFD), and a patch ending in half a
+  // line reads as corruption rather than as a cut. When the bound falls inside
+  // a single enormous line there is no boundary to take — the raw cut is the
+  // honest remainder.
+  const bounded = Buffer.from(patch, 'utf8').subarray(0, MAX_CANVAS_DIFF_BYTES).toString('utf8');
+  const lastNewline = bounded.lastIndexOf('\n');
+  return {
+    taskId: worktree.taskId,
+    baseCommit: worktree.baseCommit,
+    patch: lastNewline > 0 ? bounded.slice(0, lastNewline + 1) : bounded,
+    truncated: true,
+  };
 }

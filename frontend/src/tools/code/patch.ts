@@ -43,6 +43,17 @@ export interface PatchFile {
   isNew: boolean;
   isDeleted: boolean;
   isBinary: boolean;
+  /**
+   * This file's own section of the patch, verbatim: headers through hunks, up
+   * to (not including) the next file's header.
+   *
+   * Carried rather than re-sliced by the caller because the boundaries are
+   * exactly the parsing questions this module already answers — quoting,
+   * renames, the `--- ` fallback that has no `diff --git` header at all. A
+   * second extractor at the display end would be a second parser, and the two
+   * would disagree in the one case nobody's test covers.
+   */
+  patch: string;
 }
 
 export interface PatchSummary {
@@ -89,7 +100,15 @@ function pathFromHeader(line: string): string {
 }
 
 function blankFile(path: string): PatchFile {
-  return { path, additions: 0, deletions: 0, isNew: false, isDeleted: false, isBinary: false };
+  return {
+    path,
+    additions: 0,
+    deletions: 0,
+    isNew: false,
+    isDeleted: false,
+    isBinary: false,
+    patch: '',
+  };
 }
 
 /**
@@ -129,16 +148,21 @@ export function splitPatch(patch: string): PatchSummary {
     if (line.startsWith('diff --git ')) {
       flush();
       current = blankFile(pathFromHeader(line));
+      current.patch = `${line}\n`;
       continue;
     }
 
     // A plain `diff -u` has no `diff --git` header at all — the `---` line is the
     // first thing that names a file. Starting a record here is what lets the same
     // parser read both, instead of answering "no files" for a real diff.
+    let startedHere = false;
     if (current === null && !inHunk && line.startsWith('--- ')) {
       current = blankFile('');
+      current.patch = `${line}\n`;
+      startedHere = true;
     }
     if (current === null) continue;
+    if (!startedHere) current.patch = `${current.patch}${line}\n`;
 
     if (line.startsWith('@@')) {
       inHunk = true;

@@ -29,13 +29,14 @@ import { useCallback, useState } from 'react';
 import { usePersistenceStore } from '../../state/persistence/PersistenceProvider';
 
 /** Every tab of the Code main surface, in strip order. */
-export const CANVAS_TABS = ['overview', 'files'] as const;
+export const CANVAS_TABS = ['overview', 'files', 'diff'] as const;
 
 export type CanvasTab = (typeof CANVAS_TABS)[number];
 
 export const TAB_LABELS: Record<CanvasTab, string> = {
   overview: 'Overview',
   files: 'Files',
+  diff: 'Diff',
 };
 
 const keyFor = (taskId: string): string => `code-task:${taskId}`;

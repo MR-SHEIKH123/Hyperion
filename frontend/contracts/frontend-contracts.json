@@ -330,7 +330,8 @@
       "id": "canvas.diff",
       "method": "GET",
       "expectedPath": "/api/code/tasks/:taskId/diff",
-      "status": "implemented"
+      "status": "implemented",
+      "reason": "Called by `api/canvas.ts` (`getTaskDiff`) and rendered twice on purpose: the session panel's compact changed-file list, and the main surface's Diff tab \u2014 which names the base commit, marks the selected file, and shows that file's patch as text. A direct-mode refusal renders as \"no base to compare against\" with the backend's own sentence; a patch over 4 MiB renders with `truncated` stated (docs/API.md \u00a727.3)."
     },
     {
       "id": "canvas.preview-status",

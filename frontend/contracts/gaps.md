@@ -189,9 +189,12 @@ behavior in the browser.
   `getTaskFile`): a lazy ARIA tree over the root listing (a subtree read only when a
   truncated walk left its children unknown), symlinks labelled and never opened, `.git`
   never shown, and a viewer with line numbers whose binary, too-large and since-deleted
-  states are the backend's own refusals rendered as sentences. Not yet surfaced: the
-  **patch text itself** — the list is derived from it, no view renders it. What the Canvas
-  still does not
+  states are the backend's own refusals rendered as sentences. **The Diff tab renders the
+  patch**: the inspector's changed-file list embedded whole (one query, one parser, one
+  set of states), the selected file's own section of the patch as text, the base commit
+  and the `truncated` flag stated — and a direct-mode task gets §27.3's honest empty
+  state ("no base to compare against", with the backend's `mode`/`reason`), never a blank
+  panel. What the Canvas still does not
   offer, and what a UI must not pretend it does:
   - **Read-only.** No write, rename, delete or create route; the preview serves files, it
     does not accept them.

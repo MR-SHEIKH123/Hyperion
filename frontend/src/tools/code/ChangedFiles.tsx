@@ -2,7 +2,6 @@ import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
 import { getTaskDiff } from '../../api/canvas';
-import { ErrorNotice } from '../../components/ErrorNotice/ErrorNotice';
 import { splitPatch } from './patch';
 import styles from './ChangedFiles.module.css';
 
@@ -57,9 +56,18 @@ export function ChangedFiles({
           Reading the task&apos;s diff…
         </p>
       ) : query.isError ? (
-        // The backend's own sentence, code included: for a direct-mode task that
-        // is the explanation of why there is no diff to show.
-        <ErrorNotice onRetry={() => void query.refetch()} />
+        // The backend's own sentence — for a direct-mode task that sentence is
+        // the explanation of why there is no diff to show, and the generic
+        // section-failure notice would replace the one fact that answers the
+        // question with a shrug. A refusal is rendered as written; a dropped
+        // read is rendered as a failure with a retry, because those two are
+        // different answers to "where are my changes".
+        <div className={styles.empty} role="alert">
+          <p>{query.error.message}</p>
+          <button type="button" className={styles.retry} onClick={() => void query.refetch()}>
+            Try again
+          </button>
+        </div>
       ) : (
         <>
           <p className={styles.totals}>
@@ -99,6 +107,12 @@ export function ChangedFiles({
                 </li>
               ))}
             </ul>
+          )}
+          {query.data.truncated && (
+            <p className={styles.truncated}>
+              The patch is larger than the response limit and was cut — the tail of this change is
+              not shown.
+            </p>
           )}
           <p className={styles.meta}>against {query.data.baseCommit.slice(0, 12)}</p>
         </>
