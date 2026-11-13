@@ -13,6 +13,8 @@
  */
 import AdmZip from 'adm-zip';
 
+import { openGuardedZip } from '../zipGuard.ts';
+
 import { AppError } from '../../util/errors.ts';
 
 export const FETCH_TIMEOUT_MS = 10_000;
@@ -123,14 +125,14 @@ function pathBasename(pathname: string): string {
  * directory and refusing traversal paths.
  */
 function unzipEntries(data: Buffer): ArchiveEntry[] {
-  let zip: AdmZip;
+  let all: ReturnType<AdmZip['getEntries']>;
   try {
-    zip = new AdmZip(data);
+    const zip = openGuardedZip(data);
+    all = zip.getEntries();
   } catch (error) {
     throw new AppError('bad_request', 'The archive could not be read.', { cause: error });
   }
 
-  const all = zip.getEntries();
   if (all.length > MAX_ARCHIVE_ENTRIES) {
     throw new AppError(
       'bad_request',

@@ -19,6 +19,8 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import AdmZip from 'adm-zip';
+
+import { openGuardedZip } from '../zipGuard.ts';
 import { env } from '../../config/env.ts';
 import { ensureDirInScope, resolveInScope, safeFilename, toRelative } from '../../security/fsScope.ts';
 import { AppError } from '../../util/errors.ts';
@@ -242,14 +244,14 @@ function githubArchiveUrl(url: URL): URL | null {
  */
 function unzipInto(data: Buffer, root: string): string[] {
   const warnings: string[] = [];
-  let zip: AdmZip;
+  let entries: ReturnType<AdmZip['getEntries']>;
   try {
-    zip = new AdmZip(data);
+    const zip = openGuardedZip(data);
+    entries = zip.getEntries();
   } catch (error) {
     throw new AppError('bad_request', 'The archive could not be read.', { cause: error });
   }
 
-  const entries = zip.getEntries();
   if (entries.length > MAX_ARCHIVE_ENTRIES) {
     throw new AppError(
       'bad_request',
