@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -122,6 +122,34 @@ describe('the preview view', () => {
     );
     const second = document.querySelector('iframe');
     expect(second).not.toBe(first);
+  });
+
+  it('hands the Console gate the frame window, and takes it back when no frame is on screen', () => {
+    const onFrameLoad = vi.fn();
+    const noop = vi.fn();
+    const view = (vm: PreviewVm) => (
+      <PreviewView
+        taskId="task-1"
+        vm={vm}
+        onStart={noop}
+        onStop={noop}
+        onReload={noop}
+        onOpenFiles={noop}
+        onFrameLoad={onFrameLoad}
+      />
+    );
+    const { rerender } = render(
+      view({ kind: 'live', url: URL_, origin: 'http://127.0.0.1:4320', expiresAt: Date.now() + 60_000 }),
+    );
+    const frame = document.querySelector('iframe');
+    expect(frame).not.toBeNull();
+    fireEvent.load(frame as Element);
+    expect(onFrameLoad).toHaveBeenCalledWith((frame as HTMLIFrameElement).contentWindow);
+
+    // A state without a frame must release the handle: a stale window would
+    // keep passing the source check for a frame that no longer exists.
+    rerender(view({ kind: 'no-session' }));
+    expect(onFrameLoad).toHaveBeenLastCalledWith(null);
   });
 
   it('states the remaining life only when it is worth stating', () => {

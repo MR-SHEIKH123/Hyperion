@@ -39,4 +39,29 @@ describe('development state harness',()=>{
   expect(noRoot.querySelector('iframe')).toBeNull();
   expect(noRoot.textContent).toContain('Open Files');
   expect(fetch).not.toHaveBeenCalled();fetch.mockRestore();});
+  it('renders the Console tab states — bounded, text-only, and honest about an empty frame', () => {
+    const fetch = vi.spyOn(globalThis, 'fetch');
+    renderHarness();
+    expect(screen.getByRole('heading', { name: 'Console tab fixtures' })).toBeInTheDocument();
+    for (const id of [
+      'console-empty-no-frame',
+      'console-empty-silent',
+      'console-log',
+      'console-errors',
+      'console-overflow',
+      'console-hostile',
+    ]) {
+      expect(document.querySelector(`[data-fixture="${id}"]`)).not.toBeNull();
+    }
+    const hostile = document.querySelector('[data-fixture="console-hostile"]') as HTMLElement;
+    expect(hostile.textContent).toContain('<img src=x onerror="alert(1)">');
+    expect(hostile.querySelector('img')).toBeNull();
+    const overflow = document.querySelector('[data-fixture="console-overflow"]') as HTMLElement;
+    expect(overflow.querySelectorAll('li').length).toBeLessThanOrEqual(100);
+    const errors = document.querySelector('[data-fixture="console-errors"]') as HTMLElement;
+    expect(errors.querySelector('[data-testid="console-send-errors"]')).not.toBeNull();
+    expect(fetch).not.toHaveBeenCalled();
+    fetch.mockRestore();
+  });
 });
+

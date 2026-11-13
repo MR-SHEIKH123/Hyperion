@@ -65,7 +65,8 @@ import {
   zdrPolicyFixture,
 } from './fixtures/safety';
 import { operationalFixtures } from './fixtures/operationalStates';
-import { previewStateFixtures } from './fixtures/canvas';
+import { previewStateFixtures, consoleStateFixtures } from './fixtures/canvas';
+import { ConsoleView } from '../tools/code/ConsoleView';
 import { taskStateFixtures } from './fixtures/taskStates';
 import { PreviewView } from '../tools/code/PreviewView';
 
@@ -438,6 +439,43 @@ function PreviewFixture() {
   );
 }
 
+/**
+ * The Console tab's states, rendered by the production panel.
+ *
+ * The gate is exercised with real `message` events in `ConsoleTab.test`;
+ * these cards show the panel itself for each honest state — two kinds of
+ * empty, a live log, an armed error report, an over-cap log, and hostile
+ * text displayed as text.
+ */
+function ConsoleFixture() {
+  const noop = () => undefined;
+  return (
+    <section aria-labelledby="console-fixture-heading" className={styles.section}>
+      <h2 className={styles.sectionHeading} id="console-fixture-heading">
+        Console tab fixtures
+      </h2>
+      <p className={styles.note}>
+        The panel as the production component renders it — validated entries in, text out; no
+        frame and no network behind these cards.
+      </p>
+      <div className={styles.grid}>
+        {consoleStateFixtures.map((fixture) => (
+          <article className={styles.card} key={fixture.id} data-fixture={fixture.id}>
+            <h3>{fixture.title}</h3>
+            <p className={styles.note}>{fixture.detail}</p>
+            <ConsoleView
+              entries={fixture.entries}
+              frameOpen={fixture.frameOpen}
+              onClear={noop}
+              onSendErrors={noop}
+            />
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function CodeSurfaceFixture() {
   return (
     <section aria-labelledby="code-fixture-heading" className={styles.section}>
@@ -532,6 +570,8 @@ export function Component() {
       <CodeSurfaceFixture />
 
       <PreviewFixture />
+
+      <ConsoleFixture />
 
       <ProvidersFixture />
 

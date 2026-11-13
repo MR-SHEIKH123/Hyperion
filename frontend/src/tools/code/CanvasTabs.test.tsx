@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi, afterEach } from 'vitest';
 
 import { CanvasTabs } from './CanvasTabs';
+import type { CanvasTab } from './useCanvasTab';
 
 /**
  * The tab strip (Addendum 2.4).
@@ -64,6 +65,7 @@ function renderTabs(initialTab: 'overview' | 'files' = 'overview') {
         activeTab={initialTab}
         onTabChange={onTabChange}
         onSelectFile={onSelectFile}
+        onSendErrors={vi.fn()}
       >
         <p>Recovery and spend, unchanged.</p>
       </CanvasTabs>
@@ -81,7 +83,13 @@ describe('the tab strip', () => {
     renderTabs();
     const list = screen.getByRole('tablist', { name: 'Task workspace views' });
     const tabs = within(list).getAllByRole('tab');
-    expect(tabs.map((tab) => tab.textContent)).toEqual(['Overview', 'Files', 'Diff', 'Preview']);
+    expect(tabs.map((tab) => tab.textContent)).toEqual([
+      'Overview',
+      'Files',
+      'Diff',
+      'Preview',
+      'Console',
+    ]);
 
     const overview = screen.getByRole('tab', { name: 'Overview' });
     const files = screen.getByRole('tab', { name: 'Files' });
@@ -116,17 +124,20 @@ describe('the tab strip', () => {
     await user.keyboard('{ArrowRight}');
     expect(onTabChange).toHaveBeenLastCalledWith('preview');
     expect(document.activeElement).toBe(preview);
+    await user.keyboard('{ArrowRight}');
+    expect(onTabChange).toHaveBeenLastCalledWith('console');
+    expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'Console' }));
     // Past the end, back to the start.
     await user.keyboard('{ArrowRight}');
     expect(onTabChange).toHaveBeenLastCalledWith('overview');
     expect(document.activeElement).toBe(overview);
     await user.keyboard('{End}');
-    expect(onTabChange).toHaveBeenLastCalledWith('preview');
+    expect(onTabChange).toHaveBeenLastCalledWith('console');
     await user.keyboard('{Home}');
     expect(onTabChange).toHaveBeenLastCalledWith('overview');
     // And backwards from the start wraps to the end.
     await user.keyboard('{ArrowLeft}');
-    expect(onTabChange).toHaveBeenLastCalledWith('preview');
+    expect(onTabChange).toHaveBeenLastCalledWith('console');
   });
 
   it("keeps Overview's content as the panel's content — the region was wrapped, not replaced", () => {
@@ -162,7 +173,7 @@ describe('the tab strip', () => {
     // clicks has to do what CodeTool does and actually move the state.
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     function Host() {
-      const [tab, setTab] = useState<'overview' | 'files' | 'diff' | 'preview'>('overview');
+      const [tab, setTab] = useState<CanvasTab>('overview');
       return (
         <QueryClientProvider client={client}>
           <CanvasTabs
@@ -171,6 +182,7 @@ describe('the tab strip', () => {
             activeTab={tab}
             onTabChange={setTab}
             onSelectFile={vi.fn()}
+            onSendErrors={vi.fn()}
           >
             <p>Recovery and spend, unchanged.</p>
           </CanvasTabs>
@@ -183,6 +195,37 @@ describe('the tab strip', () => {
     expect(panel?.hasAttribute('hidden')).toBe(true);
     // Still in the document: a switch must not tear the region down.
     expect(screen.getByText('Recovery and spend, unchanged.')).toBeInTheDocument();
+  });
+
+  it('opens the Console panel with its empty state, without spending a request', async () => {
+    const { calls } = stubFetch();
+    const user = userEvent.setup();
+    // Stateful host: the strip is controlled, so opening a tab means moving
+    // the state the way CodeTool does.
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    function Host() {
+      const [tab, setTab] = useState<CanvasTab>('overview');
+      return (
+        <QueryClientProvider client={client}>
+          <CanvasTabs
+            taskId="task-1"
+            file={null}
+            activeTab={tab}
+            onTabChange={setTab}
+            onSelectFile={vi.fn()}
+            onSendErrors={vi.fn()}
+          >
+            <p>Recovery and spend, unchanged.</p>
+          </CanvasTabs>
+        </QueryClientProvider>
+      );
+    }
+    render(<Host />);
+    await user.click(screen.getByRole('tab', { name: 'Console' }));
+    const panel = document.getElementById('canvas-panel-console');
+    expect(panel?.hasAttribute('hidden')).toBe(false);
+    expect(screen.getByTestId('console-empty')).toBeInTheDocument();
+    expect(calls).toEqual([]);
   });
 
   it('declares no motion — the reduced-motion guarantee by construction', () => {

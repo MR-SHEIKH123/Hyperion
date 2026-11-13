@@ -31,12 +31,13 @@
  * `prefers-reduced-motion` guard the design system's `motion.css` would then
  * have to carry.
  */
-import { useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 
 import { DiffTab } from './DiffTab';
 import { FileTree } from './FileTree';
 import { FileViewer } from './FileViewer';
 import { PreviewTab } from './PreviewTab';
+import { ConsoleTab } from './ConsoleTab';
 import { CANVAS_TABS, TAB_LABELS, type CanvasTab } from './useCanvasTab';
 import styles from './CanvasTabs.module.css';
 
@@ -54,6 +55,11 @@ export interface CanvasTabsProps {
    * artifact frame is.
    */
   writeRevision?: number;
+  /**
+   * The Console tab's Send-to-composer: fills the composer with the error
+   * report and focuses it. Never submits — sending is the user's click.
+   */
+  onSendErrors: (text: string) => void;
   /** Overview's content — today's recovery/parked/spend region, unchanged. */
   children: React.ReactNode;
 }
@@ -65,10 +71,19 @@ export function CanvasTabs({
   onTabChange,
   onSelectFile,
   writeRevision = 0,
+  onSendErrors,
   children,
 }: CanvasTabsProps) {
   const tabRefs = useRef(new Map<CanvasTab, HTMLButtonElement>());
   const [visited, setVisited] = useState<ReadonlySet<CanvasTab>>(() => new Set(['overview' as const]));
+
+  // The Preview tab's live frame, handed up so the Console gate can check
+  // `event.source` against the window this surface actually loaded. A handle
+  // only: cross-origin, it proves which frame spoke and reads nothing.
+  const [frameWindow, setFrameWindow] = useState<Window | null>(null);
+  const onFrameLoad = useCallback((win: Window | null) => {
+    setFrameWindow(win);
+  }, []);
 
   // The active tab is visited even when it was not clicked into from here:
   // the stored per-task tab restores straight to Files (or the surface's own
@@ -156,11 +171,14 @@ export function CanvasTabs({
               <FilesTab taskId={taskId} file={file} onSelectFile={onSelectFile} />
             ) : id === 'diff' ? (
               <DiffTab taskId={taskId} file={file} onSelectFile={onSelectFile} />
+            ) : id === 'console' ? (
+              <ConsoleTab frameWindow={frameWindow} onSendErrors={onSendErrors} />
             ) : (
               <PreviewTab
                 taskId={taskId}
                 writeRevision={writeRevision}
                 onOpenFiles={() => activate('files')}
+                onFrameLoad={onFrameLoad}
               />
             )
           ) : null}

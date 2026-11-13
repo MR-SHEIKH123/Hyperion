@@ -3964,6 +3964,17 @@ Request handling, in order:
    `cache-control: no-store`, `cross-origin-resource-policy: cross-origin` and
    `access-control-allow-origin: *`. That last one is **correct on this listener
    only**; the API emits no CORS header and must not start.
+6. **HTML responses carry the console bridge.** Immediately before the headers
+   go out, a response whose type is `text/html; charset=utf-8` has
+   `PREVIEW_CONSOLE_SHIM` (`src/http/previewServer.ts`) injected as a
+   `<script>` after the page's own `<head>` — or after the doctype, wrapped in
+   a synthesized one, when there is none. The shim wraps four `console`
+   levels and posts `{source, kind, args}` to the parent frame; scripts,
+   styles, images and JSON are served byte-for-byte, non-UTF-8 bytes pass
+   through unchanged, and the task's workspace is never written. `content-length`
+   is computed after the injection. The receiving end — the Console tab's
+   validation gate — is specified in `docs/CONTRACTS.md` and drift-tested
+   against this file.
 
 The CSP is a **header**, so it binds in a tab as well as inside an iframe:
 

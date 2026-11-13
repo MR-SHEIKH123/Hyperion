@@ -1,4 +1,5 @@
 import type { PreviewVm } from '../../tools/code/PreviewView';
+import type { ConsoleEntry } from '../../tools/code/consoleShim';
 
 /**
  * Every state of the Preview tab, as the production `PreviewView` renders
@@ -87,5 +88,79 @@ export const previewStateFixtures: {
       origin: 'http://127.0.0.1:4320',
       expiresAt: 4_000_000_000_000,
     },
+  },
+];
+
+/**
+ * The Console tab's states, rendered by the production panel.
+ *
+ * The gate itself (event source, tag, kinds, bounds) is tested against real
+ * `message` events in `ConsoleTab.test`; these cards show what the panel
+ * *looks like* for each honest state — two kinds of empty, a live log, an
+ * error report, an over-cap log, and hostile text displayed as text.
+ */
+export const consoleStateFixtures: {
+  id: string;
+  title: string;
+  detail: string;
+  entries: readonly ConsoleEntry[];
+  frameOpen: boolean;
+}[] = [
+  {
+    id: 'console-empty-no-frame',
+    title: 'Console — no frame',
+    detail: 'Nothing has been previewed yet: the panel says so instead of pretending to be a log.',
+    entries: [],
+    frameOpen: false,
+  },
+  {
+    id: 'console-empty-silent',
+    title: 'Console — frame open, silent',
+    detail: 'A frame is running and has printed nothing; the empty state is the absence of output, not an error.',
+    entries: [],
+    frameOpen: true,
+  },
+  {
+    id: 'console-log',
+    title: 'Console — log lines',
+    detail: 'Accepted entries only: the shim\'s four kinds, joined and bounded, rendered as text nodes.',
+    entries: [
+      { kind: 'log', text: 'app booted in 12ms' },
+      { kind: 'info', text: 'fetch /api/code/tasks — 200' },
+      { kind: 'warn', text: 'deprioritized queue item after 3 retries' },
+      { kind: 'log', text: 'render complete' },
+    ],
+    frameOpen: true,
+  },
+  {
+    id: 'console-errors',
+    title: 'Console — errors, ready to send',
+    detail: 'Error entries arm Send-to-composer; the report is prefilled as untrusted data and never auto-sent.',
+    entries: [
+      { kind: 'error', text: 'TypeError: x is not a function' },
+      { kind: 'error', text: 'ReferenceError: y is not defined' },
+      { kind: 'log', text: 'last good state' },
+    ],
+    frameOpen: true,
+  },
+  {
+    id: 'console-overflow',
+    title: 'Console — over the cap',
+    detail: 'A chatty frame cannot grow the tab: the list keeps the newest entries and drops the oldest.',
+    entries: Array.from({ length: 600 }, (_, index) => ({
+      kind: 'log' as const,
+      text: `line ${index}`,
+    })),
+    frameOpen: true,
+  },
+  {
+    id: 'console-hostile',
+    title: 'Console — hostile text',
+    detail: 'Markup in a log line is displayed, never parsed: the entry is a string in a text node.',
+    entries: [
+      { kind: 'log', text: '<img src=x onerror="alert(1)">' },
+      { kind: 'warn', text: '</ol><script>alert("nope")</script>' },
+    ],
+    frameOpen: true,
   },
 ];

@@ -27,6 +27,8 @@
  * is no file watcher by design (the backend has none; bash-only edits never
  * produce an `artifact` frame), and a button is the honest way to say so.
  */
+import { useEffect } from 'react';
+
 import styles from './CanvasTabs.module.css';
 
 /** Every state the preview region can be in — one member per honest answer. */
@@ -96,6 +98,13 @@ export function PreviewView({
   busy = false,
   onFrameLoad,
 }: PreviewViewProps) {
+  // The Console gate holds this window: it must learn when the frame is
+  // gone as well as when it arrives, or a stale reference would keep
+  // accepting messages from a window that no longer exists.
+  useEffect(() => {
+    if (vm.kind !== 'live') onFrameLoad?.(null);
+  }, [vm.kind, onFrameLoad]);
+
   if (vm.kind === 'reading') {
     return (
       <p role="status">

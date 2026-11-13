@@ -169,6 +169,12 @@ export default function CodeTool() {
         onTabChange={setCanvasTab}
         onSelectFile={selectFileInTree}
         writeRevision={writeRevision}
+        onSendErrors={(text) => {
+          // Fill and focus only. The report is data from the frame; sending
+          // it is the user's decision, made with their own click.
+          start.setPrompt(text);
+          frame.current?.focusPanel('composer');
+        }}
       >
         {state?.kind === 'interrupted' ? (
           // The one state where a read is not enough: an interrupted run has a

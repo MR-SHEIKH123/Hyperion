@@ -202,8 +202,16 @@ behavior in the browser.
   frame — the backend has no watcher, by design), and every refusal as its own state:
   listener off with `details.setting` named, released workspace, network failure,
   expiry read against the last session the tab saw, and a missing root `index.html`
-  rendered as "Open Files" rather than a dead frame. What the Canvas still does not
-  offer, and what a UI must not pretend it does:
+  rendered as "Open Files" rather than a dead frame. **The Console tab shows the
+  frame's own output**: the preview listener injects a tagged console bridge into
+  served HTML (`PREVIEW_CONSOLE_SHIM`), the tab accepts a message only from the
+  frame it loaded, only with the shim's tag, one of its four kinds and an array
+  of at most 64 strings, bounds every entry at 4 KiB and the list at 500 (oldest
+  dropped), and renders the result as text nodes — never as HTML. The empty state
+  distinguishes "no frame is open" from "the frame has logged nothing", the panel
+  keeps collecting while another tab shows, and **Send to composer** prefills the
+  error entries as labelled untrusted data without ever submitting them. What the
+  Canvas still does not offer, and what a UI must not pretend it does:
   - **Read-only.** No write, rename, delete or create route; the preview serves files, it
     does not accept them.
   - **Not a dev server.** The preview is a static read: no build step, no bundler, no hot
