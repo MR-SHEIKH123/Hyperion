@@ -40,6 +40,8 @@ import path from 'node:path';
 
 import AdmZip from 'adm-zip';
 
+import { openGuardedZip } from '../zipGuard.ts';
+
 import { env } from '../../config/env.ts';
 import { closeDb, getDb, openDatabase, setDb } from '../../db/adapter.ts';
 import { runMigrations } from '../../db/migrate.ts';
@@ -142,7 +144,9 @@ function readZip(source: string | Buffer): AdmZip {
     );
   }
   try {
-    return new AdmZip(bytes);
+    // Guarded parse: extent validation inside the guard, so a crafted
+    // archive maps to this 400 rather than a 500 from a later read.
+    return openGuardedZip(bytes);
   } catch (error) {
     throw new AppError('bad_request', `Not a readable zip archive: ${String(error)}`);
   }
